@@ -137,6 +137,13 @@ export async function getGlmUsage(apiKey, provider, proxyOptions = null) {
  *
  * Docs: https://vercel.com/docs/ai-gateway/usage
  */
+export async function getKimchiUsage(apiKey, proxyOptions = null) {
+  return {
+    message: "Kimchi does not expose a public usage API. Track credits in the Kimchi dashboard.",
+    quotas: [],
+  };
+}
+
 export async function getVercelAiGatewayUsage(apiKey, proxyOptions = null) {
   if (!apiKey) {
     return { message: "Vercel AI Gateway API key not available." };

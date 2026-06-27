@@ -699,6 +699,15 @@ async function testApiKeyConnection(connection, effectiveProxy = null) {
         }, effectiveProxy);
         return { valid: res.ok, error: res.ok ? null : "Invalid API key" };
       }
+      case "kimchi": {
+        const baseUrl = (PROVIDERS["kimchi"]?.baseUrl || "https://llm.kimchi.dev/openai/v1/chat/completions").replace(/\/chat\/completions$/, "");
+        const transportHeaders = PROVIDERS["kimchi"]?.headers || {};
+        const res = await fetchWithConnectionProxy(`${baseUrl}/models`, {
+          headers: { ...transportHeaders, Authorization: `Bearer ${connection.apiKey}` },
+        }, effectiveProxy);
+        const valid = res.status !== 401 && res.status !== 403;
+        return { valid, error: valid ? null : "Invalid API key" };
+      }
       default:
         return { valid: false, error: "Provider test not supported" };
     }

@@ -135,8 +135,9 @@ export function createSSEStream(options = {}) {
               }
 
               const delta = parsed.choices?.[0]?.delta;
-              const content = delta?.content;
               const reasoning = delta?.reasoning_content;
+
+              const content = delta?.content;
               if (content && typeof content === "string") {
                 totalContentLength += content.length;
                 accumulatedContent += content;

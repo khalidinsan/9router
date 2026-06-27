@@ -27,6 +27,7 @@ const DEEPSEEK_V4_PRO_ALIASES = {
 };
 
 function shouldInject(message, scope) {
+  if (scope === "none") return false;
   if (message?.role !== "assistant") return false;
   const rc = message.reasoning_content;
   if (typeof rc === "string" && rc.length > 0) return false;
@@ -35,7 +36,7 @@ function shouldInject(message, scope) {
 }
 
 function applyRule(body, rule) {
-  if (!rule || !body?.messages) return body;
+  if (!rule || rule.scope === "none" || !body?.messages) return body;
   const messages = body.messages.map(m =>
     shouldInject(m, rule.scope) ? { ...m, reasoning_content: PLACEHOLDER } : m
   );

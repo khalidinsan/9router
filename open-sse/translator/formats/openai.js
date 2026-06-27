@@ -12,12 +12,30 @@ export function filterToOpenAIFormat(body) {
   body.messages = body.messages.map(msg => {
     // Normalize developer role to system (many providers don't support developer)
     if (msg.role === ROLE.DEVELOPER) msg = { ...msg, role: ROLE.SYSTEM };
-    
-    // Keep tool messages as-is (OpenAI format)
-    if (msg.role === ROLE.TOOL) return msg;
-    
-    // Keep assistant messages with tool_calls as-is
-    if (msg.role === ROLE.ASSISTANT && msg.tool_calls) return msg;
+
+    // Strip provider-specific output-only fields that should never round-trip.
+    // provider_specific_fields is emitted by some OpenAI-compatible providers
+    // (e.g. Kimchi) but is not part of the OpenAI message contract; keeping it
+    // in the context can confuse upstream models.
+    if ("provider_specific_fields" in msg) {
+      const { provider_specific_fields: _, ...cleanMsg } = msg;
+      msg = cleanMsg;
+    }
+
+    // Keep tool messages in strict OpenAI shape. Some clients (e.g. Hermes)
+    // add a non-standard `name` field which reasoning models like kimi-k2.7
+    // do not handle well; drop it so only role/content/tool_call_id remain.
+    if (msg.role === ROLE.TOOL) {
+      const { role, content, tool_call_id } = msg;
+      return { role, content, tool_call_id };
+    }
+
+    // Keep assistant messages with tool_calls as-is (reasoning_content is
+    // preserved because the provider-level reasoning injector may need to echo
+    // it back for reasoning models).
+    if (msg.role === ROLE.ASSISTANT && msg.tool_calls) {
+      return msg;
+    }
     
     // Handle string content
     if (typeof msg.content === "string") return msg;

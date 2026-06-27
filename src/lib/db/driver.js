@@ -54,10 +54,16 @@ async function trySqlJs() {
 
 async function initAdapter() {
   ensureDirs();
+  const forcedDriver = process.env.NINEROUTER_DB_DRIVER;
   // Order per runtime:
   //   Bun:  bun:sqlite → sql.js
   //   Node: better-sqlite3 → node:sqlite (≥22.5) → sql.js
-  let adapter = await tryBunSqlite();
+  let adapter = null;
+  if (forcedDriver === "bun") adapter = await tryBunSqlite();
+  else if (forcedDriver === "better") adapter = await tryBetterSqlite();
+  else if (forcedDriver === "node") adapter = await tryNodeSqlite();
+  else if (forcedDriver === "sqljs") adapter = await trySqlJs();
+  if (!adapter) adapter = await tryBunSqlite();
   if (!adapter) adapter = await tryBetterSqlite();
   if (!adapter) adapter = await tryNodeSqlite();
   if (!adapter) adapter = await trySqlJs();

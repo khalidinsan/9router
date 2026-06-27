@@ -40,6 +40,12 @@ const nextConfig = {
         path: false,
       };
     }
+    if (isServer) {
+      config.externals = config.externals || [];
+      if (Array.isArray(config.externals)) {
+        config.externals.push("better-sqlite3");
+      }
+    }
     // Exclude non-source dirs from watcher to reduce inotify load
     config.watchOptions = {
       ...config.watchOptions,

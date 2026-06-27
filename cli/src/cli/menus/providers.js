@@ -109,6 +109,13 @@ const PROVIDER_MODELS = {
   kimi: [
     { id: "kimi-latest" },
   ],
+  kimchi: [
+    { id: "kimi-k2.7" },
+    { id: "kimi-k2.6" },
+    { id: "minimax-m3" },
+    { id: "glm-5.2-fp8" },
+    { id: "nemotron-3-ultra-fp4" },
+  ],
   minimax: [
     { id: "MiniMax-M2.1" },
   ],
@@ -131,6 +138,7 @@ const APIKEY_PROVIDERS = {
   glm: { id: "glm", name: "GLM Coding" },
   minimax: { id: "minimax", name: "Minimax Coding" },
   kimi: { id: "kimi", name: "Kimi Coding" },
+  kimchi: { id: "kimchi", name: "Kimchi" },
   openai: { id: "openai", name: "OpenAI" },
   anthropic: { id: "anthropic", name: "Anthropic" },
   gemini: { id: "gemini", name: "Gemini" },

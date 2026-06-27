@@ -6,7 +6,9 @@
   "scripts": {
     "dev": "next dev --webpack --port 20127",
     "build": "next build --webpack",
+    "build:prod": "next build --webpack && node scripts/prepare-standalone.mjs",
     "start": "next start",
+    "start:prod": "PORT=${PORT:-20127} HOSTNAME=${HOSTNAME:-0.0.0.0} NEXT_PUBLIC_BASE_URL=${NEXT_PUBLIC_BASE_URL:-http://localhost:20127} NINEROUTER_DB_DRIVER=${NINEROUTER_DB_DRIVER:-sqljs} next start",
     "dev:bun": "bun --bun next dev --webpack --port 20127",
     "build:bun": "bun --bun next build --webpack",
     "start:bun": "bun ./.next/standalone/server.js",
