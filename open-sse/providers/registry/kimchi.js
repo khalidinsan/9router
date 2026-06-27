@@ -32,6 +32,7 @@ export default {
     { id: "kimi-k2.7", name: "Kimi K2.7" },
     { id: "kimi-k2.6", name: "Kimi K2.6" },
     { id: "minimax-m3", name: "MiniMax M3" },
+    { id: "deepseek-v4-flash", name: "DeepSeek V4 Flash" },
     { id: "glm-5.2-fp8", name: "GLM 5.2 FP8" },
     { id: "nemotron-3-ultra-fp4", name: "Nemotron 3 Ultra FP4" },
   ],
