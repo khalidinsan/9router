@@ -1,6 +1,80 @@
 import { ERROR_RULES, BACKOFF_CONFIG, TRANSIENT_COOLDOWN_MS } from "../config/errorConfig.js";
 
 /**
+ * Patterns that indicate the Kimchi provider has exhausted its credits.
+ * Specific enough to avoid matching transient errors like "exhausted all retries".
+ */
+const KIMCHI_QUOTA_EXHAUSTED_PATTERNS = [
+  /credits?.{0,20}exhausted/i,
+  /quota.{0,20}exhausted/i,
+  /no remaining credits/i,
+  /insufficient[ _-]?credits/i,
+  /payment.{0,10}required/i,
+  /has exhausted its credits/i,
+];
+
+/**
+ * Detect whether an error body / message indicates Kimchi quota exhaustion.
+ * @param {string} provider - provider id (e.g. "kimchi")
+ * @param {string|object} errorText - raw error body or message
+ * @returns {boolean}
+ */
+export function isKimchiQuotaExhausted(provider, errorText) {
+  if (!errorText || provider !== "kimchi") return false;
+  const text = typeof errorText === "string"
+    ? errorText
+    : (() => { try { return JSON.stringify(errorText); } catch { return String(errorText); } })();
+  return KIMCHI_QUOTA_EXHAUSTED_PATTERNS.some(p => p.test(text));
+}
+
+/**
+ * Compute the next-month reset timestamp (00:00 UTC on the 1st of next month).
+ * If today is already the 1st, returns today's 00:00 UTC.
+ * @param {Date} [now=new Date()]
+ * @returns {Date}
+ */
+export function getNextMonthReset(now = new Date()) {
+  const d = new Date(now.getTime());
+  if (d.getUTCDate() === 1) {
+    return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1, 0, 0, 0, 0));
+  }
+  return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 1, 0, 0, 0, 0));
+}
+
+/**
+ * Build update payload that deactivates a Kimchi account due to quota exhaustion.
+ * @param {Date} [now]
+ * @returns {{ isActive: boolean, rateLimitedUntil: string, testStatus: string, lastErrorType: string, errorCode: number, quotaExhaustedAt: string, quotaResetsAt: string }}
+ */
+export function buildKimchiQuotaExhaustedUpdate(now = new Date()) {
+  const reset = getNextMonthReset(now);
+  return {
+    isActive: false,
+    rateLimitedUntil: reset.toISOString(),
+    testStatus: "quota_exhausted",
+    lastErrorType: "quota_exhausted",
+    errorCode: 402,
+    quotaExhaustedAt: now.toISOString(),
+    quotaResetsAt: reset.toISOString(),
+  };
+}
+
+/**
+ * Build update payload to reactivate a quota-exhausted Kimchi account whose
+ * rateLimitedUntil has passed.
+ * @returns {{ isActive: boolean, rateLimitedUntil: null, testStatus: string, quotaExhaustedAt: null, quotaResetsAt: null }}
+ */
+export function buildKimchiQuotaReactivatedUpdate() {
+  return {
+    isActive: true,
+    rateLimitedUntil: null,
+    testStatus: "active",
+    quotaExhaustedAt: null,
+    quotaResetsAt: null,
+  };
+}
+
+/**
  * Calculate exponential backoff cooldown for rate limits (429)
  * Level 1: 1s, Level 2: 2s, Level 3: 4s... → max 4 min
  * @param {number} backoffLevel - Current backoff level

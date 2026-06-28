@@ -13,11 +13,15 @@ export default {
     },
   },
   category: "apikey",
+  authType: "apikey",
+  authModes: ["apikey"],
+  hasOAuth: false,
   transport: {
     baseUrl: "https://llm.kimchi.dev/openai/v1/chat/completions",
     format: "openai",
     headers: {
       "User-Agent": "kimchi/0.1.42",
+      Accept: "application/json",
     },
     reasoningInject: {
       scope: "all",
@@ -26,6 +30,18 @@ export default {
       combined: true,
       header: "Authorization",
       scheme: "bearer",
+    },
+    timeoutMs: 120000,
+    retry: {
+      maxRetries: 3,
+      retryDelay: 500,
+      retryStatusCodes: [429, 502, 503, 504],
+    },
+  },
+  media: {
+    searchViaChat: {
+      defaultModel: "kimi-k2.7",
+      pricingUrl: "https://kimchi.dev/pricing",
     },
   },
   models: [
@@ -36,7 +52,7 @@ export default {
     { id: "glm-5.2-fp8", name: "GLM 5.2 FP8" },
     { id: "nemotron-3-ultra-fp4", name: "Nemotron 3 Ultra FP4" },
   ],
-  serviceKinds: ["llm"],
+  serviceKinds: ["llm", "webSearch"],
   features: {
     usage: true,
     usageApikey: true,

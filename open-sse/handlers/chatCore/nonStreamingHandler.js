@@ -5,6 +5,8 @@ import { addBufferToUsage, filterUsageForFormat } from "../../utils/usageTrackin
 import { createErrorResult } from "../../utils/error.js";
 import { HTTP_STATUS } from "../../config/runtimeConfig.js";
 import { parseSSEToOpenAIResponse } from "./sseToJsonHandler.js";
+import { normalizeKimiToolCalls } from "../../utils/kimiToolParser.js";
+import { extractToolNames } from "../../translator/concerns/toolCall.js";
 import { buildRequestDetail, extractRequestConfig, extractUsageFromResponse, saveUsageStats } from "./requestDetail.js";
 import { appendRequestLog, saveRequestDetail } from "@/lib/usageDb.js";
 import { decloakToolNames } from "../../utils/claudeCloaking.js";
@@ -185,6 +187,21 @@ export async function handleNonStreamingResponse({ providerResponse, provider, m
   const translatedResponse = needsTranslation(targetFormat, sourceFormat)
     ? translateNonStreamingResponse(responseBody, targetFormat, sourceFormat)
     : responseBody;
+
+  // Native Kimi tool-call markup sometimes leaks into `content` instead of being
+  // returned as a structured `tool_calls` array. Convert it for Kimi-family
+  // models before the finish_reason fixup.
+  const isKimiModel = /kimi-k2\./i.test(model || "");
+  if (isKimiModel && Array.isArray(translatedResponse?.choices)) {
+    for (const choice of translatedResponse.choices) {
+      const msg = choice?.message;
+      if (!msg || msg.role !== "assistant") continue;
+      const { message: normalized, hasTools } = normalizeKimiToolCalls(msg);
+      if (hasTools) {
+        choice.message = normalized;
+      }
+    }
+  }
 
   // Fix finish_reason for tool_calls: some providers return non-standard values (e.g. "other")
   if (translatedResponse?.choices?.[0]) {
