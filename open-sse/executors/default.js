@@ -201,7 +201,7 @@ export class DefaultExecutor extends BaseExecutor {
       }
     }
 
-    if (stream) headers["Accept"] = "text/event-stream";
+    if (stream && !this.config.preserveAccept) headers["Accept"] = "text/event-stream";
     return headers;
   }
 
