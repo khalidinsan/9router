@@ -2,6 +2,35 @@ import { v4 as uuidv4 } from "uuid";
 import { getAdapter } from "../driver.js";
 import { parseJson, stringifyJson } from "../helpers/jsonCol.js";
 
+// In-memory cache for provider connection lists: eliminates repeated sync DB
+// reads per request. VansRoute uses a 2s TTL; invalidation happens on writes.
+const CONNECTIONS_CACHE_TTL_MS = 2000;
+const connectionsCache = new Map();
+
+function getConnectionsCacheKey(filter) {
+  return JSON.stringify(filter || {});
+}
+
+function getCachedConnections(filter) {
+  const key = getConnectionsCacheKey(filter);
+  const entry = connectionsCache.get(key);
+  if (!entry) return null;
+  if (Date.now() > entry.expiresAt) {
+    connectionsCache.delete(key);
+    return null;
+  }
+  return entry.value;
+}
+
+function setCachedConnections(filter, value) {
+  const key = getConnectionsCacheKey(filter);
+  connectionsCache.set(key, { value, expiresAt: Date.now() + CONNECTIONS_CACHE_TTL_MS });
+}
+
+export function invalidateConnectionsCache() {
+  connectionsCache.clear();
+}
+
 const OPTIONAL_FIELDS = [
   "displayName", "email", "globalPriority", "defaultModel",
   "accessToken", "refreshToken", "expiresAt", "tokenType",
@@ -57,6 +86,9 @@ function upsert(db, c) {
 }
 
 export async function getProviderConnections(filter = {}) {
+  const cached = getCachedConnections(filter);
+  if (cached) return cached;
+
   const db = await getAdapter();
   const where = [];
   const params = [];
@@ -66,6 +98,7 @@ export async function getProviderConnections(filter = {}) {
   const rows = db.all(sql, params);
   const list = rows.map(rowToConn);
   list.sort((a, b) => (a.priority || 999) - (b.priority || 999));
+  setCachedConnections(filter, list);
   return list;
 }
 
@@ -150,6 +183,7 @@ export async function createProviderConnection(data) {
     result = conn;
   });
 
+  invalidateConnectionsCache();
   return result;
 }
 
@@ -166,6 +200,7 @@ export async function updateProviderConnection(id, data) {
     if (data.priority !== undefined) reorderInTx(db, existing.provider);
     result = merged;
   });
+  invalidateConnectionsCache();
   return result;
 }
 
@@ -179,6 +214,7 @@ export async function deleteProviderConnection(id) {
     reorderInTx(db, row.provider);
     ok = true;
   });
+  invalidateConnectionsCache();
   return ok;
 }
 
@@ -186,15 +222,18 @@ export async function deleteProviderConnectionsByProvider(providerId) {
   const db = await getAdapter();
   const before = db.get(`SELECT COUNT(*) AS n FROM providerConnections WHERE provider = ?`, [providerId]);
   db.run(`DELETE FROM providerConnections WHERE provider = ?`, [providerId]);
+  invalidateConnectionsCache();
   return before?.n || 0;
 }
 
 export async function reorderProviderConnections(providerId) {
+  invalidateConnectionsCache();
   const db = await getAdapter();
   db.transaction(() => reorderInTx(db, providerId));
 }
 
 export async function cleanupProviderConnections() {
+  invalidateConnectionsCache();
   const db = await getAdapter();
   const fieldsToCheck = [
     "displayName", "email", "globalPriority", "defaultModel",

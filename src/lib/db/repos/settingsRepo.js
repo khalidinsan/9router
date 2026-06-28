@@ -4,6 +4,12 @@ import { parseJson, stringifyJson } from "../helpers/jsonCol.js";
 const DEFAULT_MITM_ROUTER_BASE = "http://localhost:20128";
 const DEFAULT_HEADROOM_URL = process.env.HEADROOM_URL || "http://localhost:8787";
 
+// In-memory cache for settings: eliminates repeated sync DB reads per request.
+// VansRoute uses a 5s TTL; invalidation happens on every write.
+const SETTINGS_CACHE_TTL_MS = 5000;
+let settingsCache = null;
+let settingsCacheExpiresAt = 0;
+
 const DEFAULT_SETTINGS = {
   cloudEnabled: false,
   tunnelEnabled: false,
@@ -70,8 +76,19 @@ function mergeWithDefaults(raw) {
 }
 
 export async function getSettings() {
+  const now = Date.now();
+  if (settingsCache && settingsCacheExpiresAt > now) {
+    return settingsCache;
+  }
   const raw = await readRaw();
-  return mergeWithDefaults(raw);
+  settingsCache = mergeWithDefaults(raw);
+  settingsCacheExpiresAt = now + SETTINGS_CACHE_TTL_MS;
+  return settingsCache;
+}
+
+export function invalidateSettingsCache() {
+  settingsCache = null;
+  settingsCacheExpiresAt = 0;
 }
 
 // Atomic read-merge-write inside transaction (prevents losing concurrent updates)
@@ -87,6 +104,7 @@ export async function updateSettings(updates) {
       [stringifyJson(next)]
     );
   });
+  invalidateSettingsCache();
   return mergeWithDefaults(next);
 }
 
