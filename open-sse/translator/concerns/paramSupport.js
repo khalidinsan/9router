@@ -4,6 +4,8 @@
 // Each rule: optional provider, regex match on model, list of params to drop.
 // A param is removed only when it is present (!== undefined).
 const STRIP_RULES = [
+  // AgentRouter (Claude-format gateway): rejects OpenAI-only `stream_options` param with HTTP 400.
+  { provider: "agentrouter", match: /.*/i, drop: ["stream_options"] },
   // claude-opus-4 series: temperature is deprecated (Anthropic 400). #1748
   { match: /claude-opus-4/i, drop: ["temperature"] },
   // GitHub Copilot gpt-5.4: temperature unsupported.

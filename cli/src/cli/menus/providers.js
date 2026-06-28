@@ -139,6 +139,7 @@ const APIKEY_PROVIDERS = {
   minimax: { id: "minimax", name: "Minimax Coding" },
   kimi: { id: "kimi", name: "Kimi Coding" },
   kimchi: { id: "kimchi", name: "Kimchi" },
+  agentrouter: { id: "agentrouter", alias: "ar", name: "AgentRouter" },
   openai: { id: "openai", name: "OpenAI" },
   anthropic: { id: "anthropic", name: "Anthropic" },
   gemini: { id: "gemini", name: "Gemini" },
