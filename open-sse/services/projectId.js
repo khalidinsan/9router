@@ -172,6 +172,15 @@ async function fetchProjectId(accessToken, signal) {
     const projectId = extractProjectId(data);
     if (projectId) return projectId;
 
+    // For consumer-authenticated accounts (e.g. RESTRICTED_DASHER_USER), the
+    // default tier has userDefinedCloudaicompanionProject: true. There is no GCP
+    // project ID to onboard to; onboarding will always fail and just wastes
+    // ~10 seconds of retries per request. Skip it entirely for these accounts.
+    if (hasUserDefinedProject(data)) {
+        console.log("[ProjectId] Account uses user-defined project, skipping onboarding");
+        return null;
+    }
+
     // Determine the tier to use for onboarding
     let tierID = "legacy-tier";
     if (Array.isArray(data.allowedTiers)) {
@@ -282,6 +291,31 @@ function extractProjectId(data) {
     }
 
     return null;
+}
+
+/**
+ * Detect accounts that use a user-defined (consumer) project instead of a
+ * real GCP project ID. For these accounts onboarding will never return a
+ * project ID, so we can skip it entirely.
+ */
+function hasUserDefinedProject(data) {
+    if (!data) return false;
+
+    const tiers = data.allowedTiers;
+    if (Array.isArray(tiers)) {
+        for (const tier of tiers) {
+            if (tier && tier.userDefinedCloudaicompanionProject === true) {
+                return true;
+            }
+        }
+    }
+
+    // Also check the legacy top-level field if present
+    if (data.userDefinedCloudaicompanionProject === true) {
+        return true;
+    }
+
+    return false;
 }
 
 /**

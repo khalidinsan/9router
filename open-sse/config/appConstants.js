@@ -128,8 +128,10 @@ export const AG_DEFAULT_TOOLS = new Set([
 ]);
 
 // Antigravity chat/stream headers
+// Match the official agy CLI User-Agent so Google accepts the request for
+// consumer-authenticated accounts that have no GCP project ID.
 export const ANTIGRAVITY_HEADERS = {
-  "User-Agent": `antigravity/1.107.0 ${platform()}/${arch()}`
+  "User-Agent": `antigravity/cli/1.0.16 (aidev_client; os_type=${platform()}; arch=${arch()}; auth_method=consumer)`
 };
 
 // Cloud Code Assist API

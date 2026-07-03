@@ -115,7 +115,18 @@ export class AntigravityExecutor extends BaseExecutor {
   }
 
   transformRequest(model, body, stream, credentials) {
-    const projectId = credentials?.projectId || this.generateProjectId();
+    // When the account has no GCP project ID (e.g. RESTRICTED_DASHER_USER), the
+    // official agy CLI omits the `project` field entirely and lets Google's
+    // backend resolve the project from the OAuth context. Sending a generated
+    // random project ID causes 403 CONSUMER_INVALID / SERVICE_DISABLED.
+    const projectId = credentials?.projectId || null;
+
+    // Defensive: some upstream translators (openai-to-gemini.js) used to inject
+    // a random projectId into the body. Strip it if we don't have a real one.
+    const cleanBody = projectId ? body : { ...body };
+    if (!projectId && "project" in cleanBody) {
+      delete cleanBody.project;
+    }
 
     // ─── Image generation: completely different request structure ───
     if (isImageModel(model)) {
@@ -143,7 +154,7 @@ export class AntigravityExecutor extends BaseExecutor {
       this._lastSessionId = sessionId;
 
       return {
-        project: projectId,
+        ...(projectId && { project: projectId }),
         model: cleanModel,
         userAgent: "antigravity",
         requestType: "image_gen",
@@ -231,8 +242,8 @@ export class AntigravityExecutor extends BaseExecutor {
     this._lastSessionId = transformedRequest.sessionId; // cached for buildHeaders (base.execute order)
 
     return {
-      ...body,
-      project: projectId,
+      ...cleanBody,
+      ...(projectId && { project: projectId }),
       model: model,
       userAgent: "antigravity",
       requestType: "agent",

@@ -251,10 +251,12 @@ export function openaiToGeminiCLIRequest(model, body, stream) {
 
 // Wrap Gemini CLI format in Cloud Code wrapper
 function wrapInCloudCodeEnvelope(model, geminiCLI, credentials = null, isAntigravity = false) {
-  const projectId = credentials?.projectId || generateProjectId();
+  // Official agy CLI omits `project` when the account has no GCP project ID.
+  // Sending a generated random project ID causes 403 for ineligible accounts.
+  const projectId = credentials?.projectId || null;
 
   const envelope = {
-    project: projectId,
+    ...(projectId && { project: projectId }),
     model: model,
     userAgent: isAntigravity ? "antigravity" : "gemini-cli",
     requestId: isAntigravity ? `agent-${generateUUID()}` : generateRequestId(),
@@ -300,10 +302,12 @@ function wrapInCloudCodeEnvelope(model, geminiCLI, credentials = null, isAntigra
 
 // Wrap Claude format in Cloud Code envelope for Antigravity
 function wrapInCloudCodeEnvelopeForClaude(model, claudeRequest, credentials = null) {
-  const projectId = credentials?.projectId || generateProjectId();
+  // Official agy CLI omits `project` when the account has no GCP project ID.
+  // Sending a generated random project ID causes 403 for ineligible accounts.
+  const projectId = credentials?.projectId || null;
 
   const envelope = {
-    project: projectId,
+    ...(projectId && { project: projectId }),
     model: model,
     userAgent: "antigravity",
     requestId: `agent-${generateUUID()}`,
