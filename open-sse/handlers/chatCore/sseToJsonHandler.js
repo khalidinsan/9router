@@ -2,6 +2,7 @@ import { convertResponsesStreamToJson } from "../../transformer/streamToJsonConv
 import { createErrorResult } from "../../utils/error.js";
 import { HTTP_STATUS } from "../../config/runtimeConfig.js";
 import { FORMATS } from "../../translator/formats.js";
+import { translateResponse, initState } from "../../translator/index.js";
 import { PROVIDERS } from "../../config/providers.js";
 import { buildRequestDetail, extractRequestConfig, saveUsageStats } from "./requestDetail.js";
 
@@ -102,7 +103,7 @@ export function parseSSEToOpenAIResponse(rawSSE, fallbackModel) {
  * Handle case: provider forced streaming but client wants JSON.
  * Supports both Codex/Responses API SSE and standard Chat Completions SSE.
  */
-export async function handleForcedSSEToJson({ providerResponse, sourceFormat, provider, model, body, stream, translatedBody, finalBody, requestStartTime, connectionId, apiKey, clientRawRequest, onRequestSuccess, trackDone, appendLog }) {
+export async function handleForcedSSEToJson({ providerResponse, sourceFormat, targetFormat, provider, model, body, stream, translatedBody, finalBody, requestStartTime, connectionId, apiKey, clientRawRequest, onRequestSuccess, trackDone, appendLog }) {
   const contentType = providerResponse.headers.get("content-type") || "";
   const isSSE = contentType.includes("text/event-stream") || (contentType === "" && isResponsesProvider(provider));
   if (!isSSE) return null; // not handled here
@@ -192,7 +193,34 @@ export async function handleForcedSSEToJson({ providerResponse, sourceFormat, pr
 
   // Standard Chat Completions SSE path
   try {
-    const sseText = await providerResponse.text();
+    let sseText = await providerResponse.text();
+
+    // Providers like Antigravity emit native Google-shaped SSE (e.g. {response:{candidates:...}}),
+    // regardless of the client's source format. Translate the raw provider SSE into OpenAI-shaped
+    // SSE before parsing.
+    // Providers like Antigravity emit native Google-shaped SSE (e.g. {response:{candidates:...}}),
+    // regardless of the client's source format. Translate the raw provider SSE into OpenAI-shaped
+    // SSE before parsing.
+    if (targetFormat && targetFormat !== FORMATS.OPENAI && targetFormat !== FORMATS.OPENAI_RESPONSES) {
+      const translatedChunks = [];
+      const state = initState(targetFormat);
+      for (const line of sseText.split("\n")) {
+        const trimmed = line.trim();
+        if (!trimmed.startsWith("data:")) continue;
+        const payload = trimmed.slice(5).trim();
+        if (!payload || payload === "[DONE]") continue;
+        try {
+          const parsedChunk = JSON.parse(payload);
+          const openaiChunks = translateResponse(targetFormat, FORMATS.OPENAI, parsedChunk, state);
+          for (const oc of openaiChunks || []) {
+            translatedChunks.push(`data: ${JSON.stringify(oc)}`);
+          }
+        } catch { /* ignore malformed lines */ }
+      }
+      translatedChunks.push("data: [DONE]");
+      sseText = translatedChunks.join("\n\n");
+    }
+
     const parsed = parseSSEToOpenAIResponse(sseText, model);
     if (!parsed) return createErrorResult(HTTP_STATUS.BAD_GATEWAY, "Invalid SSE response for non-streaming request");
 

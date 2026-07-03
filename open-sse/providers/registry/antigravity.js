@@ -24,6 +24,9 @@ export default {
       "https://daily-cloudcode-pa.googleapis.com",
       "https://daily-cloudcode-pa.sandbox.googleapis.com",
     ],
+    // Always stream internally; non-stream clients get buffered to JSON by chatCore.
+    // This matches the official agy CLI and significantly improves time-to-first-byte.
+    forceStream: true,
     format: "antigravity",
     headers: {
       // Match the official agy CLI User-Agent. Google rejects requests from
