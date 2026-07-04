@@ -1,19 +1,8 @@
 import { describe, it, mock } from "node:test";
 import assert from "node:assert/strict";
-import { fileURLToPath } from "node:url";
-import { dirname, join } from "node:path";
+import { saveCredentials } from "../../../open-sse/services/automation/core/CredentialSaver.js";
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const repoRoot = join(__dirname, "../../../");
-const connectionsRepoPath = join(repoRoot, "src/lib/db/repos/connectionsRepo.js");
-
-const createProviderConnection = mock.fn(async (data) => ({ id: "conn-123", ...data }));
-
-mock.module(connectionsRepoPath, {
-  namedExports: { createProviderConnection },
-});
-
-const { saveCredentials } = await import("../../../open-sse/services/automation/core/CredentialSaver.js");
+const createConnection = mock.fn(async (data) => ({ id: "conn-123", ...data }));
 
 describe("CredentialSaver", () => {
   it("saves antigravity OAuth credentials with expected fields", async () => {
@@ -28,13 +17,13 @@ describe("CredentialSaver", () => {
       providerSpecificData: { username: "testuser", chatgptAccountId: "ws-1" },
     };
 
-    const result = await saveCredentials("antigravity", creds);
+    const result = await saveCredentials("antigravity", creds, { createConnection });
 
     assert.equal(result.success, true);
     assert.equal(result.connectionId, "conn-123");
-    assert.equal(createProviderConnection.mock.callCount(), 1);
+    assert.equal(createConnection.mock.callCount(), 1);
 
-    const call = createProviderConnection.mock.calls[0];
+    const call = createConnection.mock.calls[0];
     const data = call.arguments[0];
     assert.equal(data.provider, "antigravity");
     assert.equal(data.authType, "oauth");
@@ -51,16 +40,16 @@ describe("CredentialSaver", () => {
   });
 
   it("omits providerSpecificData when empty", async () => {
-    createProviderConnection.mock.resetCalls();
+    createConnection.mock.resetCalls();
 
     const creds = {
       email: "minimal@example.com",
       accessToken: "token",
     };
 
-    await saveCredentials("antigravity", creds);
+    await saveCredentials("antigravity", creds, { createConnection });
 
-    const call = createProviderConnection.mock.calls[0];
+    const call = createConnection.mock.calls[0];
     const data = call.arguments[0];
     assert.equal("providerSpecificData" in data, false);
   });

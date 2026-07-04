@@ -1,6 +1,13 @@
-import { createProviderConnection } from "../../../../src/lib/db/repos/connectionsRepo.js";
+export async function saveCredentials(provider, creds, options = {}) {
+  const createConnection = options.createConnection;
 
-export async function saveCredentials(provider, creds) {
+  async function getDefaultCreateConnection() {
+    const { createProviderConnection } = await import(
+      "../../../../src/lib/db/repos/connectionsRepo.js"
+    );
+    return createProviderConnection;
+  }
+
   const {
     email,
     accessToken,
@@ -30,6 +37,7 @@ export async function saveCredentials(provider, creds) {
     data.providerSpecificData = providerSpecificData;
   }
 
-  const conn = await createProviderConnection(data);
+  const connFn = createConnection ?? (await getDefaultCreateConnection());
+  const conn = await connFn(data);
   return { success: true, connectionId: conn.id };
 }
