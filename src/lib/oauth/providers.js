@@ -28,6 +28,7 @@ import {
   CODEBUDDY_CONFIG,
   KIMCHI_CONFIG,
   getOAuthClientMetadata,
+  getAntigravityClientMetadata,
 } from "./constants/oauth";
 import { XAI_CONFIG, XAI_PKCE_VERIFIER_BYTES } from "./constants/xai";
 import {
@@ -376,7 +377,7 @@ const PROVIDERS = {
       return await response.json();
     },
     postExchange: async (tokens) => {
-      // Numeric enums matching Antigravity binary ClientMetadata
+      // Match the official agy CLI loadCodeAssist request metadata/headers.
       const loadHeaders = {
         "Authorization": `Bearer ${tokens.access_token}`,
         "Content-Type": "application/json",
@@ -385,7 +386,7 @@ const PROVIDERS = {
         "Client-Metadata": ANTIGRAVITY_CONFIG.loadCodeAssistClientMetadata,
         "x-request-source": "local",
       };
-      const metadata = getOAuthClientMetadata();
+      const metadata = getAntigravityClientMetadata();
 
       // Fetch user info
       const userInfoRes = await fetch(`${ANTIGRAVITY_CONFIG.userInfoUrl}?alt=json`, {
@@ -416,6 +417,14 @@ const PROVIDERS = {
               }
             }
           }
+
+          // The official agy CLI opt-in to telemetry right after loadCodeAssist.
+          // Fire-and-forget: do not block token save if this fails.
+          fetch("https://daily-cloudcode-pa.googleapis.com/v1internal:setUserSettings", {
+            method: "POST",
+            headers: loadHeaders,
+            body: JSON.stringify({ userSettings: { telemetryEnabled: true } }),
+          }).catch(() => { /* ignore telemetry opt-in errors */ });
         }
       } catch (e) {
         console.log("Failed to load code assist:", e);

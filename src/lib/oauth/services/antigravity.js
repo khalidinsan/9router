@@ -1,6 +1,6 @@
 import crypto from "crypto";
 import open from "open";
-import { ANTIGRAVITY_CONFIG, getOAuthClientMetadata } from "../constants/oauth.js";
+import { ANTIGRAVITY_CONFIG, getAntigravityClientMetadata } from "../constants/oauth.js";
 import { getServerCredentials } from "../config/index.js";
 import { startLocalServer } from "../utils/server.js";
 import { spinner as createSpinner } from "../utils/ui.js";
@@ -92,10 +92,10 @@ export class AntigravityService {
 
   /**
    * Get metadata object for loadCodeAssist / onboardUser API calls.
-   * Uses numeric enum values matching Antigravity binary ClientMetadata.
+   * Matches the official agy CLI: { ideType: "ANTIGRAVITY" }.
    */
   getMetadata() {
-    return getOAuthClientMetadata();
+    return getAntigravityClientMetadata();
   }
 
   /**

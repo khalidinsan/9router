@@ -43,19 +43,29 @@ export const IFLOW_CONFIG = { ...PROVIDER_OAUTH["iflow"] };
 
 // Antigravity OAuth Configuration (Standard OAuth2 with Google)
 // clientId/clientSecret from ANTIGRAVITY_OAUTH_CLIENT (shared.js) — not stored in registry
-// loadCodeAssistClientMetadata is dynamic (runtime platform detection)
+// The official agy CLI sends only {"ideType":"ANTIGRAVITY"} in loadCodeAssist.
 export const ANTIGRAVITY_CONFIG = {
   ...ANTIGRAVITY_OAUTH_CLIENT,
   ...PROVIDER_OAUTH["antigravity"],
-  loadCodeAssistClientMetadata: JSON.stringify({ ideType: 9, platform: getOAuthPlatformEnum(), pluginType: 2 }),
+  loadCodeAssistClientMetadata: JSON.stringify({ ideType: "ANTIGRAVITY" }),
 };
 
 /**
  * Get client metadata using numeric enum values for API calls.
+ * Used by the Gemini CLI provider; keep numeric to match its backend contract.
  * @returns {{ ideType: number, platform: number, pluginType: number }}
  */
 export function getOAuthClientMetadata() {
   return { ideType: 9, platform: getOAuthPlatformEnum(), pluginType: 2 };
+}
+
+/**
+ * Get Antigravity client metadata matching the official agy CLI.
+ * The official CLI sends only the string ideType "ANTIGRAVITY".
+ * @returns {{ ideType: string }}
+ */
+export function getAntigravityClientMetadata() {
+  return { ideType: "ANTIGRAVITY" };
 }
 
 // OpenAI OAuth Configuration (Authorization Code Flow with PKCE)

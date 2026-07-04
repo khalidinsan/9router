@@ -134,24 +134,27 @@ export const ANTIGRAVITY_HEADERS = {
   "User-Agent": `antigravity/cli/1.0.16 (aidev_client; os_type=${platform()}; arch=${arch()}; auth_method=consumer)`
 };
 
-// Cloud Code Assist API
+// Cloud Code Assist API (Antigravity uses the daily environment, matching the
+// official agy CLI and avoiding SERVICE_DISABLED/CONSUMER_INVALID errors for
+// consumer-authenticated accounts).
 export const CLOUD_CODE_API = {
-  loadCodeAssist: "https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist",
-  onboardUser: "https://cloudcode-pa.googleapis.com/v1internal:onboardUser",
+  loadCodeAssist: "https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist",
+  onboardUser: "https://daily-cloudcode-pa.googleapis.com/v1internal:onboardUser",
 };
+
+// The official agy CLI sends only the string ideType "ANTIGRAVITY" in both the
+// request body and the Client-Metadata header. Numeric enums cause the backend
+// to reject consumer-authenticated accounts.
+const ANTIGRAVITY_LOAD_CODE_ASSIST_METADATA = { ideType: "ANTIGRAVITY" };
 
 export const LOAD_CODE_ASSIST_HEADERS = {
   "Content-Type": "application/json",
   "User-Agent": "google-api-nodejs-client/9.15.1",
   "X-Goog-Api-Client": "google-cloud-sdk vscode_cloudshelleditor/0.1",
-  "Client-Metadata": JSON.stringify({ ideType: IDE_TYPE.ANTIGRAVITY, platform: getPlatformEnum(), pluginType: PLUGIN_TYPE.GEMINI }),
+  "Client-Metadata": JSON.stringify(ANTIGRAVITY_LOAD_CODE_ASSIST_METADATA),
 };
 
-export const LOAD_CODE_ASSIST_METADATA = {
-  ideType: IDE_TYPE.ANTIGRAVITY,
-  platform: getPlatformEnum(),
-  pluginType: PLUGIN_TYPE.GEMINI,
-};
+export const LOAD_CODE_ASSIST_METADATA = ANTIGRAVITY_LOAD_CODE_ASSIST_METADATA;
 
 // System prompts
 export const CLAUDE_SYSTEM_PROMPT = "You are Claude Code, Anthropic's official CLI for Claude.";
