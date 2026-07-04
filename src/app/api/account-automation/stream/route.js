@@ -1,8 +1,8 @@
 import { SseEventEmitter } from "../../../../../open-sse/services/automation/core/SseEventEmitter.js";
 
-const RUNS =
-  globalThis.accountAutomationRuns ||
-  (globalThis.accountAutomationRuns = Object.create(null));
+if (!globalThis.accountAutomationRuns || typeof globalThis.accountAutomationRuns.get !== "function") {
+  globalThis.accountAutomationRuns = new Map();
+}
 
 const POLL_INTERVAL_MS = 100;
 
@@ -21,7 +21,7 @@ export async function GET(request) {
     return jsonResponse({ error: "runId is required" }, 400);
   }
 
-  const run = RUNS[runId];
+  const run = globalThis.accountAutomationRuns.get(runId);
   if (!run) {
     return jsonResponse({ error: "run not found" }, 404);
   }
@@ -61,7 +61,7 @@ export async function GET(request) {
         let intervalId;
 
         const sendUpdates = () => {
-          const currentRun = RUNS[runId];
+          const currentRun = globalThis.accountAutomationRuns.get(runId);
           if (!currentRun) {
             emitter.error("run disappeared");
             clearInterval(intervalId);

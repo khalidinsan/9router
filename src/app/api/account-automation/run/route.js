@@ -3,7 +3,7 @@ import { randomUUID } from "crypto";
 
 const SUPPORTED_PROVIDERS = ["antigravity", "kiro"];
 
-if (!globalThis.accountAutomationRuns) {
+if (!globalThis.accountAutomationRuns || typeof globalThis.accountAutomationRuns.get !== "function") {
   globalThis.accountAutomationRuns = new Map();
 }
 
