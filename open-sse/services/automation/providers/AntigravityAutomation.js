@@ -63,17 +63,8 @@ export class AntigravityAutomation extends BaseAutomation {
       throw new Error("Failed to capture Antigravity auth code");
     }
 
-    const { getProvider } = await import("../../../../src/lib/oauth/providers.js");
-    const oauthProvider = getProvider("antigravity");
-    const tokens = await oauthProvider.exchangeToken(config, authCode, REDIRECT_URI);
-
-    return {
-      email: tokens.email || email,
-      accessToken: tokens.access_token,
-      refreshToken: tokens.refresh_token,
-      expiresIn: tokens.expires_in,
-      providerSpecificData: tokens.providerSpecificData || {},
-    };
+    const { exchangeTokens } = await import("../../../../src/lib/oauth/providers.js");
+    return await exchangeTokens("antigravity", authCode, REDIRECT_URI);
   }
 
   buildAuthUrl(config, redirectUri, state) {

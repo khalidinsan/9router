@@ -421,27 +421,35 @@ const PROVIDERS = {
         console.log("Failed to load code assist:", e);
       }
 
-      // Fire-and-forget onboarding — does not block DB save
+      // Synchronous onboarding — blocks DB save until provisioning is complete
       if (projectId) {
-        const doOnboard = async () => {
-          for (let i = 0; i < 10; i++) {
-            try {
-              const onboardRes = await fetch(ANTIGRAVITY_CONFIG.onboardUserEndpoint, {
-                method: "POST",
-                headers: loadHeaders,
-                body: JSON.stringify({ tierId, metadata }),
-              });
-              if (onboardRes.ok) {
-                const result = await onboardRes.json();
-                if (result.done === true) break;
+        for (let i = 0; i < 10; i++) {
+          try {
+            const onboardRes = await fetch(ANTIGRAVITY_CONFIG.onboardUserEndpoint, {
+              method: "POST",
+              headers: loadHeaders,
+              body: JSON.stringify({ tierId, metadata }),
+            });
+            if (onboardRes.ok) {
+              const result = await onboardRes.json();
+              if (result.done === true) {
+                // Extract final project ID from response, mirroring AntigravityService.completeOnboarding
+                if (result.response?.cloudaicompanionProject) {
+                  const respProject = result.response.cloudaicompanionProject;
+                  if (typeof respProject === "string") {
+                    projectId = respProject.trim();
+                  } else if (respProject.id) {
+                    projectId = respProject.id.trim();
+                  }
+                }
+                break;
               }
-            } catch (e) {
-              break;
             }
-            await new Promise(resolve => setTimeout(resolve, 5000));
+          } catch (e) {
+            break;
           }
-        };
-        doOnboard().catch(() => {});
+          await new Promise(resolve => setTimeout(resolve, 5000));
+        }
       }
 
       return { userInfo, projectId };

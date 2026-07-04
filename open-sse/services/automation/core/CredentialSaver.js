@@ -16,6 +16,7 @@ export async function saveCredentials(provider, creds, options = {}) {
     expiresAt,
     tokenType,
     scope,
+    projectId,
     providerSpecificData,
   } = creds;
 
@@ -31,6 +32,7 @@ export async function saveCredentials(provider, creds, options = {}) {
     expiresAt,
     tokenType,
     scope,
+    projectId,
   };
 
   if (providerSpecificData && Object.keys(providerSpecificData).length > 0) {
