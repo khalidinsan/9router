@@ -37,9 +37,9 @@ async function spawnAutomation(runId, provider, accounts, options) {
   if (!run) return;
 
   const [{ AutomationQueue }, { AntigravityAutomation }, { KiroAutomation }] = await Promise.all([
-    import("../../../../../../open-sse/services/automation/core/AutomationQueue.js"),
-    import("../../../../../../open-sse/services/automation/providers/AntigravityAutomation.js"),
-    import("../../../../../../open-sse/services/automation/providers/KiroAutomation.js"),
+    import("../../../../../open-sse/services/automation/core/AutomationQueue.js"),
+    import("../../../../../open-sse/services/automation/providers/AntigravityAutomation.js"),
+    import("../../../../../open-sse/services/automation/providers/KiroAutomation.js"),
   ]);
 
   const providerFactories = {
