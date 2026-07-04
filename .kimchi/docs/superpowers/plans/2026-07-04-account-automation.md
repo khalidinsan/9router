@@ -6,7 +6,7 @@
 
 **Architecture:** A Next.js API route receives bulk `{provider, accounts, headless}` and starts an in-memory `AutomationQueue`. The queue uses a shared Playwright browser instance (isolated contexts per account) and modular provider classes extending `BaseAutomation`. Progress is streamed back via SSE. Successful credentials are persisted through `createProviderConnection`.
 
-**Tech Stack:** Next.js App Router, Playwright, SQLite (better-sqlite3/node:sqlite), existing 9Router OAuth helpers.
+**Tech Stack:** Next.js App Router, Playwright + Camoufox (`camoufox-js`), SQLite (better-sqlite3/node:sqlite), existing 9Router OAuth helpers.
 
 ---
 
@@ -32,34 +32,35 @@ src/components/dashboard/Sidebar.jsx   # Add "Add Account" menu item (modify)
 
 ---
 
-## Task 1: Install Playwright dependency
+## Task 1: Install Camoufox + Playwright dependencies
 
 **Files:**
 - Modify: `package.json`
 
-- [ ] **Step 1: Add `playwright` to dependencies**
+- [ ] **Step 1: Add `camoufox-js` and `playwright-core` to dependencies**
 
 Run:
 ```bash
-npm install playwright
+npm install camoufox-js playwright-core
 ```
 
-Expected: `package.json` updated with `"playwright": "^x.x.x"` and `package-lock.json` changed.
+Expected: `package.json` updated with `"camoufox-js"`, `"playwright-core"`, and `package-lock.json` changed.
 
-- [ ] **Step 2: Install browser binaries**
+- [ ] **Step 2: Download Camoufox browser binary**
 
 Run:
 ```bash
-npx playwright install chromium
+npx camoufox-js fetch
 ```
 
-Expected: chromium browser downloaded.
+Expected: Camoufox Firefox binary downloaded.
 
 - [ ] **Step 3: Commit**
 
 ```bash
 git add package.json package-lock.json
-git commit -m "deps: add playwright for account automation"
+npm run build > /tmp/build_after_camoufox.log 2>&1 && echo "build OK" || echo "build FAILED"
+git commit -m "deps: add camoufox-js + playwright-core for account automation"
 ```
 
 ---
@@ -177,7 +178,7 @@ git commit -m "feat(automation): add BaseAutomation abstract class"
 
 Create `tests/unit/automation/PlaywrightManager.test.js`:
 ```js
-import { describe, it, before, mock } from "node:test";
+import { describe, it, mock } from "node:test";
 import assert from "node:assert/strict";
 
 const mockBrowser = {
@@ -185,18 +186,23 @@ const mockBrowser = {
   close: mock.fn(async () => {}),
 };
 
-mock.module("playwright", {
-  chromium: { launch: mock.fn(async () => mockBrowser) },
+mock.module("playwright-core", {
+  firefox: { launch: mock.fn(async () => mockBrowser) },
+});
+
+mock.module("camoufox-js", {
+  launchOptions: mock.fn(async () => ({ args: [] })),
 });
 
 const { PlaywrightManager } = await import("../../../open-sse/services/automation/core/PlaywrightManager.js");
 
 describe("PlaywrightManager", () => {
-  it("launches browser lazily and reuses it", async () => {
+  it("launches Camoufox browser lazily and reuses it", async () => {
     const pm = new PlaywrightManager({ headless: true });
     const ctx1 = await pm.newContext();
     const ctx2 = await pm.newContext();
-    assert.equal((await import("playwright")).chromium.launch.mock.calls.length, 1);
+    const { firefox } = await import("playwright-core");
+    assert.equal(firefox.launch.mock.calls.length, 1);
     assert.ok(ctx1);
     assert.ok(ctx2);
     await pm.close();
@@ -215,7 +221,8 @@ Expected: FAIL.
 
 Create `open-sse/services/automation/core/PlaywrightManager.js`:
 ```js
-import { chromium } from "playwright";
+import { launchOptions } from "camoufox-js";
+import { firefox } from "playwright-core";
 
 export class PlaywrightManager {
   constructor(options = {}) {
@@ -226,11 +233,15 @@ export class PlaywrightManager {
 
   async getBrowser() {
     if (!this.browser) {
-      const args = this.proxy ? { proxy: { server: this.proxy } } : {};
-      this.browser = await chromium.launch({
+      const camoufoxArgs = await launchOptions({ headless: this.headless });
+      const launchArgs = {
+        ...camoufoxArgs,
         headless: this.headless,
-        ...args,
-      });
+      };
+      if (this.proxy) {
+        launchArgs.proxy = { server: this.proxy };
+      }
+      this.browser = await firefox.launch(launchArgs);
     }
     return this.browser;
   }
@@ -239,8 +250,6 @@ export class PlaywrightManager {
     const browser = await this.getBrowser();
     const contextOptions = {
       viewport: { width: 1280, height: 800 },
-      userAgent:
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
       ...options,
     };
     if (this.proxy && !contextOptions.proxy) {
@@ -270,7 +279,7 @@ Expected: PASS.
 
 ```bash
 git add open-sse/services/automation/core/PlaywrightManager.js tests/unit/automation/PlaywrightManager.test.js
-git commit -m "feat(automation): add shared PlaywrightManager"
+git commit -m "feat(automation): add shared Camoufox PlaywrightManager"
 ```
 
 ---
@@ -490,6 +499,7 @@ mock.module("../../../open-sse/services/automation/core/CredentialSaver.js", {
 });
 mock.module("../../../open-sse/services/automation/core/PlaywrightManager.js", {
   PlaywrightManager: class {
+    async getBrowser() { return {}; }
     async newContext() { return {}; }
     async close() {}
   },
@@ -1193,23 +1203,29 @@ git commit -m "feat(ui): add Add Account dashboard page and menu"
 
 ## Task 13: Manual integration test — Antigravity
 
-- [ ] **Step 1: Start dev server**
+- [ ] **Step 1: Ensure Camoufox binary is installed**
+
+```bash
+npx camoufox-js fetch
+```
+
+- [ ] **Step 2: Start dev server**
 
 ```bash
 npm run dev
 ```
 
-- [ ] **Step 2: Open dashboard Add Account**
+- [ ] **Step 3: Open dashboard Add Account**
 
 Navigate to `http://localhost:20127/dashboard/add-account`
 
-- [ ] **Step 3: Test with one Antigravity account**
+- [ ] **Step 4: Test with one Antigravity account**
 
 Paste one valid `email:password`, click Run Automation.
 
 Expected: account appears in `/dashboard/providers` under Antigravity.
 
-- [ ] **Step 4: Commit any fixes**
+- [ ] **Step 5: Commit any fixes**
 
 If changes needed, commit with descriptive message.
 
@@ -1229,14 +1245,20 @@ Expected: account appears in `/dashboard/providers` under Kiro.
 
 ## Task 15: Final build, test, and push
 
-- [ ] **Step 1: Run full build**
+- [ ] **Step 1: Ensure Camoufox binary present**
+
+```bash
+npx camoufox-js fetch
+```
+
+- [ ] **Step 2: Run full build**
 
 ```bash
 npm run build
 ```
 Expected: EXIT_CODE=0.
 
-- [ ] **Step 2: Run unit tests**
+- [ ] **Step 3: Run unit tests**
 
 ```bash
 node --test tests/unit/automation/*.test.js
