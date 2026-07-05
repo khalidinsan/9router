@@ -27,8 +27,11 @@ export class PlaywrightManager {
 
   async newContext(options = {}) {
     const browser = await this.getBrowser();
+    // Camoufox's CDP scheme rejects the default Playwright viewport object
+    // (it includes isMobile=false which is not in Camoufox's scheme).
+    // Pass viewport: null to let Camoufox manage the viewport natively.
     const contextOptions = {
-      viewport: { width: 1280, height: 800 },
+      viewport: null,
       ...options,
     };
     if (this.proxy && !contextOptions.proxy) {
