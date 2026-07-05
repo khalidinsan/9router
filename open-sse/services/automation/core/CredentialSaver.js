@@ -26,6 +26,7 @@ export async function saveCredentials(provider, creds, options = {}) {
     name: email,
     email,
     isActive: true,
+    testStatus: "active",
     accessToken,
     refreshToken,
     expiresIn,
