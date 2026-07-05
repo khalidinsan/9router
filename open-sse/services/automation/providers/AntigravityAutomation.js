@@ -1,9 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { BaseAutomation } from "../core/BaseAutomation.js";
-import { PROVIDER_OAUTH } from "../../../config/providers.js";
+import { ANTIGRAVITY_OAUTH_CLIENT } from "../../../providers/shared.js";
 
 
-const REDIRECT_URI = "http://127.0.0.1:20127/callback";
+// Must match the redirect URI registered in the Google Cloud Console for the
+// Antigravity OAuth client. The upstream agy CLI and the Gsuiteto9router bot
+// both use http://localhost:20127/callback; 127.0.0.1 causes invalid_client.
+const REDIRECT_URI = "http://localhost:20127/callback";
 
 export class AntigravityAutomation extends BaseAutomation {
   constructor(options = {}) {
@@ -22,13 +25,8 @@ export class AntigravityAutomation extends BaseAutomation {
   }
 
   async run(email, password) {
-    const config = PROVIDER_OAUTH.antigravity;
-    if (!config) {
-      throw new Error("Antigravity OAuth config not found");
-    }
-
     const state = randomUUID();
-    const authUrl = this.buildAuthUrl(config, REDIRECT_URI, state);
+    const authUrl = this.buildAuthUrl(REDIRECT_URI, state);
 
     let authCode = null;
     await this.page.route("**/*", (route, request) => {
@@ -67,17 +65,23 @@ export class AntigravityAutomation extends BaseAutomation {
     return await exchangeTokens("antigravity", authCode, REDIRECT_URI);
   }
 
-  buildAuthUrl(config, redirectUri, state) {
+  buildAuthUrl(redirectUri, state) {
     const params = new URLSearchParams({
-      client_id: config.clientId,
+      client_id: ANTIGRAVITY_OAUTH_CLIENT.clientId,
       response_type: "code",
       redirect_uri: redirectUri,
-      scope: config.scopes.join(" "),
+      scope: [
+        "https://www.googleapis.com/auth/cloud-platform",
+        "https://www.googleapis.com/auth/userinfo.email",
+        "https://www.googleapis.com/auth/userinfo.profile",
+        "https://www.googleapis.com/auth/cclog",
+        "https://www.googleapis.com/auth/experimentsandconfigs",
+      ].join(" "),
       state,
       access_type: "offline",
       prompt: "consent",
     });
-    return `${config.authorizeUrl}?${params.toString()}`;
+    return `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`;
   }
 
   async clickConsent() {
