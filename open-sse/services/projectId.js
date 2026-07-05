@@ -185,6 +185,18 @@ async function fetchProjectId(accessToken, signal) {
         }
     }
 
+    // standard-tier accounts don't have project-based billing and onboarding
+    // will never produce a project_id for them — skip the 5-retry loop to
+    // avoid ~10s of wasted delay.
+    if (tierID === "standard-tier") {
+        console.log(`[ProjectId] Skipping onboard for standard-tier account (no project_id needed)`);
+        return null;
+    }
+
+    // Onboarding is required for accounts that have never been registered via
+    // the agy CLI. Without a project_id, Google treats the account as
+    // unregistered and applies aggressive rate limiting. The onboard call
+    // creates a cloudcode project which is used for quota tracking.
     return onboardUser(accessToken, tierID, signal);
 }
 

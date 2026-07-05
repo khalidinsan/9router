@@ -20,6 +20,11 @@ import { detectFormatByEndpoint } from "open-sse/translator/formats.js";
 import * as log from "../utils/logger.js";
 import { updateProviderCredentials, checkAndRefreshToken } from "../services/tokenRefresh.js";
 import { getProjectIdForConnection } from "open-sse/services/projectId.js";
+import fs from "fs";
+import path from "path";
+import os from "os";
+
+const _timingLogPath = path.join(os.homedir(), ".9router", "bench-timing.log");
 
 /**
  * Handle chat completion request
@@ -205,7 +210,9 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
   let lastStatus = null;
 
   while (true) {
+    const _t0 = performance.now();
     const credentials = await getProviderCredentials(provider, excludeConnectionIds, model);
+    const _t1 = performance.now();
 
     // All accounts unavailable
     if (!credentials || credentials.allRateLimited) {
@@ -226,11 +233,16 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
     // Log account selection
     log.info("AUTH", `\x1b[32mUsing ${provider} account: ${credentials.connectionName}\x1b[0m`);
 
+    const _t2 = performance.now();
     const refreshedCredentials = await checkAndRefreshToken(provider, credentials);
+    const _t3 = performance.now();
 
     // Ensure real project ID is available for providers that need it (P0 fix: cold miss)
+    let _t4 = _t3, _t5 = _t3;
     if ((provider === "antigravity" || provider === "gemini-cli") && !refreshedCredentials.projectId) {
+      _t4 = performance.now();
       const pid = await getProjectIdForConnection(credentials.connectionId, refreshedCredentials.accessToken);
+      _t5 = performance.now();
       if (pid) {
         refreshedCredentials.projectId = pid;
         // Persist to DB in background so subsequent requests have it immediately
@@ -239,8 +251,13 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
     }
 
     // Use shared chatCore
+    const _t6 = performance.now();
     const chatSettings = await getSettings();
+    const _t7 = performance.now();
     const providerThinking = (chatSettings.providerThinking || {})[provider] || null;
+    const _timingLine = `⏱️ [PIPELINE] credSel=${(_t1-_t0).toFixed(0)}ms tokenRefresh=${(_t3-_t2).toFixed(0)}ms projectId=${(_t5-_t4).toFixed(0)}ms settings=${(_t7-_t6).toFixed(0)}ms | totalPreCore=${(_t7-_t0).toFixed(0)}ms`;
+    console.log(_timingLine);
+    try { fs.appendFileSync(_timingLogPath, _timingLine + "\n"); } catch {}
     const result = await handleChatCore({
       body: { ...body, model: `${provider}/${model}` },
       modelInfo: { provider, model },

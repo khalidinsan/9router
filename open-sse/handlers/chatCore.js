@@ -26,6 +26,11 @@ import { compressWithHeadroom, formatHeadroomLog, formatHeadroomSizeLog, isHeadr
 import { getCapabilitiesForModel } from "../providers/capabilities.js";
 import { stripUnsupportedModalities } from "../translator/concerns/modality.js";
 import { prefetchRemoteImages } from "../translator/concerns/prefetch.js";
+import fs from "fs";
+import path from "path";
+import os from "os";
+
+const _coreTimingLogPath = path.join(os.homedir(), ".9router", "bench-timing.log");
 
 /**
  * Core chat handler - shared between SSE and Worker
@@ -106,6 +111,7 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
   // Expose raw client headers to translators/executors for session-id resolution
   if (credentials) credentials.rawHeaders = clientRawRequest?.headers || {};
 
+  const _c0 = performance.now();
   // Auto-strip media blocks the model can't read (vision/audio/pdf) before translation.
   if (!passthrough) {
     const caps = getCapabilitiesForModel(provider, model);
@@ -118,6 +124,7 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
       if (n > 0) log?.debug?.("MODALITY", `prefetched ${n} remote image(s) for ${targetFormat}`);
     } catch (e) { log?.warn?.("MODALITY", `image prefetch failed: ${e.message}`); }
   }
+  const _c1 = performance.now();
 
   let translatedBody;
   let toolNameMap;
@@ -136,6 +143,7 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
     delete translatedBody._toolNameMap;
     translatedBody.model = upstreamModel;
   }
+  const _c2 = performance.now();
 
   // Dedupe duplicate built-in tools when equivalent MCP tools are present (Claude clients only).
   if (clientTool === "claude" && Array.isArray(translatedBody.tools)) {
@@ -163,7 +171,9 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
 
   // Headroom: optional external proxy compression; fail open if proxy is absent.
   const headroomDiagnostics = {};
+  const _h0 = performance.now();
   const headroomStats = await compressWithHeadroom(translatedBody, { enabled: headroomEnabled, url: headroomUrl, model: upstreamModel, format: finalFormat, compressUserMessages: headroomCompressUserMessages, diagnostics: headroomDiagnostics });
+  const _h1 = performance.now();
   const headroomLine = formatHeadroomLog(headroomStats);
   const headroomSizeLine = formatHeadroomSizeLog(headroomDiagnostics);
   if (headroomLine) {
@@ -236,8 +246,13 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
 
   // Execute request
   let providerResponse, providerUrl, providerHeaders, finalBody;
+  const _e0 = performance.now();
   try {
     const result = await executor.execute({ model, body: translatedBody, stream, credentials, signal: streamController.signal, log, proxyOptions });
+    const _e1 = performance.now();
+    const _coreLine = `⏱️ [CORE] modality=${(_c1-_c0).toFixed(0)}ms translate=${(_c2-_c1).toFixed(0)}ms rtk+headroom=${(_h1-_h0).toFixed(0)}ms executor=${(_e1-_e0).toFixed(0)}ms | totalPreUpstream=${(_e1-_c0).toFixed(0)}ms`;
+    console.log(_coreLine);
+    try { fs.appendFileSync(_coreTimingLogPath, _coreLine + "\n"); } catch {}
     providerResponse = result.response;
     providerUrl = result.url;
     providerHeaders = result.headers;

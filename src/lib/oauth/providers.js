@@ -430,8 +430,13 @@ const PROVIDERS = {
         console.log("Failed to load code assist:", e);
       }
 
-      // Synchronous onboarding — blocks DB save until provisioning is complete
-      if (projectId) {
+      // Synchronous onboarding — blocks DB save until provisioning is complete.
+      // Onboarding is needed when loadCodeAssist did NOT return a project_id
+      // (the account has never been registered). The onboardUser call creates
+      // a cloudcode project that Google uses for quota tracking. Without it,
+      // the account is treated as "unregistered" and gets aggressive rate limits.
+      if (!projectId) {
+        console.log("[Antigravity] No project_id from loadCodeAssist — onboarding new account...");
         for (let i = 0; i < 10; i++) {
           try {
             const onboardRes = await fetch(ANTIGRAVITY_CONFIG.onboardUserEndpoint, {
@@ -451,10 +456,13 @@ const PROVIDERS = {
                     projectId = respProject.id.trim();
                   }
                 }
+                console.log(`[Antigravity] Onboarding complete, projectId: ${projectId || "(none)"}`);
                 break;
               }
+              console.log(`[Antigravity] Onboard attempt ${i+1}/10: not done yet, retrying...`);
             }
           } catch (e) {
+            console.log(`[Antigravity] Onboard attempt ${i+1}/10 failed: ${e.message}`);
             break;
           }
           await new Promise(resolve => setTimeout(resolve, 5000));

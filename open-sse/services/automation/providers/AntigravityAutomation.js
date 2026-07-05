@@ -76,11 +76,13 @@ export class AntigravityAutomation extends BaseAutomation {
     await this.page.keyboard.press('Enter');
 
     await this.page.waitForTimeout(2000);
-    await this.clickConsent();
 
-    const start = Date.now();
-    while (!authCode && Date.now() - start < 20000) {
-      await this.page.waitForTimeout(500);
+    // Google may show multiple consecutive consent/trust screens.
+    // Poll clickConsent until we capture the auth code.
+    const consentStart = Date.now();
+    while (!authCode && Date.now() - consentStart < 25000) {
+      await this.clickConsent();
+      await this.page.waitForTimeout(2000);
     }
 
     if (!authCode) {
@@ -111,12 +113,28 @@ export class AntigravityAutomation extends BaseAutomation {
   }
 
   async clickConsent() {
+    // The Google Workspace ToS screen requires scrolling before "I understand"
+    // becomes clickable. Click the scroll-down affordance first if present.
+    try {
+      const scrollDown = await this.page.$('[aria-label="Scroll down"], button:has-text("Scroll down")');
+      if (scrollDown) {
+        const visible = await scrollDown.isVisible().catch(() => false);
+        if (visible) {
+          await scrollDown.click();
+          await this.page.waitForTimeout(800);
+          return;
+        }
+      }
+    } catch {}
+
     const selectors = [
       '#gaplustosNext button',
       '#gaplustosNext',
       'button:has-text("I understand")',
-      'button:has-text("Sign in")',
+      'button:has-text("Login")',
+      'button:has-text("Log in")',
       'button:has-text("Masuk")',
+      'button:has-text("Sign in")',
       '#submit_approve_access button',
       '#submit_approve_access',
       'button:has-text("Allow")',
@@ -126,11 +144,12 @@ export class AntigravityAutomation extends BaseAutomation {
     for (const sel of selectors) {
       try {
         const el = await this.page.$(sel);
-        if (el) {
-          await el.click();
-          await this.page.waitForTimeout(1500);
-          return;
-        }
+        if (!el) continue;
+        const visible = await el.isVisible().catch(() => false);
+        if (!visible) continue;
+        await el.click();
+        await this.page.waitForTimeout(1500);
+        return;
       } catch {}
     }
   }
