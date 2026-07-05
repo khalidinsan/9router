@@ -39,15 +39,41 @@ export class AntigravityAutomation extends BaseAutomation {
       return route.continue();
     });
 
-    await this.page.goto(authUrl, { waitUntil: "networkidle" });
+    await this.page.goto(authUrl, { waitUntil: "domcontentloaded", timeout: 20000 });
 
-    await this.page.waitForSelector('input[type="email"]', { timeout: 10000 });
-    await this.page.fill('input[type="email"]', email);
-    await this.page.click('button:has-text("Next"), #identifierNext');
+    // Email step: Google's standard identifier input
+    await this.page.waitForSelector('#identifierId', { visible: true, timeout: 10000 });
+    await this.page.type('#identifierId', email, { delay: 20 });
+    await this.page.waitForTimeout(500);
+    await this.page.keyboard.press('Enter');
 
-    await this.page.waitForSelector('input[type="password"]', { timeout: 10000 });
-    await this.page.fill('input[type="password"]', password);
-    await this.page.click('button:has-text("Next"), #passwordNext');
+    // Wait for password challenge to load
+    await this.page.waitForTimeout(2000);
+
+    // Try several password-field selectors (Google varies by account/region)
+    const pwdSelectors = [
+      'input[type="password"][name="Passwd"]',
+      'input[type="password"]',
+      '#password input',
+      'input[name="Passwd"]',
+    ];
+
+    let pwdField = null;
+    for (const sel of pwdSelectors) {
+      try {
+        pwdField = await this.page.waitForSelector(sel, { visible: true, timeout: 5000 });
+        if (pwdField) break;
+      } catch {}
+    }
+
+    if (!pwdField) {
+      throw new Error(`Password field not found for ${email}`);
+    }
+
+    await this.page.waitForTimeout(500);
+    await pwdField.type(password, { delay: 20 });
+    await this.page.waitForTimeout(500);
+    await this.page.keyboard.press('Enter');
 
     await this.page.waitForTimeout(2000);
     await this.clickConsent();
@@ -86,10 +112,16 @@ export class AntigravityAutomation extends BaseAutomation {
 
   async clickConsent() {
     const selectors = [
+      '#gaplustosNext button',
+      '#gaplustosNext',
+      'button:has-text("I understand")',
+      'button:has-text("Sign in")',
+      'button:has-text("Masuk")',
+      '#submit_approve_access button',
+      '#submit_approve_access',
       'button:has-text("Allow")',
       'button:has-text("Continue")',
-      'button:has-text("I understand")',
-      '#submit_approve_access button',
+      'button:has-text("Izinkan")',
     ];
     for (const sel of selectors) {
       try {
