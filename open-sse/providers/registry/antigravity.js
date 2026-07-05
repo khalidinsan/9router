@@ -20,14 +20,18 @@ export default {
   category: "oauth",
   serviceKinds: ["llm", "image"],
   transport: {
+    // Only the production daily endpoint; sandbox is unstable (401 / connect hangs)
+    // and was the main source of the 60-115s stalls observed in production.
     baseUrls: [
       "https://daily-cloudcode-pa.googleapis.com",
-      "https://daily-cloudcode-pa.sandbox.googleapis.com",
     ],
     // Always stream internally; non-stream clients get buffered to JSON by chatCore.
     // This matches the official agy CLI and significantly improves time-to-first-byte.
     forceStream: true,
     format: "antigravity",
+    // Abort if Google doesn't return response headers within 10s. The default
+    // 60s connect timeout was the dominant contributor to multi-minute retries.
+    timeoutMs: 10_000,
     headers: {
       // Match the official agy CLI User-Agent. Google rejects requests from
       // consumer-authenticated accounts when the old "antigravity/X.X.X" UA is used.
@@ -38,10 +42,13 @@ export default {
         attempts: 3,
       },
       "500": {
-        attempts: 3,
+        attempts: 1,
       },
+      // Capacity errors on Opus are intermittent. One quick retry is enough;
+      // waiting longer just inflates latency without improving success rate.
       "503": {
-        attempts: 3,
+        attempts: 1,
+        delayMs: 1000,
       },
     },
     usage: {

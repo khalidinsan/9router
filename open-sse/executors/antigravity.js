@@ -16,8 +16,10 @@ function sanitizeFunctionName(name) {
   return s.substring(0, 64);
 }
 
-const MAX_RETRY_AFTER_MS = 10000;
-const ANTIGRAVITY_TRANSIENT_RETRY_MAX_MS = 15000;
+const MAX_RETRY_AFTER_MS = 5000;
+// Cap transient retries (e.g. 503 capacity) at 3s so intermittent Opus
+// unavailability cannot stall a request for tens of seconds.
+const ANTIGRAVITY_TRANSIENT_RETRY_MAX_MS = 3000;
 const MAX_ANTIGRAVITY_OUTPUT_TOKENS = 16384;
 
 const ANTIGRAVITY_TRANSIENT_ERROR_PATTERNS = [

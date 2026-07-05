@@ -30,6 +30,28 @@ import {
 
 export const TOKEN_EXPIRY_BUFFER_MS = BUFFER_MS;
 
+// ─── Recent refresh cache ─────────────────────────────────────────────────────
+// Avoid refreshing the same connection on every request when the token is expired
+// or near expiry. A short TTL is enough to stop thundering-refresh from rapid
+// sequential requests (e.g. client retries, multi-model calls) without masking
+// real expiry for long.
+const REFRESH_RESULT_CACHE_TTL_MS = 15_000;
+const recentRefreshCache = new Map();
+
+function getCachedRefresh(connectionId) {
+  const entry = recentRefreshCache.get(connectionId);
+  if (!entry) return null;
+  if (Date.now() - entry.ts >= REFRESH_RESULT_CACHE_TTL_MS) {
+    recentRefreshCache.delete(connectionId);
+    return null;
+  }
+  return entry.credentials;
+}
+
+function setCachedRefresh(connectionId, credentials) {
+  recentRefreshCache.set(connectionId, { ts: Date.now(), credentials });
+}
+
 // ─── Re-exports wrapped with local logger ─────────────────────────────────────
 
 export const refreshAccessToken = (provider, refreshToken, credentials) =>
@@ -224,6 +246,14 @@ export async function checkAndRefreshToken(provider, credentials) {
     creds.connectionId = creds.id;
   }
 
+  // Short-circuit: if this connection was refreshed very recently, reuse that
+  // result instead of hitting the provider's token endpoint again.
+  const cached = getCachedRefresh(creds.connectionId);
+  if (cached) {
+    log.debug("TOKEN_REFRESH", "Reusing recent refresh result", { connectionId: creds.connectionId });
+    return cached;
+  }
+
   // ── 1. Regular access-token expiry ────────────────────────────────────────
   if (_shouldRefreshCredentials(provider, creds)) {
     const expiresAt = creds.expiresAt ? new Date(creds.expiresAt).getTime() : null;
@@ -260,6 +290,10 @@ export async function checkAndRefreshToken(provider, credentials) {
 
       // Non-blocking: refresh projectId with the new access token
       _refreshProjectId(provider, creds.connectionId, creds.accessToken);
+
+      // Cache the refreshed credentials briefly to avoid refreshing again on
+      // every sequential request for the same connection.
+      setCachedRefresh(creds.connectionId, creds);
     }
   }
 
