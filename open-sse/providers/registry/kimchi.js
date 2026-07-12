@@ -20,7 +20,7 @@ export default {
     baseUrl: "https://llm.kimchi.dev/openai/v1/chat/completions",
     format: "openai",
     headers: {
-      "User-Agent": "kimchi/0.1.42",
+      "User-Agent": "kimchi/0.1.63",
       Accept: "application/json",
     },
     reasoningInject: {
@@ -31,7 +31,7 @@ export default {
       header: "Authorization",
       scheme: "bearer",
     },
-    timeoutMs: 120000,
+    timeoutMs: 300000,
     retry: {
       maxRetries: 3,
       retryDelay: 500,
@@ -41,6 +41,7 @@ export default {
   media: {
     searchViaChat: {
       defaultModel: "kimi-k2.7",
+      endpoint: "https://llm.kimchi.dev/openai/v1/chat/completions",
       pricingUrl: "https://kimchi.dev/pricing",
     },
   },
