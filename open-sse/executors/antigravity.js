@@ -20,7 +20,8 @@ const MAX_RETRY_AFTER_MS = 5000;
 // Cap transient retries (e.g. 503 capacity) at 3s so intermittent Opus
 // unavailability cannot stall a request for tens of seconds.
 const ANTIGRAVITY_TRANSIENT_RETRY_MAX_MS = 3000;
-const MAX_ANTIGRAVITY_OUTPUT_TOKENS = 16384;
+// Raised from fork's 16k to match upstream model ceilings for long outputs.
+const MAX_ANTIGRAVITY_OUTPUT_TOKENS = 64000;
 
 const ANTIGRAVITY_TRANSIENT_ERROR_PATTERNS = [
   /high\s+traffic/i,
