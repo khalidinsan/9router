@@ -176,6 +176,19 @@ function resolveEffortFromModel(modelId) {
 }
 
 /**
+ * Models that reject `reasoning` / reasoningEffort on cli-chat-proxy.
+ * Probed: composer family, legacy grok-build, and some misc ids return HTTP 400
+ * "does not support parameter reasoningEffort" if we default effort:"high".
+ */
+const GROK_CLI_NO_REASONING_RE =
+  /composer|^(grok-build)$|grok-code-fast|grok-4\.20-reasoning/i;
+
+export function supportsGrokCliReasoning(modelId) {
+  if (!modelId || typeof modelId !== "string") return true;
+  return !GROK_CLI_NO_REASONING_RE.test(modelId);
+}
+
+/**
  * Grok CLI Executor — OpenAI Responses API on cli-chat-proxy.grok.com
  * Auth: OAuth device-code access token (xai-grok-cli).
  */
@@ -325,25 +338,36 @@ export class GrokCliExecutor extends BaseExecutor {
     body.model = resolvedModel;
     this._currentModel = resolvedModel;
 
-    // Reasoning effort priority: explicit > reasoning_effort > model suffix > default high
-    if (!body.reasoning || typeof body.reasoning !== "object") {
-      const effort = body.reasoning_effort || modelEffort || "high";
-      body.reasoning = { effort, summary: "concise" };
+    // Reasoning: only for models that support it (Grok 4.5 family).
+    // Composer rejects reasoningEffort — strip even if client/providerThinking injected it.
+    if (!supportsGrokCliReasoning(resolvedModel)) {
+      delete body.reasoning;
+      delete body.reasoning_effort;
+      if (Array.isArray(body.include)) {
+        body.include = body.include.filter((x) => x !== "reasoning.encrypted_content");
+        if (body.include.length === 0) delete body.include;
+      }
     } else {
-      if (!body.reasoning.effort) {
-        body.reasoning.effort = body.reasoning_effort || modelEffort || "high";
+      // Priority: explicit > reasoning_effort > model suffix > default high
+      if (!body.reasoning || typeof body.reasoning !== "object") {
+        const effort = body.reasoning_effort || modelEffort || "high";
+        body.reasoning = { effort, summary: "concise" };
+      } else {
+        if (!body.reasoning.effort) {
+          body.reasoning.effort = body.reasoning_effort || modelEffort || "high";
+        }
+        if (!body.reasoning.summary) body.reasoning.summary = "concise";
       }
-      if (!body.reasoning.summary) body.reasoning.summary = "concise";
-    }
-    delete body.reasoning_effort;
+      delete body.reasoning_effort;
 
-    // Encrypted reasoning for multi-turn continuity (CLI always requests this)
-    if (body.reasoning?.effort && body.reasoning.effort !== "none") {
-      const include = Array.isArray(body.include) ? body.include : [];
-      if (!include.includes("reasoning.encrypted_content")) {
-        include.push("reasoning.encrypted_content");
+      // Encrypted reasoning for multi-turn continuity (CLI always requests this)
+      if (body.reasoning?.effort && body.reasoning.effort !== "none") {
+        const include = Array.isArray(body.include) ? body.include : [];
+        if (!include.includes("reasoning.encrypted_content")) {
+          include.push("reasoning.encrypted_content");
+        }
+        body.include = include;
       }
-      body.include = include;
     }
 
     // Drop Chat Completions leftovers that Responses rejects

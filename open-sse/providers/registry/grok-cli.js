@@ -62,11 +62,29 @@ export default {
       503: { attempts: 2, delayMs: 1500 },
     },
   },
+  // Model catalog notes (probed 2026-07-15 against cli-chat-proxy + local Grok CLI 0.2.101):
+  // Official /v1/models menu: grok-4.5, grok-composer-2.5-fast only.
+  // Extra IDs still accepted by /v1/responses for this account (not always listed in menu).
   models: [
+    // ── Official Grok Build menu ──
     { id: "grok-4.5", name: "Grok 4.5" },
+    // Virtual effort variants → strip suffix, send reasoning.effort (upstream id grok-4.5)
     { id: "grok-4.5-high", name: "Grok 4.5 (High)", upstreamModelId: "grok-4.5" },
     { id: "grok-4.5-medium", name: "Grok 4.5 (Medium)", upstreamModelId: "grok-4.5" },
     { id: "grok-4.5-low", name: "Grok 4.5 (Low)", upstreamModelId: "grok-4.5" },
+    // Official Composer id from /v1/models (name: "Composer 2.5"); rejects reasoningEffort
+    { id: "grok-composer-2.5-fast", name: "Composer 2.5 Fast", thinking: false },
+    // Short alias accepted by API (maps to same family; also rejects reasoningEffort)
+    { id: "composer-2.5", name: "Composer 2.5", thinking: false, upstreamModelId: "grok-composer-2.5-fast" },
+
+    // ── Extra IDs accepted by cli-chat-proxy (not in official menu for all accounts) ──
+    { id: "grok-build", name: "Grok Build (legacy)", thinking: false },
+    { id: "grok-4", name: "Grok 4" },
+    { id: "grok-4-fast-reasoning", name: "Grok 4 Fast Reasoning" },
+    { id: "grok-4.20", name: "Grok 4.20" },
+    { id: "grok-4.20-multi-agent", name: "Grok 4.20 Multi-Agent" },
+    { id: "grok-3", name: "Grok 3" },
+    { id: "grok-code-fast-1", name: "Grok Code Fast" },
   ],
   features: {
     usage: true,

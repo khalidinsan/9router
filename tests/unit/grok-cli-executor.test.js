@@ -3,6 +3,7 @@ import {
   GrokCliExecutor,
   countGrokCliUserTurns,
   resolveGrokCliTurnIdx,
+  supportsGrokCliReasoning,
   _resetGrokCliTurnStore,
 } from "../../open-sse/executors/grok-cli.js";
 import { getExecutor, hasSpecializedExecutor } from "../../open-sse/executors/index.js";
@@ -28,6 +29,9 @@ describe("grok-cli registry", () => {
     expect(oauth.referrer).toBe("grok-build");
 
     expect(PROVIDER_MODELS.gcli?.some((m) => m.id === "grok-4.5")).toBe(true);
+    expect(PROVIDER_MODELS.gcli?.some((m) => m.id === "grok-composer-2.5-fast")).toBe(true);
+    expect(PROVIDER_MODELS.gcli?.some((m) => m.id === "composer-2.5")).toBe(true);
+    expect(PROVIDER_MODELS.gcli?.some((m) => m.id === "grok-4")).toBe(true);
   });
 
   it("is listed as oauth provider for dashboard", () => {
@@ -168,6 +172,59 @@ describe("GrokCliExecutor", () => {
     expect(out.tools[0].function).toBeUndefined();
     expect(out.tools[1]).toEqual({ type: "web_search" });
     expect(out.tools[2]).toEqual({ type: "x_search" });
+  });
+
+  it("supportsGrokCliReasoning is false for non-reasoning Grok Build models", () => {
+    expect(supportsGrokCliReasoning("composer-2.5")).toBe(false);
+    expect(supportsGrokCliReasoning("grok-composer-2.5-fast")).toBe(false);
+    expect(supportsGrokCliReasoning("grok-build")).toBe(false);
+    expect(supportsGrokCliReasoning("grok-code-fast-1")).toBe(false);
+    expect(supportsGrokCliReasoning("grok-4.5")).toBe(true);
+    expect(supportsGrokCliReasoning("grok-4.5-high")).toBe(true);
+    expect(supportsGrokCliReasoning("grok-4")).toBe(true);
+  });
+
+  it("maps composer-2.5 alias to official grok-composer-2.5-fast upstream id", () => {
+    expect(getModelUpstreamId("gcli", "composer-2.5")).toBe("grok-composer-2.5-fast");
+    expect(getModelUpstreamId("gcli", "grok-composer-2.5-fast")).toBe("grok-composer-2.5-fast");
+  });
+
+  it("transformRequest omits reasoning for composer models even when client injects effort", () => {
+    const out = executor.transformRequest(
+      "composer-2.5",
+      {
+        model: "composer-2.5",
+        input: [{ type: "message", role: "user", content: "hi" }],
+        reasoning_effort: "high",
+        reasoning: { effort: "high", summary: "concise" },
+        include: ["reasoning.encrypted_content"],
+      },
+      true,
+      { connectionId: "composer-conn" }
+    );
+
+    // Short alias rewrites to official CLI model id
+    expect(out.model).toBe("grok-composer-2.5-fast");
+    expect(out.reasoning).toBeUndefined();
+    expect(out.reasoning_effort).toBeUndefined();
+    expect(out.include).toBeUndefined();
+    expect(out.stream).toBe(true);
+    expect(out.store).toBe(false);
+  });
+
+  it("transformRequest omits reasoning for official grok-composer-2.5-fast", () => {
+    const out = executor.transformRequest(
+      "grok-composer-2.5-fast",
+      {
+        model: "grok-composer-2.5-fast",
+        input: [{ type: "message", role: "user", content: "hi" }],
+        reasoning_effort: "high",
+      },
+      true,
+      { connectionId: "composer-official" }
+    );
+    expect(out.model).toBe("grok-composer-2.5-fast");
+    expect(out.reasoning).toBeUndefined();
   });
 
   it("transformRequest keeps role:system (HAR parity) and strips server ids", () => {

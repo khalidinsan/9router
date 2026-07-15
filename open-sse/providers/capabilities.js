@@ -198,6 +198,10 @@ export const PATTERN_CAPABILITIES = [
   { pattern: "*grok-code*",     caps: { reasoning: true, thinkingFormat: "openai", contextWindow: 256000 } },
   // Grok 4.5 (Grok CLI / Grok Build): 500k context per cli-chat-proxy /v1/models
   { pattern: "*grok-4.5*",      caps: { vision: true, reasoning: true, search: true, thinkingFormat: "openai", contextWindow: 500000, maxOutput: 64000 } },
+  // Composer 2.5 on Grok Build — non-reasoning coding model (rejects reasoningEffort)
+  { pattern: "*composer*",      caps: { vision: false, reasoning: false, search: false, contextWindow: 200000, maxOutput: 64000 } },
+  // Legacy Grok Build id still accepted by cli-chat-proxy; rejects reasoningEffort
+  { pattern: "grok-build",      caps: { vision: false, reasoning: false, search: true, contextWindow: 256000, maxOutput: 64000 } },
   { pattern: "*grok-4*",        caps: { vision: true, reasoning: true, search: true, thinkingFormat: "openai", contextWindow: 256000 } },
   { pattern: "*grok-3*",        caps: { vision: true, reasoning: true, search: true, thinkingFormat: "openai", contextWindow: 131072 } },
   { pattern: "*grok*",          caps: { vision: true, reasoning: true, search: true, thinkingFormat: "openai", contextWindow: 256000 } },
