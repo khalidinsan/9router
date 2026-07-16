@@ -367,7 +367,11 @@ const PROVIDERS = {
           email: email || null,
           userId,
           hasGrokCodeAccess: extra?.user?.hasGrokCodeAccess ?? null,
-          subscriptionTier: extra?.user?.subscriptionTier ?? null,
+          // API returns subscriptionTier (e.g. "GrokPro"); dual-key for older PSD
+          subscriptionTier:
+            extra?.user?.subscriptionTier ?? extra?.user?.subscriptionTiers ?? null,
+          subscriptionTiers:
+            extra?.user?.subscriptionTier ?? extra?.user?.subscriptionTiers ?? null,
         },
       };
     },

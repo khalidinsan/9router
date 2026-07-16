@@ -35,6 +35,29 @@ const EXHAUSTED_BILLING = {
   },
 };
 
+/** Live SuperGrok shape: onDemandCap=0 but creditUsagePercent set. */
+const UNIFIED_WEEKLY_BILLING = {
+  config: {
+    currentPeriod: {
+      type: "USAGE_PERIOD_TYPE_WEEKLY",
+      start: "2026-07-13T07:11:02.938098+00:00",
+      end: "2026-07-20T07:11:02.938098+00:00",
+    },
+    creditUsagePercent: 7.0,
+    onDemandCap: { val: 0 },
+    onDemandUsed: { val: 0 },
+    productUsage: [
+      { product: "GrokBuild", usagePercent: 7.0 },
+      { product: "Api" },
+    ],
+    isUnifiedBillingUser: true,
+    prepaidBalance: { val: 0 },
+    topUpMethod: "TOP_UP_METHOD_SAVED_PAYMENT_METHOD",
+    billingPeriodStart: "2026-07-13T07:11:02.938098+00:00",
+    billingPeriodEnd: "2026-07-20T07:11:02.938098+00:00",
+  },
+};
+
 const ACTIVE_BILLING = {
   config: {
     currentPeriod: {
@@ -56,6 +79,12 @@ const USER_PROFILE = {
   email: "user@example.com",
   hasGrokCodeAccess: true,
   subscriptionTier: null,
+};
+
+const SUPERGROK_USER = {
+  ...USER_PROFILE,
+  // Live API field; value is often "GrokPro" for SuperGrok consumers
+  subscriptionTier: "GrokPro",
 };
 
 describe("grok-cli registry usage flag", () => {
@@ -88,18 +117,38 @@ describe("parseGrokCliBilling", () => {
     expect(parsed.exhausted).toBe(false);
   });
 
+  it("maps creditUsagePercent as Weekly for SuperGrok unified billing", () => {
+    const parsed = parseGrokCliBilling(UNIFIED_WEEKLY_BILLING, SUPERGROK_USER);
+    expect(parsed.plan).toBe("SuperGrok");
+    expect(parsed.quotas.Weekly).toMatchObject({
+      used: 7,
+      total: 100,
+      remainingPercentage: 93,
+    });
+    // Same % as aggregate — do not double-count GrokBuild
+    expect(parsed.quotas["Grok Build"]).toBeUndefined();
+    // Cap 0 must NOT synthesize depleted On-demand when percent exists
+    expect(parsed.quotas["On-demand"]).toBeUndefined();
+    expect(parsed.exhausted).toBe(false);
+  });
+
   it("marks depleted free/promo account as exhausted", () => {
     const parsed = parseGrokCliBilling(EXHAUSTED_BILLING, USER_PROFILE);
     expect(parsed.quotas["On-demand"].remainingPercentage).toBe(0);
     expect(parsed.exhausted).toBe(true);
   });
 
-  it("uses subscriptionTier for plan when present", () => {
+  it("maps GrokPro subscriptionTier to SuperGrok", () => {
+    const parsed = parseGrokCliBilling(ACTIVE_BILLING, SUPERGROK_USER);
+    expect(parsed.plan).toBe("SuperGrok");
+  });
+
+  it("accepts super_grok alias for plan name", () => {
     const parsed = parseGrokCliBilling(ACTIVE_BILLING, {
       ...USER_PROFILE,
       subscriptionTier: "super_grok",
     });
-    expect(parsed.plan).toBe("Super Grok");
+    expect(parsed.plan).toBe("SuperGrok");
   });
 });
 
@@ -145,6 +194,26 @@ describe("getUsageForProvider(grok-cli)", () => {
     );
   });
 
+  it("returns Weekly percent for SuperGrok unified billing", async () => {
+    proxyAwareFetch
+      .mockResolvedValueOnce(jsonResponse(UNIFIED_WEEKLY_BILLING))
+      .mockResolvedValueOnce(jsonResponse(SUPERGROK_USER));
+
+    const usage = await getUsageForProvider({
+      provider: "grok-cli",
+      accessToken: "test-token",
+    });
+
+    expect(usage.message).toBeUndefined();
+    expect(usage.plan).toBe("SuperGrok");
+    expect(usage.quotas.Weekly).toMatchObject({
+      used: 7,
+      total: 100,
+      remainingPercentage: 93,
+    });
+    expect(usage.quotas["On-demand"]).toBeUndefined();
+  });
+
   it("surfaces auth-expired message on 401", async () => {
     proxyAwareFetch
       .mockResolvedValueOnce(jsonResponse({ error: "unauthorized" }, 401))
@@ -179,24 +248,23 @@ describe("getUsageForProvider(grok-cli)", () => {
 describe("parseQuotaData(grok-cli)", () => {
   it("forwards remainingPercentage for dashboard bars", () => {
     const rows = parseQuotaData("grok-cli", {
-      plan: "Grok Code",
+      plan: "SuperGrok",
       quotas: {
-        "On-demand": {
-          used: 35,
+        Weekly: {
+          used: 7,
           total: 100,
-          remaining: 65,
-          remainingPercentage: 65,
-          resetAt: "2026-07-15T00:00:00.000Z",
+          remainingPercentage: 93,
+          resetAt: "2026-07-20T07:11:02.938Z",
         },
       },
     });
 
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({
-      name: "On-demand",
-      used: 35,
+      name: "Weekly",
+      used: 7,
       total: 100,
-      remainingPercentage: 65,
+      remainingPercentage: 93,
     });
   });
 });

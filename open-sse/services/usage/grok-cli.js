@@ -9,7 +9,12 @@
  * {
  *   config: {
  *     currentPeriod: { type: "USAGE_PERIOD_TYPE_WEEKLY", start, end },
- *     onDemandCap: { val },
+ *     creditUsagePercent: 7.0,          // unified weekly allotment (SuperGrok / Pro)
+ *     productUsage: [                   // per-product weekly bars
+ *       { product: "GrokBuild", usagePercent: 7.0 },
+ *       { product: "Api" }
+ *     ],
+ *     onDemandCap: { val },             // 0 for unified-billing sub accounts
  *     onDemandUsed: { val },
  *     prepaidBalance: { val },
  *     isUnifiedBillingUser: true,
@@ -17,9 +22,9 @@
  *   }
  * }
  *
- * Exhausted free/promo accounts return cap=0/used=0/prepaid=0 and chat 402s with
- * personal-team-blocked:spending-limit. Paid/sub accounts surface non-zero cap
- * or prepaidBalance; richer credit fields are parsed opportunistically if present.
+ * Free/promo exhausted: cap=0, used=0, prepaid=0, and NO creditUsagePercent /
+ * productUsage percent → synthetic depleted bar (chat 402 spending-limit).
+ * Paid unified accounts report weekly % even when onDemandCap is 0.
  */
 
 import { proxyAwareFetch } from "../../utils/proxyFetch.js";
@@ -55,16 +60,85 @@ function buildGrokCliHeaders(accessToken, providerSpecificData = {}) {
   return headers;
 }
 
+/**
+ * Map API tier strings to display names.
+ * API often returns "GrokPro" for SuperGrok consumers — show SuperGrok.
+ */
+function formatPlanName(raw) {
+  if (typeof raw !== "string") return "";
+  const trimmed = raw.trim();
+  if (!trimmed) return "";
+
+  const key = trimmed.toLowerCase().replace(/[\s_-]+/g, "");
+  const aliases = {
+    grokpro: "SuperGrok",
+    supergrok: "SuperGrok",
+    super: "SuperGrok",
+    grokcode: "Grok Code",
+    grokbuild: "Grok Build",
+    free: "Free",
+  };
+  if (aliases[key]) return aliases[key];
+
+  // camelCase / snake_case → Title Case words (GrokSomething → Grok Something)
+  return trimmed
+    .replace(/([a-z])([A-Z])/g, "$1 $2")
+    .replace(/[_-]+/g, " ")
+    .replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
 function resolvePlan(user, config) {
-  const tier = typeof user?.subscriptionTier === "string" ? user.subscriptionTier.trim() : "";
-  if (tier) {
-    return tier
-      .replace(/[_-]+/g, " ")
-      .replace(/\b\w/g, (c) => c.toUpperCase());
+  // Live API: subscriptionTier (e.g. "GrokPro"). Also accept subscriptionTiers / PSD.
+  const candidates = [user?.subscriptionTier, user?.subscriptionTiers];
+  let raw = "";
+  for (const c of candidates) {
+    if (typeof c === "string" && c.trim()) {
+      raw = c.trim();
+      break;
+    }
   }
+  const named = formatPlanName(raw);
+  if (named) return named;
   if (user?.hasGrokCodeAccess === true) return "Grok Code";
   if (config?.isUnifiedBillingUser === true) return "Grok Build";
   return "Grok Build";
+}
+
+function periodLabel(config) {
+  const type = config?.currentPeriod?.type;
+  if (typeof type === "string") {
+    if (/WEEKLY/i.test(type)) return "Weekly";
+    if (/MONTHLY/i.test(type)) return "Monthly";
+    if (/DAILY/i.test(type)) return "Daily";
+  }
+  return "Weekly";
+}
+
+function productLabel(product) {
+  if (typeof product !== "string" || !product.trim()) return "Usage";
+  const key = product.trim().toLowerCase().replace(/[\s_-]+/g, "");
+  const aliases = {
+    grokbuild: "Grok Build",
+    api: "API",
+    grok: "Grok",
+  };
+  if (aliases[key]) return aliases[key];
+  return product
+    .replace(/([a-z])([A-Z])/g, "$1 $2")
+    .replace(/[_-]+/g, " ")
+    .replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+/** Percent-used (0–100+) → dashboard quota row (remaining % of allotment). */
+function percentQuota(usagePercent, resetAt) {
+  const usedPct = Math.min(100, Math.max(0, toFiniteNumber(usagePercent, 0)));
+  return {
+    used: usedPct,
+    total: 100,
+    remainingPercentage: Math.max(0, 100 - usedPct),
+    resetAt: resetAt || null,
+    unlimited: false,
+  };
 }
 
 function makeQuota({ used, total, resetAt, unlimited = false }) {
@@ -110,8 +184,51 @@ export function parseGrokCliBilling(billing, user = null) {
     null;
 
   const quotas = {};
+  const label = periodLabel(config);
 
-  // Primary: on-demand spending window (subscription / promo credits)
+  // ── Primary (unified billing / SuperGrok): weekly credit % ──────────────
+  // Official CLI /usage surfaces creditUsagePercent + productUsage, not on-demand $.
+  const creditUsagePercent = toFiniteNumber(
+    config.creditUsagePercent ?? root.creditUsagePercent,
+    NaN,
+  );
+  const productUsage = Array.isArray(config.productUsage)
+    ? config.productUsage
+    : Array.isArray(root.productUsage)
+      ? root.productUsage
+      : [];
+
+  const productPercents = productUsage
+    .map((row) => {
+      if (!row || typeof row !== "object") return null;
+      const pct = toFiniteNumber(row.usagePercent ?? row.percent ?? row.usedPercent, NaN);
+      if (!Number.isFinite(pct)) return null;
+      return { product: row.product, usagePercent: pct };
+    })
+    .filter(Boolean);
+
+  if (Number.isFinite(creditUsagePercent)) {
+    // Aggregate weekly bar (matches official CLI weekly usage %)
+    quotas[label] = percentQuota(creditUsagePercent, periodEnd);
+    // Extra per-product bars only when they diverge from the aggregate
+    for (const row of productPercents) {
+      const usedPct = Math.min(100, Math.max(0, row.usagePercent));
+      if (Math.abs(usedPct - Math.min(100, Math.max(0, creditUsagePercent))) < 0.01) continue;
+      const name = productLabel(row.product);
+      if (!quotas[name]) quotas[name] = percentQuota(row.usagePercent, periodEnd);
+    }
+  } else if (productPercents.length === 1) {
+    quotas[label] = percentQuota(productPercents[0].usagePercent, periodEnd);
+  } else if (productPercents.length > 1) {
+    for (const row of productPercents) {
+      const name = productLabel(row.product);
+      if (!quotas[name]) quotas[name] = percentQuota(row.usagePercent, periodEnd);
+    }
+  }
+
+  const hasPercentQuota = Object.keys(quotas).length > 0;
+
+  // ── On-demand spending window (non-unified / dollar-cap accounts) ───────
   const onDemandCap = unwrapVal(config.onDemandCap ?? root.onDemandCap, NaN);
   const onDemandUsed = unwrapVal(config.onDemandUsed ?? root.onDemandUsed, NaN);
   if (Number.isFinite(onDemandCap) && onDemandCap > 0) {
@@ -121,8 +238,14 @@ export function parseGrokCliBilling(billing, user = null) {
       total: onDemandCap,
       resetAt: periodEnd,
     });
-  } else if (Number.isFinite(onDemandCap) && onDemandCap === 0 && Number.isFinite(onDemandUsed)) {
-    // Cap 0 is the exhausted free/promo state (chat returns 402 spending-limit).
+  } else if (
+    !hasPercentQuota &&
+    Number.isFinite(onDemandCap) &&
+    onDemandCap === 0 &&
+    Number.isFinite(onDemandUsed)
+  ) {
+    // Cap 0 with no weekly % = exhausted free/promo (chat 402 spending-limit).
+    // Only synthesize depleted bar when percent allotment is absent.
     // UI treats total===0 as unlimited, so use a synthetic 1/1 depleted row.
     quotas["On-demand"] = {
       used: 1,
