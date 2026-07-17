@@ -1,13 +1,24 @@
 /**
  * Grok CLI / Grok Build (cli-chat-proxy.grok.com)
  *
- * Source of truth: HAR capture of official grok-shell/grok-pager 0.2.93
+ * Source of truth: wire capture of official @xai-official/grok 0.2.99
  * talking to https://cli-chat-proxy.grok.com (OpenAI Responses API).
  *
  * Distinct from:
- *  - `xai`      → api.x.ai (API key / Grok Build OAuth PKCE)
+ *  - `xai`      → api.x.ai (API key / xAI API OAuth PKCE)
  *  - `grok-web` → grok.com web SSO cookie
+ *
+ * Model catalog: upstream Grok Build entry + fork catalog (Composer, effort
+ * variants, and extra IDs still accepted by /v1/responses for some accounts).
  */
+import {
+  GROK_CLI_BASE_URL,
+  GROK_CLI_CLIENT_IDENTIFIER,
+  GROK_CLI_MODEL,
+  GROK_CLI_USER_AGENT,
+  GROK_CLI_VERSION,
+} from "../../config/grokCli.js";
+
 export default {
   id: "grok-cli",
   priority: 275,
@@ -29,32 +40,30 @@ export default {
   authModes: ["oauth"],
   hasOAuth: true,
   thinkingConfig: {
-    options: ["low", "medium", "high"],
+    options: ["low", "medium", "high", "xhigh"],
     defaultMode: "high",
   },
   transport: {
-    baseUrl: "https://cli-chat-proxy.grok.com/v1/responses",
+    baseUrl: `${GROK_CLI_BASE_URL}/responses`,
     format: "openai-responses",
     forceStream: true,
-    modelsUrl: "https://cli-chat-proxy.grok.com/v1/models",
-    userUrl: "https://cli-chat-proxy.grok.com/v1/user",
-    billingUrl: "https://cli-chat-proxy.grok.com/v1/billing",
-    clientVersion: "0.2.93",
-    clientIdentifier: "grok-pager",
+    modelsUrl: `${GROK_CLI_BASE_URL}/models`,
+    userUrl: `${GROK_CLI_BASE_URL}/user`,
+    billingUrl: `${GROK_CLI_BASE_URL}/billing`,
+    clientVersion: GROK_CLI_VERSION,
+    clientIdentifier: GROK_CLI_CLIENT_IDENTIFIER,
     tokenAuth: "xai-grok-cli",
     headers: {
-      "User-Agent": "grok-pager/0.2.93 grok-shell/0.2.93 (linux; x86_64)",
-      "x-xai-token-auth": "xai-grok-cli",
-      "x-grok-client-identifier": "grok-pager",
-      "x-grok-client-version": "0.2.93",
-      "x-authenticateresponse": "authenticate-response",
+      "User-Agent": GROK_CLI_USER_AGENT,
+      "x-grok-client-identifier": GROK_CLI_CLIENT_IDENTIFIER,
+      "x-grok-client-version": GROK_CLI_VERSION,
     },
     // Compaction threshold mirrored from CLI (x-compaction-at)
     compactionAt: 400000,
     // Quota tracker: official CLI polls billing?format=credits + user?include=subscription
     usage: {
-      url: "https://cli-chat-proxy.grok.com/v1/billing?format=credits",
-      userUrl: "https://cli-chat-proxy.grok.com/v1/user?include=subscription",
+      url: `${GROK_CLI_BASE_URL}/billing?format=credits`,
+      userUrl: `${GROK_CLI_BASE_URL}/user?include=subscription`,
     },
     retry: {
       429: { attempts: 2, delayMs: 2000 },
@@ -62,11 +71,19 @@ export default {
       503: { attempts: 2, delayMs: 1500 },
     },
   },
-  // Model catalog notes (probed 2026-07-15 against cli-chat-proxy + local Grok CLI 0.2.101):
-  // Official /v1/models menu: grok-4.5, grok-composer-2.5-fast only.
-  // Extra IDs still accepted by /v1/responses for this account (not always listed in menu).
+  // Model catalog notes (probed against cli-chat-proxy + local Grok CLI):
+  // Official /v1/models menu varies by account; keep full fork list so nothing is lost.
   models: [
-    // ── Official Grok Build menu ──
+    // ── Upstream primary Grok Build entry ──
+    {
+      id: GROK_CLI_MODEL,
+      name: "Grok Build",
+      contextLength: 500000,
+      maxOutputTokens: 64000,
+      thinking: false,
+    },
+
+    // ── Official / commonly listed ──
     { id: "grok-4.5", name: "Grok 4.5" },
     // Virtual effort variants → strip suffix, send reasoning.effort (upstream id grok-4.5)
     { id: "grok-4.5-high", name: "Grok 4.5 (High)", upstreamModelId: "grok-4.5" },
@@ -78,7 +95,8 @@ export default {
     { id: "composer-2.5", name: "Composer 2.5", thinking: false, upstreamModelId: "grok-composer-2.5-fast" },
 
     // ── Extra IDs accepted by cli-chat-proxy (not in official menu for all accounts) ──
-    { id: "grok-build", name: "Grok Build (legacy)", thinking: false },
+    // Keep explicit grok-build id even when GROK_CLI_MODEL already is "grok-build"
+    // (dedupe only if constant changes later).
     { id: "grok-4", name: "Grok 4" },
     { id: "grok-4-fast-reasoning", name: "Grok 4 Fast Reasoning" },
     { id: "grok-4.20", name: "Grok 4.20" },
