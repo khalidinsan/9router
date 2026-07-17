@@ -5,15 +5,16 @@
  *   GET /v1/billing?format=credits
  *   GET /v1/user?include=subscription
  *
- * Observed billing shape (protobuf-json style `{ val: number }`):
+ * Hybrid shape (fork + upstream v0.5.35):
  * {
  *   config: {
  *     currentPeriod: { type: "USAGE_PERIOD_TYPE_WEEKLY", start, end },
- *     creditUsagePercent: 7.0,          // unified weekly allotment (SuperGrok / Pro)
+ *     creditUsagePercent: 7.0,          // unified weekly allotment (SuperGrok)
  *     productUsage: [                   // per-product weekly bars
  *       { product: "GrokBuild", usagePercent: 7.0 },
  *       { product: "Api" }
  *     ],
+ *     monthlyLimit / includedUsed,      // optional monthly included window
  *     onDemandCap: { val },             // 0 for unified-billing sub accounts
  *     onDemandUsed: { val },
  *     prepaidBalance: { val },
@@ -22,13 +23,17 @@
  *   }
  * }
  *
- * Free/promo exhausted: cap=0, used=0, prepaid=0, and NO creditUsagePercent /
- * productUsage percent → synthetic depleted bar (chat 402 spending-limit).
- * Paid unified accounts report weekly % even when onDemandCap is 0.
+ * Free/promo exhausted: cap=0, used=0, prepaid=0, no weekly/monthly signal,
+ * and no paid subscriptionTier → synthetic depleted On-demand bar.
  */
 
 import { proxyAwareFetch } from "../../utils/proxyFetch.js";
 import { U, parseResetTime, toFiniteNumber } from "./shared.js";
+import {
+  GROK_CLI_CLIENT_IDENTIFIER,
+  GROK_CLI_USER_AGENT,
+  GROK_CLI_VERSION,
+} from "../../config/grokCli.js";
 
 const USAGE = U("grok-cli");
 const BILLING_URL = USAGE.url || "https://cli-chat-proxy.grok.com/v1/billing?format=credits";
@@ -48,10 +53,11 @@ function buildGrokCliHeaders(accessToken, providerSpecificData = {}) {
   const headers = {
     Authorization: `Bearer ${accessToken}`,
     Accept: "application/json",
-    "User-Agent": "grok-pager/0.2.93 grok-shell/0.2.93 (linux; x86_64)",
+    "User-Agent": GROK_CLI_USER_AGENT,
     "x-xai-token-auth": "xai-grok-cli",
-    "x-grok-client-identifier": "grok-pager",
-    "x-grok-client-version": "0.2.93",
+    "x-grok-client-identifier": GROK_CLI_CLIENT_IDENTIFIER,
+    "x-grok-client-version": GROK_CLI_VERSION,
+    "x-grok-client-mode": "headless",
   };
   const email = psd.email;
   const userId = psd.userId || psd.principalId;
@@ -80,24 +86,27 @@ function formatPlanName(raw) {
   };
   if (aliases[key]) return aliases[key];
 
-  // camelCase / snake_case → Title Case words (GrokSomething → Grok Something)
+  // Unknown tiers: keep API token as-is (e.g. XPremiumPlus); only normalize separators.
   return trimmed
-    .replace(/([a-z])([A-Z])/g, "$1 $2")
     .replace(/[_-]+/g, " ")
     .replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
+function subscriptionTier(user, config) {
+  const rawTier =
+    user?.subscriptionTier ??
+    user?.subscriptionTiers ??
+    user?.subscription_tier ??
+    user?.subscription?.tier ??
+    config?.subscriptionTier ??
+    config?.subscriptionTiers ??
+    config?.subscription_tier;
+  return typeof rawTier === "string" ? rawTier.trim() : "";
+}
+
 function resolvePlan(user, config) {
-  // Live API: subscriptionTier (e.g. "GrokPro"). Also accept subscriptionTiers / PSD.
-  const candidates = [user?.subscriptionTier, user?.subscriptionTiers];
-  let raw = "";
-  for (const c of candidates) {
-    if (typeof c === "string" && c.trim()) {
-      raw = c.trim();
-      break;
-    }
-  }
-  const named = formatPlanName(raw);
+  const tier = subscriptionTier(user, config);
+  const named = formatPlanName(tier);
   if (named) return named;
   if (user?.hasGrokCodeAccess === true) return "Grok Code";
   if (config?.isUnifiedBillingUser === true) return "Grok Build";
@@ -168,7 +177,7 @@ function makeQuota({ used, total, resetAt, unlimited = false }) {
 
 /**
  * Map billing JSON → normalized quotas object for the dashboard.
- * Returns { quotas, periodEnd, exhaustedHint } or empty quotas when nothing usable.
+ * Returns { quotas, periodEnd, exhausted, subscriptionAccess } or empty quotas.
  */
 export function parseGrokCliBilling(billing, user = null) {
   const root = billing && typeof billing === "object" ? billing : {};
@@ -179,12 +188,18 @@ export function parseGrokCliBilling(billing, user = null) {
 
   const periodEnd =
     parseResetTime(config.billingPeriodEnd) ||
+    parseResetTime(config.billing_period_end) ||
     parseResetTime(config.currentPeriod?.end) ||
+    parseResetTime(config.resetAt || config.resetsAt || config.periodEnd) ||
     parseResetTime(root.billingPeriodEnd) ||
+    parseResetTime(root.billing_period_end) ||
+    parseResetTime(root.resetAt || root.resetsAt || root.periodEnd) ||
     null;
 
   const quotas = {};
   const label = periodLabel(config);
+  const tier = subscriptionTier(user, config);
+  const subscriptionAccess = Boolean(tier) && !/^(free|none|null)$/i.test(tier);
 
   // ── Primary (unified billing / SuperGrok): weekly credit % ──────────────
   // Official CLI /usage surfaces creditUsagePercent + productUsage, not on-demand $.
@@ -237,11 +252,7 @@ export function parseGrokCliBilling(billing, user = null) {
     const isUnified =
       config.isUnifiedBillingUser === true || root.isUnifiedBillingUser === true;
     const weeklyPeriod = /WEEKLY/i.test(String(config.currentPeriod?.type || ""));
-    const tierRaw =
-      (typeof user?.subscriptionTier === "string" && user.subscriptionTier) ||
-      (typeof user?.subscriptionTiers === "string" && user.subscriptionTiers) ||
-      "";
-    const isSuperGrokTier = formatPlanName(tierRaw) === "SuperGrok";
+    const isSuperGrokTier = formatPlanName(tier) === "SuperGrok";
     const hasProductRows = productUsage.length > 0;
 
     if (hasProductRows || (isUnified && weeklyPeriod && isSuperGrokTier)) {
@@ -249,7 +260,32 @@ export function parseGrokCliBilling(billing, user = null) {
     }
   }
 
-  const hasPercentQuota = Object.keys(quotas).length > 0;
+  // Optional monthly included window (upstream v0.5.35 — plain /v1/billing style)
+  const monthlyLimit = unwrapVal(
+    config.monthlyLimit ?? config.monthly_limit ?? root.monthlyLimit ?? root.monthly_limit,
+    NaN,
+  );
+  const includedUsed = unwrapVal(
+    config.includedUsed ?? config.included_used ?? root.includedUsed ?? root.included_used,
+    NaN,
+  );
+  const totalUsed = unwrapVal(
+    config.totalUsed ?? config.total_used ?? root.totalUsed ?? root.total_used,
+    NaN,
+  );
+  if (Number.isFinite(monthlyLimit) && monthlyLimit > 0) {
+    quotas["Monthly included"] = makeQuota({
+      used: Number.isFinite(includedUsed)
+        ? includedUsed
+        : Number.isFinite(totalUsed)
+          ? totalUsed
+          : 0,
+      total: monthlyLimit,
+      resetAt: periodEnd,
+    });
+  }
+
+  const hasPercentOrIncludedQuota = Object.keys(quotas).length > 0;
 
   // ── On-demand spending window (non-unified / dollar-cap accounts) ───────
   const onDemandCap = unwrapVal(config.onDemandCap ?? root.onDemandCap, NaN);
@@ -262,12 +298,13 @@ export function parseGrokCliBilling(billing, user = null) {
       resetAt: periodEnd,
     });
   } else if (
-    !hasPercentQuota &&
+    !hasPercentOrIncludedQuota &&
+    !subscriptionAccess &&
     Number.isFinite(onDemandCap) &&
     onDemandCap === 0 &&
     Number.isFinite(onDemandUsed)
   ) {
-    // Cap 0 with no weekly allotment signal = exhausted free/promo (402 spending-limit).
+    // Cap 0 with no weekly/monthly allotment and no paid tier = free/promo exhausted.
     // UI treats total===0 as unlimited, so use a synthetic 1/1 depleted row.
     quotas["On-demand"] = {
       used: 1,
@@ -344,6 +381,7 @@ export function parseGrokCliBilling(billing, user = null) {
     quotas,
     periodEnd,
     exhausted,
+    subscriptionAccess,
     rawConfig: config,
   };
 }
@@ -400,8 +438,9 @@ export async function getGrokCliUsage(accessToken, providerSpecificData = null, 
     if (!parsed.quotas || Object.keys(parsed.quotas).length === 0) {
       return {
         plan: parsed.plan,
-        message:
-          "Grok Build connected, but no credit allotment was returned. Free promo may be exhausted — upgrade at https://grok.com/supergrok or add credits at https://grok.com/?_s=usage.",
+        message: parsed.subscriptionAccess
+          ? "Subscription access is active; Grok does not expose a numeric included quota."
+          : "Grok Build connected, but no credit allotment was returned. Free promo may be exhausted — upgrade at https://grok.com/supergrok or add credits at https://grok.com/?_s=usage.",
         quotas: {},
       };
     }
