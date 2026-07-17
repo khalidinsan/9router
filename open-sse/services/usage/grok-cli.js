@@ -188,7 +188,10 @@ export function parseGrokCliBilling(billing, user = null) {
 
   // ── Primary (unified billing / SuperGrok): weekly credit % ──────────────
   // Official CLI /usage surfaces creditUsagePercent + productUsage, not on-demand $.
-  const creditUsagePercent = toFiniteNumber(
+  // IMPORTANT: protobuf-json often OMITS zero fields. Unused SuperGrok accounts
+  // may have no creditUsagePercent / usagePercent at all — that means 0% used,
+  // not "exhausted free promo".
+  const creditUsagePercent = unwrapVal(
     config.creditUsagePercent ?? root.creditUsagePercent,
     NaN,
   );
@@ -201,7 +204,7 @@ export function parseGrokCliBilling(billing, user = null) {
   const productPercents = productUsage
     .map((row) => {
       if (!row || typeof row !== "object") return null;
-      const pct = toFiniteNumber(row.usagePercent ?? row.percent ?? row.usedPercent, NaN);
+      const pct = unwrapVal(row.usagePercent ?? row.percent ?? row.usedPercent, NaN);
       if (!Number.isFinite(pct)) return null;
       return { product: row.product, usagePercent: pct };
     })
@@ -226,6 +229,26 @@ export function parseGrokCliBilling(billing, user = null) {
     }
   }
 
+  // Unused SuperGrok: productUsage rows without usagePercent, and/or zero
+  // fields omitted entirely. Prefer Weekly@0% over a fake depleted On-demand bar.
+  // Do NOT use hasGrokCodeAccess / "Grok Code" alone — free/promo exhausted
+  // accounts often share that flag + isUnifiedBillingUser + WEEKLY period.
+  if (Object.keys(quotas).length === 0) {
+    const isUnified =
+      config.isUnifiedBillingUser === true || root.isUnifiedBillingUser === true;
+    const weeklyPeriod = /WEEKLY/i.test(String(config.currentPeriod?.type || ""));
+    const tierRaw =
+      (typeof user?.subscriptionTier === "string" && user.subscriptionTier) ||
+      (typeof user?.subscriptionTiers === "string" && user.subscriptionTiers) ||
+      "";
+    const isSuperGrokTier = formatPlanName(tierRaw) === "SuperGrok";
+    const hasProductRows = productUsage.length > 0;
+
+    if (hasProductRows || (isUnified && weeklyPeriod && isSuperGrokTier)) {
+      quotas[label] = percentQuota(0, periodEnd);
+    }
+  }
+
   const hasPercentQuota = Object.keys(quotas).length > 0;
 
   // ── On-demand spending window (non-unified / dollar-cap accounts) ───────
@@ -244,8 +267,7 @@ export function parseGrokCliBilling(billing, user = null) {
     onDemandCap === 0 &&
     Number.isFinite(onDemandUsed)
   ) {
-    // Cap 0 with no weekly % = exhausted free/promo (chat 402 spending-limit).
-    // Only synthesize depleted bar when percent allotment is absent.
+    // Cap 0 with no weekly allotment signal = exhausted free/promo (402 spending-limit).
     // UI treats total===0 as unlimited, so use a synthetic 1/1 depleted row.
     quotas["On-demand"] = {
       used: 1,

@@ -132,6 +132,52 @@ describe("parseGrokCliBilling", () => {
     expect(parsed.exhausted).toBe(false);
   });
 
+  it("treats omitted zero percent as Weekly 0% used (unused SuperGrok)", () => {
+    // protobuf-json often omits zero fields; unused accounts look like this.
+    const unused = {
+      config: {
+        currentPeriod: {
+          type: "USAGE_PERIOD_TYPE_WEEKLY",
+          start: "2026-07-13T07:11:02.938098+00:00",
+          end: "2026-07-20T07:11:02.938098+00:00",
+        },
+        // no creditUsagePercent
+        onDemandCap: { val: 0 },
+        onDemandUsed: { val: 0 },
+        productUsage: [{ product: "GrokBuild" }, { product: "Api" }],
+        isUnifiedBillingUser: true,
+        prepaidBalance: { val: 0 },
+        billingPeriodEnd: "2026-07-20T07:11:02.938098+00:00",
+      },
+    };
+    const parsed = parseGrokCliBilling(unused, SUPERGROK_USER);
+    expect(parsed.plan).toBe("SuperGrok");
+    expect(parsed.quotas.Weekly).toMatchObject({
+      used: 0,
+      total: 100,
+      remainingPercentage: 100,
+    });
+    expect(parsed.quotas["On-demand"]).toBeUndefined();
+    expect(parsed.exhausted).toBe(false);
+  });
+
+  it("treats creditUsagePercent: 0 as full Weekly remaining", () => {
+    const zero = {
+      config: {
+        ...UNIFIED_WEEKLY_BILLING.config,
+        creditUsagePercent: 0,
+        productUsage: [{ product: "GrokBuild", usagePercent: 0 }],
+      },
+    };
+    const parsed = parseGrokCliBilling(zero, SUPERGROK_USER);
+    expect(parsed.quotas.Weekly).toMatchObject({
+      used: 0,
+      total: 100,
+      remainingPercentage: 100,
+    });
+    expect(parsed.quotas["On-demand"]).toBeUndefined();
+  });
+
   it("marks depleted free/promo account as exhausted", () => {
     const parsed = parseGrokCliBilling(EXHAUSTED_BILLING, USER_PROFILE);
     expect(parsed.quotas["On-demand"].remainingPercentage).toBe(0);
