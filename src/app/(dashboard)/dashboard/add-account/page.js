@@ -22,11 +22,98 @@ const DISPLAY_OPTIONS = [
 ];
 
 const LEVEL_COLORS = {
-  info: "text-blue-400",
-  success: "text-green-400",
-  warn: "text-yellow-400",
+  info: "text-sky-300",
+  success: "text-emerald-400",
+  warn: "text-amber-300",
   error: "text-red-400",
 };
+
+const PHASE_COLORS = {
+  start: "bg-sky-500/15 text-sky-300 ring-sky-500/30",
+  boot: "bg-zinc-500/15 text-zinc-300 ring-zinc-500/30",
+  browser: "bg-zinc-500/15 text-zinc-300 ring-zinc-500/30",
+  flow: "bg-indigo-500/15 text-indigo-300 ring-indigo-500/30",
+  email: "bg-blue-500/15 text-blue-300 ring-blue-500/30",
+  otp: "bg-fuchsia-500/15 text-fuchsia-300 ring-fuchsia-500/30",
+  profile: "bg-amber-500/15 text-amber-300 ring-amber-500/30",
+  turnstile: "bg-amber-500/15 text-amber-200 ring-amber-500/30",
+  submit: "bg-orange-500/15 text-orange-300 ring-orange-500/30",
+  settle: "bg-yellow-500/15 text-yellow-200 ring-yellow-500/30",
+  sso: "bg-lime-500/15 text-lime-300 ring-lime-500/30",
+  convert: "bg-teal-500/15 text-teal-300 ring-teal-500/30",
+  push: "bg-emerald-500/15 text-emerald-300 ring-emerald-500/30",
+  created: "bg-emerald-500/20 text-emerald-300 ring-emerald-500/40",
+  ok: "bg-emerald-500/20 text-emerald-300 ring-emerald-500/40",
+  done: "bg-emerald-500/20 text-emerald-300 ring-emerald-500/40",
+  fail: "bg-red-500/20 text-red-300 ring-red-500/40",
+  import: "bg-emerald-500/15 text-emerald-300 ring-emerald-500/30",
+  setup: "bg-violet-500/15 text-violet-300 ring-violet-500/30",
+  farm: "bg-zinc-500/10 text-zinc-300 ring-zinc-500/20",
+  score: "bg-zinc-500/10 text-zinc-400 ring-zinc-500/20",
+};
+
+function phaseClass(step) {
+  const k = String(step || "farm").toLowerCase();
+  return PHASE_COLORS[k] || PHASE_COLORS.farm;
+}
+
+/** Derive live worker cards from structured farm logs. */
+function deriveWorkerBoard(logs, totalAccounts, concurrent) {
+  const map = new Map();
+  let globalOk = 0;
+  let globalFail = 0;
+  let lastGlobalTotal = Number(totalAccounts) || 0;
+
+  for (const log of logs) {
+    const p = log.progress;
+    const wid = log.worker || p?.worker;
+    if (!wid) continue;
+    if (!map.has(wid)) {
+      map.set(wid, {
+        id: wid,
+        phase: "—",
+        message: "",
+        email: "",
+        localCur: 0,
+        localShare: 0,
+        ok: 0,
+        fail: 0,
+        globalIdx: null,
+        level: "info",
+      });
+    }
+    const w = map.get(wid);
+    if (log.phase || log.step) w.phase = String(log.phase || log.step).toUpperCase();
+    if (log.message) w.message = String(log.message).slice(0, 100);
+    if (log.email) w.email = log.email;
+    if (log.level) w.level = log.level;
+    if (p) {
+      if (p.localCur != null) w.localCur = p.localCur;
+      if (p.localShare != null) w.localShare = p.localShare;
+      if (p.ok != null) w.ok = p.ok;
+      if (p.fail != null) w.fail = p.fail;
+      if (p.globalIdx != null) w.globalIdx = p.globalIdx;
+      if (p.globalTotal != null) lastGlobalTotal = p.globalTotal;
+    }
+  }
+
+  const workers = Array.from(map.values()).sort(
+    (a, b) => Number(a.id) - Number(b.id) || String(a.id).localeCompare(String(b.id))
+  );
+  for (const w of workers) {
+    globalOk += Number(w.ok) || 0;
+    globalFail += Number(w.fail) || 0;
+  }
+
+  // Prefer import/results counts when higher (saved to DB)
+  return {
+    workers,
+    globalOk,
+    globalFail,
+    globalTotal: lastGlobalTotal || Number(totalAccounts) || 0,
+    concurrent: Number(concurrent) || workers.length || 1,
+  };
+}
 
 export default function AddAccountPage() {
   const [provider, setProvider] = useState("antigravity");
@@ -56,6 +143,8 @@ export default function AddAccountPage() {
   const [error, setError] = useState(null);
   const [grokStatus, setGrokStatus] = useState(null);
   const [grokStatusLoading, setGrokStatusLoading] = useState(false);
+  const [logFilter, setLogFilter] = useState("all"); // all | W1 | W2 | …
+  const [logAutoScroll, setLogAutoScroll] = useState(true);
   const logRef = useRef(null);
   const eventSourceRef = useRef(null);
 
@@ -175,14 +264,50 @@ export default function AddAccountPage() {
   }, [isGrokRegister, refreshGrokStatus, loadEmailFromSettings]);
 
   useEffect(() => {
-    if (logRef.current) {
+    if (logAutoScroll && logRef.current) {
       logRef.current.scrollTop = logRef.current.scrollHeight;
     }
-  }, [logs]);
+  }, [logs, logAutoScroll]);
 
   const appendLog = useCallback((entry) => {
-    setLogs((prev) => [...prev, entry]);
+    setLogs((prev) => {
+      const next = [
+        ...prev,
+        {
+          time: entry.time || new Date().toISOString(),
+          ...entry,
+        },
+      ];
+      // cap UI log buffer
+      return next.length > 1200 ? next.slice(-1200) : next;
+    });
   }, []);
+
+  const workerBoard = isGrokRegister
+    ? deriveWorkerBoard(logs, count, concurrent)
+    : null;
+  const savedOk = results.filter((r) => r.success).length;
+  const progressOk = Math.max(workerBoard?.globalOk || 0, savedOk, summary?.success || 0);
+  const progressFail = Math.max(workerBoard?.globalFail || 0, summary?.failed || 0);
+  const progressTotal = Number(count) || workerBoard?.globalTotal || 0;
+  const progressDone = Math.min(
+    progressTotal || progressOk + progressFail,
+    progressOk + progressFail
+  );
+  const progressPct =
+    progressTotal > 0 ? Math.min(100, Math.round((progressDone / progressTotal) * 100)) : 0;
+
+  const filteredLogs =
+    !isGrokRegister || logFilter === "all"
+      ? logs
+      : logs.filter(
+          (l) =>
+            String(l.worker || l.progress?.worker || "") === String(logFilter).replace(/^W/i, "") ||
+            String(l.worker || "") === logFilter ||
+            !l.worker
+        );
+
+  const workerIds = workerBoard?.workers?.map((w) => w.id) || [];
 
   const attachSse = (runId, { onFinish } = {}) => {
     const es = new EventSource(
@@ -318,6 +443,7 @@ export default function AddAccountPage() {
     setResults([]);
     setSummary(null);
     setError(null);
+    setLogFilter("all");
     closeEventSource();
 
     try {
@@ -700,33 +826,104 @@ export default function AddAccountPage() {
         </div>
       </Card>
 
-      {(logs.length > 0 || running || setupRunning) && (
-        <Card title="Progress Log" icon="terminal">
-          <div
-            ref={logRef}
-            className="bg-black rounded-b-lg p-4 text-xs font-mono h-80 overflow-y-auto"
-          >
-            {logs.length === 0 ? (
-              <span className="text-text-muted">Waiting for logs…</span>
-            ) : (
-              <div className="space-y-1">
-                {logs.map((log, i) => (
-                  <div key={i} className="break-words">
-                    <span className="text-text-muted">
-                      {log.time ? new Date(log.time).toLocaleTimeString() : ""}
-                    </span>
-                    {log.step && (
-                      <span className="text-text-muted ml-2">[{log.step}]</span>
-                    )}
-                    <span
-                      className={`ml-2 ${LEVEL_COLORS[log.level] || "text-green-400"}`}
-                    >
-                      {log.message}
-                    </span>
-                    {log.email && (
-                      <span className="text-text-muted ml-2">({log.email})</span>
-                    )}
+      {/* ── Live progress (Grok) ── */}
+      {isGrokRegister && (logs.length > 0 || running || results.length > 0 || summary) && (
+        <Card title="Live progress" icon="monitoring">
+          <div className="flex flex-col gap-4">
+            {/* Global bar */}
+            <div className="rounded-xl border border-border-subtle bg-bg/60 px-4 py-3">
+              <div className="flex flex-wrap items-end justify-between gap-2 mb-2">
+                <div>
+                  <div className="text-xs text-text-muted uppercase tracking-wide">
+                    Pool
                   </div>
+                  <div className="text-lg font-semibold tabular-nums text-text-main">
+                    {progressDone}
+                    <span className="text-text-muted font-normal">
+                      /{progressTotal || "?"}
+                    </span>
+                    <span className="ml-2 text-sm font-normal text-text-muted">
+                      ({progressPct}%)
+                    </span>
+                  </div>
+                </div>
+                <div className="flex flex-wrap gap-3 text-sm tabular-nums">
+                  <span className="text-emerald-500">
+                    ✓ <strong>{progressOk}</strong>
+                  </span>
+                  <span className="text-red-500">
+                    ✗ <strong>{progressFail}</strong>
+                  </span>
+                  <span className="text-text-muted">
+                    workers{" "}
+                    <strong className="text-text-main">
+                      {workerBoard?.workers?.length || concurrent}
+                    </strong>
+                  </span>
+                  {running && (
+                    <span className="text-sky-400 animate-pulse text-xs self-center">
+                      running…
+                    </span>
+                  )}
+                </div>
+              </div>
+              <div className="h-2.5 w-full rounded-full bg-surface-2 overflow-hidden">
+                <div
+                  className="h-full rounded-full bg-gradient-to-r from-emerald-600 to-emerald-400 transition-all duration-500"
+                  style={{ width: `${progressPct}%` }}
+                />
+              </div>
+            </div>
+
+            {/* Worker cards */}
+            {workerBoard?.workers?.length > 0 && (
+              <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-2">
+                {workerBoard.workers.map((w) => (
+                  <button
+                    type="button"
+                    key={w.id}
+                    onClick={() =>
+                      setLogFilter((prev) =>
+                        prev === String(w.id) || prev === `W${w.id}`
+                          ? "all"
+                          : String(w.id)
+                      )
+                    }
+                    className={`text-left rounded-xl border px-3 py-2.5 transition-colors ${
+                      logFilter === String(w.id) || logFilter === `W${w.id}`
+                        ? "border-brand-500/50 bg-brand-500/10"
+                        : "border-border-subtle bg-bg hover:border-border"
+                    }`}
+                  >
+                    <div className="flex items-center justify-between gap-2 mb-1">
+                      <span className="text-sm font-semibold text-text-main">
+                        W{w.id}
+                      </span>
+                      <span
+                        className={`text-[10px] font-medium uppercase tracking-wide px-1.5 py-0.5 rounded ring-1 ${phaseClass(
+                          w.phase
+                        )}`}
+                      >
+                        {w.phase}
+                      </span>
+                    </div>
+                    <div className="text-xs text-text-muted tabular-nums mb-1">
+                      {w.localCur || 0}/{w.localShare || "?"}
+                      {w.globalIdx != null && (
+                        <span className="ml-1.5">· #{w.globalIdx}</span>
+                      )}
+                      <span className="ml-1.5 text-emerald-500">✓{w.ok}</span>
+                      <span className="ml-1 text-red-400">✗{w.fail}</span>
+                    </div>
+                    {w.email && (
+                      <div className="text-[11px] font-mono text-text-main truncate mb-0.5">
+                        {w.email}
+                      </div>
+                    )}
+                    <div className="text-[11px] text-text-muted line-clamp-2 leading-snug">
+                      {w.message || "—"}
+                    </div>
+                  </button>
                 ))}
               </div>
             )}
@@ -734,54 +931,191 @@ export default function AddAccountPage() {
         </Card>
       )}
 
-      {results.length > 0 && (
-        <Card title="Results" icon="checklist">
-          <div className="flex flex-col gap-2">
-            {results.map((result, i) => (
-              <div
-                key={i}
-                className="flex items-center justify-between rounded-lg bg-bg px-3 py-2 border border-border-subtle"
+      {(logs.length > 0 || running || setupRunning) && (
+        <Card
+          title={isGrokRegister ? "Activity log" : "Progress Log"}
+          icon="terminal"
+        >
+          {isGrokRegister && (
+            <div className="flex flex-wrap items-center gap-2 px-1 pb-3 border-b border-border-subtle mb-0">
+              <span className="text-xs text-text-muted">Filter:</span>
+              <button
+                type="button"
+                onClick={() => setLogFilter("all")}
+                className={`text-xs px-2 py-1 rounded-md border ${
+                  logFilter === "all"
+                    ? "border-brand-500/50 bg-brand-500/10 text-text-main"
+                    : "border-border-subtle text-text-muted hover:text-text-main"
+                }`}
               >
-                <div className="flex items-center gap-2 min-w-0">
-                  <span
-                    className={`material-symbols-outlined text-[18px] ${
-                      result.success ? "text-green-500" : "text-red-500"
-                    }`}
-                  >
-                    {result.success ? "check_circle" : "error"}
-                  </span>
-                  <span className="text-sm font-medium truncate">
-                    {result.email || "—"}
-                  </span>
-                </div>
-                {result.success ? (
-                  <Badge variant="success" size="sm">
-                    {isGrokRegister ? "Registered" : "Connected"}
-                  </Badge>
-                ) : (
-                  <Badge variant="error" size="sm">
-                    Failed
-                  </Badge>
-                )}
+                All
+              </button>
+              {workerIds.map((id) => (
+                <button
+                  type="button"
+                  key={id}
+                  onClick={() => setLogFilter(String(id))}
+                  className={`text-xs px-2 py-1 rounded-md border tabular-nums ${
+                    logFilter === String(id)
+                      ? "border-brand-500/50 bg-brand-500/10 text-text-main"
+                      : "border-border-subtle text-text-muted hover:text-text-main"
+                  }`}
+                >
+                  W{id}
+                </button>
+              ))}
+              <label className="ml-auto flex items-center gap-1.5 text-xs text-text-muted cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={logAutoScroll}
+                  onChange={(e) => setLogAutoScroll(e.target.checked)}
+                  className="size-3.5 rounded border-border"
+                />
+                Auto-scroll
+              </label>
+              <span className="text-[11px] text-text-muted tabular-nums">
+                {filteredLogs.length} lines
+              </span>
+            </div>
+          )}
+          <div
+            ref={logRef}
+            className="bg-zinc-950 rounded-b-lg p-3 sm:p-4 text-[11px] sm:text-xs font-mono h-96 overflow-y-auto leading-relaxed"
+          >
+            {filteredLogs.length === 0 ? (
+              <span className="text-zinc-500">Waiting for logs…</span>
+            ) : (
+              <div className="space-y-0.5">
+                {filteredLogs.map((log, i) => {
+                  const step = log.phase || log.step || "farm";
+                  const wid = log.worker || log.progress?.worker;
+                  return (
+                    <div
+                      key={i}
+                      className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 break-words border-b border-white/[0.03] py-0.5"
+                    >
+                      <span className="text-zinc-500 tabular-nums shrink-0 w-[4.5rem]">
+                        {log.time
+                          ? new Date(log.time).toLocaleTimeString()
+                          : ""}
+                      </span>
+                      {wid && (
+                        <span className="text-sky-400/90 shrink-0 w-7 font-semibold">
+                          W{wid}
+                        </span>
+                      )}
+                      <span
+                        className={`shrink-0 text-[10px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded ring-1 ${phaseClass(
+                          step
+                        )}`}
+                      >
+                        {String(step).slice(0, 12)}
+                      </span>
+                      <span
+                        className={`min-w-0 flex-1 ${
+                          LEVEL_COLORS[log.level] || "text-zinc-200"
+                        }`}
+                      >
+                        {log.message}
+                      </span>
+                      {log.email && (
+                        <span className="text-zinc-500 shrink-0 max-w-[12rem] truncate">
+                          {log.email}
+                        </span>
+                      )}
+                    </div>
+                  );
+                })}
               </div>
-            ))}
+            )}
+          </div>
+        </Card>
+      )}
+
+      {results.length > 0 && (
+        <Card title="Saved to 9router" icon="checklist">
+          <div className="overflow-x-auto rounded-lg border border-border-subtle">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-border-subtle bg-bg/80 text-left text-xs text-text-muted">
+                  <th className="px-3 py-2 font-medium">#</th>
+                  <th className="px-3 py-2 font-medium">Email / name</th>
+                  <th className="px-3 py-2 font-medium">Status</th>
+                  <th className="px-3 py-2 font-medium">Detail</th>
+                </tr>
+              </thead>
+              <tbody>
+                {results.map((result, i) => (
+                  <tr
+                    key={i}
+                    className="border-b border-border-subtle/70 last:border-0 hover:bg-bg/50"
+                  >
+                    <td className="px-3 py-2 text-text-muted tabular-nums w-10">
+                      {i + 1}
+                    </td>
+                    <td className="px-3 py-2 font-medium text-text-main font-mono text-xs sm:text-sm">
+                      {result.email || "—"}
+                    </td>
+                    <td className="px-3 py-2">
+                      {result.success ? (
+                        <Badge variant="success" size="sm">
+                          {isGrokRegister ? "Registered" : "Connected"}
+                        </Badge>
+                      ) : (
+                        <Badge variant="error" size="sm">
+                          Failed
+                        </Badge>
+                      )}
+                    </td>
+                    <td className="px-3 py-2 text-xs text-text-muted max-w-xs truncate">
+                      {result.message ||
+                        (result.connectionId
+                          ? `id=${result.connectionId}`
+                          : "—")}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
         </Card>
       )}
 
       {summary && (
         <Card title="Summary" icon="summarize">
-          <div className="flex flex-wrap items-center gap-3 text-sm">
-            <span className="text-text-muted">
-              Total: <strong className="text-text-main">{summary.total}</strong>
-            </span>
-            <span className="text-green-500">
-              Success: <strong>{summary.success}</strong>
-            </span>
-            <span className="text-red-500">
-              Failed: <strong>{summary.failed}</strong>
-            </span>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+            <div className="rounded-lg border border-border-subtle bg-bg px-3 py-2">
+              <div className="text-[11px] text-text-muted uppercase">Total</div>
+              <div className="text-xl font-semibold tabular-nums text-text-main">
+                {summary.total}
+              </div>
+            </div>
+            <div className="rounded-lg border border-emerald-500/20 bg-emerald-500/5 px-3 py-2">
+              <div className="text-[11px] text-emerald-600/80 uppercase">Success</div>
+              <div className="text-xl font-semibold tabular-nums text-emerald-500">
+                {summary.success}
+              </div>
+            </div>
+            <div className="rounded-lg border border-red-500/20 bg-red-500/5 px-3 py-2">
+              <div className="text-[11px] text-red-500/80 uppercase">Failed</div>
+              <div className="text-xl font-semibold tabular-nums text-red-500">
+                {summary.failed}
+              </div>
+            </div>
+            <div className="rounded-lg border border-border-subtle bg-bg px-3 py-2">
+              <div className="text-[11px] text-text-muted uppercase">Saved</div>
+              <div className="text-xl font-semibold tabular-nums text-text-main">
+                {savedOk}
+              </div>
+            </div>
           </div>
+          {Array.isArray(summary.errors) && summary.errors.length > 0 && (
+            <div className="mt-3 rounded-lg border border-amber-500/20 bg-amber-500/5 px-3 py-2 text-xs text-amber-700 dark:text-amber-300 space-y-1">
+              {summary.errors.slice(0, 5).map((err, i) => (
+                <div key={i}>• {err}</div>
+              ))}
+            </div>
+          )}
         </Card>
       )}
     </div>

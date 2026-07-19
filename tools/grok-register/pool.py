@@ -204,7 +204,19 @@ def main() -> int:
         action="store_true",
         help="print split plan only, do not start browsers",
     )
+    parser.add_argument(
+        "--tui",
+        action="store_true",
+        help="launch live Terminal UI dashboard (farm_tui.py) instead of raw logs",
+    )
     args = parser.parse_args()
+
+    if args.tui:
+        # Hand off to farm_tui with the same CLI flags (minus --tui)
+        from farm_tui import run_tui
+
+        # rebuild namespace without dry-run side effects
+        return run_tui(args)
 
     concurrent = args.workers if args.workers is not None else args.concurrent
     total = args.count
@@ -244,6 +256,11 @@ def main() -> int:
     print(f"  stagger    : {args.stagger_sec}s")
     print(f"  display    : {display}")
     print(f"  proxies    : {len(proxies)} configured")
+    print("-" * 60)
+    print("  log tag   : [W2 3/33 · #70/100 · remW 30 · ✓2 ✗0]")
+    print("              W=worker local/share  #=global index")
+    print("              remW=sisa di worker ini  ✓/✗ = ok/fail worker")
+    print("  phases    : START → FLOW ①..⑥ → OK/FAIL → SCORE")
     if display == "headed" and platform_is_mac():
         print("  [!] headed on Mac steals focus — prefer --offscreen while working")
     if display == "headless":
@@ -273,6 +290,13 @@ def main() -> int:
     signal.signal(signal.SIGINT, _shutdown)
     signal.signal(signal.SIGTERM, _shutdown)
 
+    # Cumulative offsets so each worker can log global account index
+    offsets: list[int] = []
+    running_offset = 0
+    for share in shares:
+        offsets.append(running_offset)
+        running_offset += share if total > 0 else 0
+
     for i, share in enumerate(shares):
         wid = str(i + 1)
         proxy = proxies[i % len(proxies)] if proxies else ""
@@ -281,6 +305,9 @@ def main() -> int:
         env["GROK_WORKER_ID"] = wid
         env["GROK_DEBUG_PORT"] = str(debug_port)
         env["GROK_DISPLAY"] = display
+        env["GROK_WORKER_SHARE"] = str(share)
+        env["GROK_POOL_TOTAL"] = str(total if total > 0 else 0)
+        env["GROK_POOL_OFFSET"] = str(offsets[i])
         if proxy:
             env["GROK_BROWSER_PROXY"] = proxy
         else:
@@ -298,9 +325,12 @@ def main() -> int:
             "--display",
             display,
         ]
+        g_from = offsets[i] + 1 if total > 0 else 0
+        g_to = offsets[i] + share if total > 0 else 0
         print(
             f"[pool] worker {wid}/{n_workers}: {share} account(s)"
-            f"  cdp≈{debug_port}"
+            + (f"  global#{g_from}–{g_to}" if total > 0 else "")
+            + f"  cdp≈{debug_port}"
             + (f"  proxy={_mask_proxy(proxy)}" if proxy else "  proxy=(none)")
         )
         if args.dry_run:

@@ -15,6 +15,14 @@ You normally **do not** run this manually. Open 9router and use **Setup environm
 
 ```bash
 cd tools/grok-register
+
+# Farm (same flags as standalone grok-register)
+.venv/bin/python pool.py -n 20 -c 3 --stagger 5 --offscreen
+
+# Optional terminal dashboard
+.venv/bin/python pool.py --tui -n 20 -c 3 --offscreen
+# or:
+.venv/bin/python farm_tui.py -n 20 -c 3 --offscreen
 # Use system Python 3.10–3.13
 python3 setup_env.py
 # Edit config

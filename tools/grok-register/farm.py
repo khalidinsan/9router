@@ -14,8 +14,16 @@ import sys
 
 from email_imap import get_email_and_token, get_oai_code
 
-# Set by main() when launched from run_pool.py
+# Set by main() / run_pool.py
 WORKER_ID = os.environ.get("GROK_WORKER_ID", "").strip()
+# Progress context for multi-worker logs
+WORKER_TOTAL = int(os.environ.get("GROK_WORKER_SHARE", "0") or "0")  # accounts this worker runs
+POOL_TOTAL = int(os.environ.get("GROK_POOL_TOTAL", "0") or "0")  # global total
+POOL_OFFSET = int(os.environ.get("GROK_POOL_OFFSET", "0") or "0")  # 0-based global start index
+_progress_current = 0  # 1-based index within this worker
+_progress_ok = 0
+_progress_fail = 0
+_account_t0 = 0.0  # time.time() when current account started
 
 
 def setup_run_logger() -> logging.Logger:
@@ -29,10 +37,8 @@ def setup_run_logger() -> logging.Logger:
     logger.setLevel(logging.INFO)
     logger.handlers.clear()
 
-    fmt = logging.Formatter(
-        f"%(asctime)s | w{wid} | %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S",
-    )
+    # Compact time only — progress tag carries worker/account identity
+    fmt = logging.Formatter("%(asctime)s %(message)s", datefmt="%H:%M:%S")
     fh = logging.FileHandler(log_path, encoding="utf-8")
     fh.setFormatter(fmt)
     logger.addHandler(fh)
@@ -40,11 +46,100 @@ def setup_run_logger() -> logging.Logger:
     sh.setFormatter(fmt)
     logger.addHandler(sh)
 
-    logger.info("Log file: %s", log_path)
+    logger.info("log_file=%s", log_path)
     return logger
 
 
 run_logger: logging.Logger = None
+
+
+def _progress_tag() -> str:
+    """
+    Compact multi-worker tag, easy to scan when 3–5 workers interleave:
+
+      W2 3/33 · #70/100 · remW 30 · ✓2 ✗0
+
+    Meaning:
+      W2 3/33     worker 2, account 3 of this worker's share (33)
+      #70/100     global account index / pool total
+      remW 30     remaining on THIS worker (incl. current)
+      ✓2 ✗0       success / fail counts for this worker so far
+    """
+    wid = WORKER_ID or "?"
+    cur = _progress_current
+    wtot = WORKER_TOTAL or 0
+    if wtot > 0 and cur > 0:
+        local = f"W{wid} {cur}/{wtot}"
+        rem_w = max(0, wtot - cur + 1)
+    elif cur > 0:
+        local = f"W{wid} #{cur}"
+        rem_w = None
+    else:
+        local = f"W{wid}"
+        rem_w = wtot if wtot > 0 else None
+
+    parts = [local]
+    if POOL_TOTAL > 0 and cur > 0:
+        gidx = POOL_OFFSET + cur
+        parts.append(f"#{gidx}/{POOL_TOTAL}")
+    if rem_w is not None:
+        parts.append(f"remW {rem_w}")
+    parts.append(f"✓{_progress_ok} ✗{_progress_fail}")
+    return " · ".join(parts)
+
+
+def slog(phase: str, message: str, level: str = "info") -> None:
+    """Structured progress log for multi-worker readability."""
+    phase_s = (phase or "run").upper().replace(" ", "_")[:14]
+    # Fixed-width phase column so lines align when grepping
+    phase_col = f"{phase_s:<14}"
+    line = f"[{_progress_tag()}] {phase_col} {message}"
+    if run_logger is not None:
+        if level == "error":
+            run_logger.error("%s", line)
+        elif level == "warn":
+            run_logger.warning("%s", line)
+        else:
+            run_logger.info("%s", line)
+    else:
+        print(line, flush=True)
+
+
+def progress_begin_account(index: int) -> None:
+    global _progress_current, _account_t0
+    _progress_current = index
+    _account_t0 = time.time()
+    wtot = WORKER_TOTAL or 0
+    gidx = (POOL_OFFSET + index) if POOL_TOTAL > 0 else index
+    bar = "═" * 28
+    slog(
+        "START",
+        f"{bar} START account "
+        f"{index}" + (f"/{wtot}" if wtot else "")
+        + (f"  global#{gidx}/{POOL_TOTAL}" if POOL_TOTAL > 0 else "")
+        + f"  {bar}",
+    )
+
+
+def progress_end_account(ok: bool, detail: str = "") -> None:
+    global _progress_ok, _progress_fail
+    elapsed = (time.time() - _account_t0) if _account_t0 else 0
+    elapsed_s = f"{elapsed:.0f}s" if elapsed else "?"
+    if ok:
+        _progress_ok += 1
+        slog("OK", f"done in {elapsed_s}  {detail}".strip())
+    else:
+        _progress_fail += 1
+        slog("FAIL", f"failed after {elapsed_s}  {detail}".strip(), level="error")
+    # Quick worker scoreboard after each account
+    wtot = WORKER_TOTAL or 0
+    done = _progress_ok + _progress_fail
+    left = max(0, wtot - done) if wtot else "?"
+    slog(
+        "SCORE",
+        f"worker tally  ✓{_progress_ok}  ✗{_progress_fail}  "
+        f"done {done}" + (f"/{wtot}" if wtot else "") + f"  left≈{left}",
+    )
 
 
 
@@ -330,11 +425,17 @@ def _apply_window_policy(quiet: bool = True):
         window_id = win.get("windowId") if isinstance(win, dict) else None
         if window_id is None:
             return
-        # CDP forbids combining minimized with left/top/width/height
+        # minimized stays in Dock and should not pop to foreground on every nav
         page.run_cdp(
             "Browser.setWindowBounds",
             windowId=window_id,
-            bounds={"windowState": "minimized"},
+            bounds={
+                "left": -32000,
+                "top": -32000,
+                "width": 1100,
+                "height": 800,
+                "windowState": "minimized",
+            },
         )
         if not quiet or not _window_policy_logged:
             print("[*] Farm window minimized+off-screen (stays for this browser process)")
@@ -541,9 +642,11 @@ return true;
 
 def fill_email_and_submit(timeout=15):
     # Create catch-all email via email_register; keep token for OTP step.
+    slog("EMAIL", "generating catch-all alias…")
     email, dev_token = get_email_and_token()
     if not email or not dev_token:
         raise Exception("Failed to create email")
+    slog("EMAIL", f"alias={email}")
 
     deadline = time.time() + timeout
     while time.time() < deadline:
@@ -659,7 +762,7 @@ return true;
             )
 
             if clicked:
-                print(f"[*] Filled email and clicked sign-up: {email}")
+                slog("EMAIL", f"submitted sign-up form for {email}")
                 return email, dev_token
 
         time.sleep(0.5)
@@ -670,9 +773,11 @@ return true;
 
 def fill_code_and_submit(email, dev_token, timeout=60):
     # Poll IMAP for OTP via email_register, then fill the code.
+    slog("OTP", f"waiting IMAP code for {email}…")
     code = get_oai_code(dev_token, email, timeout=120)
     if not code:
         raise Exception("Failed to get verification code")
+    slog("OTP", f"got code={code} — filling…")
 
     deadline = time.time() + timeout
     while time.time() < deadline:
@@ -790,20 +895,20 @@ return merged === code ? 'filled' : 'box-mismatch';
             # After confirm, navigation may disconnect the old handle — switch to the new page.
             refresh_active_page()
             if has_profile_form():
-                print("[*] Navigated to final signup page after OTP submit.")
+                slog("OTP", "navigated to final signup after OTP submit")
                 return code
             time.sleep(1)
             continue
 
         if filled == 'not-ready':
             if has_profile_form():
-                print("[*] Already on final signup page; skipping OTP confirm button.")
+                slog("OTP", "already on final signup; skip OTP confirm")
                 return code
             time.sleep(0.5)
             continue
 
         if filled != 'filled':
-            print(f"[Debug] OTP input visible but fill failed: {filled}")
+            slog("OTP", f"fill retry status={filled}", level="warn")
             time.sleep(0.5)
             continue
 
@@ -878,22 +983,22 @@ return 'clicked';
             except PageDisconnectedError:
                 refresh_active_page()
                 if has_profile_form():
-                    print("[*] Email confirmed; on final signup page.")
+                    slog("OTP", "email confirmed → final signup page")
                     return code
                 clicked = 'disconnected'
 
             if clicked == 'clicked':
-                print(f"[*] Filled OTP and clicked confirm: {code}")
+                slog("OTP", f"confirmed code={code}")
                 time.sleep(2)
                 refresh_active_page()
                 if has_profile_form():
-                    print("[*] OTP confirmed; final signup page is ready.")
+                    slog("OTP", "final signup page ready")
                 return code
 
             if clicked == 'no-button':
                 current_url = page.url
                 if 'sign-up' in current_url or 'signup' in current_url:
-                    print(f"[*] OTP filled; auto-navigated to next step: {current_url}")
+                    slog("OTP", f"auto-nav next step  url={current_url[:100]}")
                     return code
 
             if clicked == 'disconnected':
@@ -938,42 +1043,81 @@ return { url: location.href, inputs, buttons };
     raise Exception("OTP input or confirm-email button not found")
 
 
-def getTurnstileToken():
-    # Reuse Turnstile human-click flow when needed on the final form.
-    page.run_js("try { turnstile.reset() } catch(e) { }")
+def _read_turnstile_token() -> str:
+    """Read existing CF token from widget/input without resetting."""
+    try:
+        tok = page.run_js(
+            r"""
+try {
+  const r = (window.turnstile && turnstile.getResponse) ? turnstile.getResponse() : null;
+  if (r && String(r).trim()) return String(r).trim();
+} catch (e) {}
+const inp = document.querySelector('input[name="cf-turnstile-response"]');
+if (inp && String(inp.value || '').trim()) return String(inp.value).trim();
+return '';
+            """
+        )
+        return str(tok or "").strip()
+    except Exception:
+        return ""
 
-    turnstileResponse = None
 
-    for i in range(0, 15):
+def getTurnstileToken(reset: bool = False):
+    """
+    Solve Turnstile on the final form.
+    IMPORTANT: do NOT reset by default — reset destroys a natural Success and
+    forces a new challenge; injected tokens often don't wire into React state.
+    """
+    # Already solved?
+    existing = _read_turnstile_token()
+    if existing and len(existing) > 20:
+        return existing
+
+    if reset:
         try:
-            turnstileResponse = page.run_js("try { return turnstile.getResponse() } catch(e) { return null }")
+            page.run_js("try { turnstile.reset() } catch(e) { }")
+        except Exception:
+            pass
+
+    for _ in range(0, 18):
+        try:
+            turnstileResponse = _read_turnstile_token()
             if turnstileResponse:
                 return turnstileResponse
 
-            challengeSolution = page.ele("@name=cf-turnstile-response")
+            # Click the checkbox inside the turnstile iframe (human path)
+            challengeSolution = page.ele("@name=cf-turnstile-response", timeout=0.5)
+            if not challengeSolution:
+                time.sleep(0.8)
+                continue
             challengeWrapper = challengeSolution.parent()
             challengeIframe = challengeWrapper.shadow_root.ele("tag:iframe")
 
-            challengeIframe.run_js("""
+            challengeIframe.run_js(
+                """
 window.dtp = 1
 function getRandomInt(min, max) {
     return Math.floor(Math.random() * (max - min + 1)) + min;
 }
-
-// Previous screen coords were unstable on 4K; use more natural values.
 let screenX = getRandomInt(800, 1200);
 let screenY = getRandomInt(400, 600);
-
 Object.defineProperty(MouseEvent.prototype, 'screenX', { value: screenX });
 Object.defineProperty(MouseEvent.prototype, 'screenY', { value: screenY });
-                        """)
+                """
+            )
 
             challengeIframeBody = challengeIframe.ele("tag:body").shadow_root
             challengeButton = challengeIframeBody.ele("tag:input")
             challengeButton.click()
-        except:
+        except Exception:
             pass
         time.sleep(1)
+
+    # Last resort: reset once and try a few more clicks
+    if not reset:
+        slog("TURNSTILE", "no token yet — one soft reset + retry", level="warn")
+        return getTurnstileToken(reset=True)
+
     raise Exception("failed to solve turnstile")
 
 
@@ -1061,54 +1205,159 @@ def build_profile():
     # Generate signup profile; display name rotated from name.txt.
     given_name, family_name = _next_display_name()
     password = "N" + secrets.token_hex(4) + "!a7#" + secrets.token_urlsafe(6)
-    print(f"[*] Profile name: {given_name} {family_name}")
     return given_name, family_name, password
 
 
-def fill_profile_and_submit(timeout=30):
-    # After OTP, target visible/writable real inputs (skip hidden React clones).
-    given_name, family_name, password = build_profile()
-    deadline = time.time() + timeout
-    turnstile_token = ""
+def _dismiss_cookie_banner() -> bool:
+    """Click Accept All Cookies if the consent bar is blocking the form."""
+    try:
+        return bool(
+            page.run_js(
+                r"""
+function isVisible(node) {
+  if (!node) return false;
+  const style = window.getComputedStyle(node);
+  if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
+  const rect = node.getBoundingClientRect();
+  return rect.width > 0 && rect.height > 0;
+}
+function norm(s) { return String(s || '').toLowerCase().replace(/\s+/g, ' ').trim(); }
+const nodes = Array.from(document.querySelectorAll('button, [role="button"], a'));
+// Prefer accept; never click reject (can break analytics/CF)
+const accept = nodes.find((n) => {
+  if (!isVisible(n)) return false;
+  const t = norm(n.innerText || n.textContent || n.getAttribute('aria-label'));
+  return (
+    t === 'accept all cookies' ||
+    t === 'accept all' ||
+    t === 'accept cookies' ||
+    t === 'allow all' ||
+    t === 'i agree' ||
+    t.includes('accept all cookie')
+  );
+});
+if (!accept) return false;
+accept.click();
+return true;
+                """
+            )
+        )
+    except Exception:
+        return False
 
-    while time.time() < deadline:
-        filled = page.run_js(
+
+def _page_error_snip() -> str:
+    """Grab visible error / alert text on the signup form (if any)."""
+    try:
+        msg = page.run_js(
+            r"""
+function isVisible(node) {
+  if (!node) return false;
+  const style = window.getComputedStyle(node);
+  if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
+  const rect = node.getBoundingClientRect();
+  return rect.width > 0 && rect.height > 0;
+}
+const sels = [
+  '[role="alert"]', '[data-testid*="error"]', '.error', '.text-red-500',
+  '[class*="error"]', '[class*="Error"]', '[class*="destructive"]'
+];
+const out = [];
+for (const sel of sels) {
+  for (const n of document.querySelectorAll(sel)) {
+    if (!isVisible(n)) continue;
+    const t = String(n.innerText || n.textContent || '').replace(/\s+/g, ' ').trim();
+    if (t && t.length > 2 && t.length < 180) out.push(t);
+  }
+}
+// also scan short red-ish paragraphs
+return [...new Set(out)].slice(0, 4).join(' | ');
             """
+        )
+        return str(msg or "").strip()
+    except Exception:
+        return ""
+
+
+def _diagnose_signup_form() -> dict:
+    """Snapshot form state when Complete sign up is sticky (for logs)."""
+    try:
+        d = page.run_js(
+            r"""
+function isVisible(node) {
+  if (!node) return false;
+  const style = window.getComputedStyle(node);
+  if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
+  const rect = node.getBoundingClientRect();
+  return rect.width > 0 && rect.height > 0;
+}
+function norm(s) { return String(s || '').toLowerCase().replace(/\s+/g, ' ').trim(); }
+const challengeInput = document.querySelector('input[name="cf-turnstile-response"]');
+const token = challengeInput ? String(challengeInput.value || '').trim() : '';
+let tsResp = '';
+try { tsResp = (window.turnstile && turnstile.getResponse) ? String(turnstile.getResponse() || '') : ''; } catch (e) {}
+const body = (document.body && document.body.innerText) || '';
+const successUi = /success!/i.test(body);
+const given = document.querySelector('input[data-testid="givenName"], input[name="givenName"]');
+const family = document.querySelector('input[data-testid="familyName"], input[name="familyName"]');
+const pass = document.querySelector('input[data-testid="password"], input[name="password"], input[type="password"]');
+const submit = Array.from(document.querySelectorAll('button')).find((b) => {
+  if (!isVisible(b)) return false;
+  return norm(b.innerText || b.textContent).includes('complete sign');
+});
+const cookieBanner = Array.from(document.querySelectorAll('button')).some((b) => {
+  if (!isVisible(b)) return false;
+  const t = norm(b.innerText || b.textContent);
+  return t.includes('accept all cookie') || t.includes('reject all');
+});
+return {
+  url: location.href.slice(0, 100),
+  tokenLen: token.length,
+  tsRespLen: tsResp.length,
+  successUi: successUi,
+  given: given ? String(given.value || '').slice(0, 20) : null,
+  family: family ? String(family.value || '').slice(0, 20) : null,
+  passLen: pass ? String(pass.value || '').length : 0,
+  btnDisabled: submit ? !!(submit.disabled || submit.getAttribute('aria-disabled') === 'true') : null,
+  cookieBanner: cookieBanner,
+};
+            """
+        ) or {}
+        err = _page_error_snip()
+        if err:
+            d["err"] = err[:160]
+        return d
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def _fill_profile_fields(given_name: str, family_name: str, password: str) -> str:
+    """Fill name/password once. Returns filled | not-ready | filled-failed | verify-failed."""
+    return page.run_js(
+        """
 const givenName = arguments[0];
 const familyName = arguments[1];
 const password = arguments[2];
 
 function isVisible(node) {
-    if (!node) {
-        return false;
-    }
+    if (!node) return false;
     const style = window.getComputedStyle(node);
-    if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') {
-        return false;
-    }
+    if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
     const rect = node.getBoundingClientRect();
     return rect.width > 0 && rect.height > 0;
 }
-
 function pickInput(selector) {
     return Array.from(document.querySelectorAll(selector)).find((node) => {
         return isVisible(node) && !node.disabled && !node.readOnly;
     }) || null;
 }
-
 function setInputValue(input, value) {
-    if (!input) {
-        return false;
-    }
+    if (!input) return false;
     input.focus();
     input.click();
-
     const nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
     const tracker = input._valueTracker;
-    if (tracker) {
-        tracker.setValue('');
-    }
-
+    if (tracker) tracker.setValue('');
     if (nativeSetter) {
         nativeSetter.call(input, '');
         nativeSetter.call(input, value);
@@ -1116,187 +1365,351 @@ function setInputValue(input, value) {
         input.value = '';
         input.value = value;
     }
-
-    input.dispatchEvent(new InputEvent('beforeinput', {
-        bubbles: true,
-        cancelable: true,
-        data: value,
-        inputType: 'insertText',
-    }));
-    input.dispatchEvent(new InputEvent('input', {
-        bubbles: true,
-        cancelable: true,
-        data: value,
-        inputType: 'insertText',
-    }));
+    input.dispatchEvent(new InputEvent('beforeinput', { bubbles: true, cancelable: true, data: value, inputType: 'insertText' }));
+    input.dispatchEvent(new InputEvent('input', { bubbles: true, cancelable: true, data: value, inputType: 'insertText' }));
     input.dispatchEvent(new Event('change', { bubbles: true }));
     input.dispatchEvent(new Event('blur', { bubbles: true }));
-
     return String(input.value || '') === String(value || '');
 }
 
 const givenInput = pickInput('input[data-testid="givenName"], input[name="givenName"], input[autocomplete="given-name"]');
 const familyInput = pickInput('input[data-testid="familyName"], input[name="familyName"], input[autocomplete="family-name"]');
 const passwordInput = pickInput('input[data-testid="password"], input[name="password"], input[type="password"]');
+if (!givenInput || !familyInput || !passwordInput) return 'not-ready';
 
-if (!givenInput || !familyInput || !passwordInput) {
-    return 'not-ready';
-}
+// Skip rewrite if already correct (avoids thrashing React state on retries)
+const already =
+  String(givenInput.value || '').trim() === String(givenName || '').trim()
+  && String(familyInput.value || '').trim() === String(familyName || '').trim()
+  && String(passwordInput.value || '') === String(password || '');
+if (already) return 'filled';
 
 const givenOk = setInputValue(givenInput, givenName);
 const familyOk = setInputValue(familyInput, familyName);
 const passwordOk = setInputValue(passwordInput, password);
+if (!givenOk || !familyOk || !passwordOk) return 'filled-failed';
 
-if (!givenOk || !familyOk || !passwordOk) {
-    return 'filled-failed';
-}
+return (
+  String(givenInput.value || '').trim() === String(givenName || '').trim()
+  && String(familyInput.value || '').trim() === String(familyName || '').trim()
+  && String(passwordInput.value || '') === String(password || '')
+) ? 'filled' : 'verify-failed';
+        """,
+        given_name,
+        family_name,
+        password,
+    )
 
-return [
-    String(givenInput.value || '').trim() === String(givenName || '').trim(),
-    String(familyInput.value || '').trim() === String(familyName || '').trim(),
-    String(passwordInput.value || '') === String(password || ''),
-].every(Boolean) ? 'filled' : 'verify-failed';
-            """,
-            given_name,
-            family_name,
-            password,
-        )
 
-        if filled == 'not-ready':
-            time.sleep(0.5)
-            continue
+def _click_complete_signup(strategy: str = "mouse") -> str:
+    """
+    Click Complete sign up.
 
-        if filled != 'filled':
-            print(f"[Debug] Final form fields visible but name/password fill failed: {filled}")
-            time.sleep(0.5)
-            continue
+    strategy:
+      mouse  — real DrissionPage element click (preferred; trusted)
+      js     — element.click() only (no form.requestSubmit spam)
+      form   — form.requestSubmit last resort
+    """
+    # Ensure token present before clicking
+    token_ok = page.run_js(
+        r"""
+const inp = document.querySelector('input[name="cf-turnstile-response"]');
+const v = inp ? String(inp.value || '').trim() : '';
+if (v.length > 20) return true;
+try {
+  const r = (window.turnstile && turnstile.getResponse) ? String(turnstile.getResponse() || '') : '';
+  if (r.length > 20 && inp) {
+    const nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
+    if (nativeSetter) nativeSetter.call(inp, r); else inp.value = r;
+    inp.dispatchEvent(new Event('input', { bubbles: true }));
+    inp.dispatchEvent(new Event('change', { bubbles: true }));
+    return true;
+  }
+} catch (e) {}
+const body = (document.body && document.body.innerText) || '';
+return /success!/i.test(body);
+        """
+    )
+    if not token_ok:
+        return "no-token"
 
-        values_ok = page.run_js(
-            """
-const expectedGiven = arguments[0];
-const expectedFamily = arguments[1];
-const expectedPassword = arguments[2];
-
+    # Check button state
+    btn_state = page.run_js(
+        r"""
 function isVisible(node) {
-    if (!node) {
-        return false;
-    }
-    const style = window.getComputedStyle(node);
-    if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') {
-        return false;
-    }
-    const rect = node.getBoundingClientRect();
-    return rect.width > 0 && rect.height > 0;
+  if (!node) return false;
+  const style = window.getComputedStyle(node);
+  if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
+  const rect = node.getBoundingClientRect();
+  return rect.width > 0 && rect.height > 0;
 }
+function norm(s) { return String(s || '').toLowerCase().replace(/\s+/g, ' ').trim(); }
+const buttons = Array.from(document.querySelectorAll('button, [role="button"], input[type="submit"]'));
+const btn = buttons.find((n) => {
+  if (!isVisible(n)) return false;
+  const t = norm(n.innerText || n.textContent || n.value);
+  return t.includes('complete sign') || t === 'create account' || t.includes('完成注册');
+});
+if (!btn) return 'no-button';
+const disabled = !!(btn.disabled || btn.getAttribute('aria-disabled') === 'true' || btn.classList.contains('disabled'));
+return disabled ? 'disabled' : 'ready';
+        """
+    )
+    if btn_state == "no-button":
+        return "no-button"
+    if btn_state == "disabled":
+        return "disabled"
 
-function pickInput(selector) {
-    return Array.from(document.querySelectorAll(selector)).find((node) => {
-        return isVisible(node) && !node.disabled && !node.readOnly;
-    }) || null;
+    if strategy == "form":
+        try:
+            st = page.run_js(
+                r"""
+function isVisible(node) {
+  if (!node) return false;
+  const style = window.getComputedStyle(node);
+  if (style.display === 'none' || style.visibility === 'hidden') return false;
+  const rect = node.getBoundingClientRect();
+  return rect.width > 0 && rect.height > 0;
 }
-
-const givenInput = pickInput('input[data-testid="givenName"], input[name="givenName"], input[autocomplete="given-name"]');
-const familyInput = pickInput('input[data-testid="familyName"], input[name="familyName"], input[autocomplete="family-name"]');
-const passwordInput = pickInput('input[data-testid="password"], input[name="password"], input[type="password"]');
-
-if (!givenInput || !familyInput || !passwordInput) {
-    return false;
+function norm(s) { return String(s || '').toLowerCase().replace(/\s+/g, ' ').trim(); }
+const buttons = Array.from(document.querySelectorAll('button, [role="button"], input[type="submit"]'));
+const btn = buttons.find((n) => {
+  if (!isVisible(n)) return false;
+  const t = norm(n.innerText || n.textContent || n.value);
+  return t.includes('complete sign') || t === 'create account';
+});
+if (!btn) return 'no-button';
+const form = btn.closest('form') || document.querySelector('form');
+if (form && typeof form.requestSubmit === 'function') {
+  try { form.requestSubmit(btn); return 'clicked:form'; } catch (e) {}
 }
+try { btn.click(); return 'clicked:js'; } catch (e) {}
+return 'fail';
+                """
+            )
+            return st or "fail"
+        except Exception as e:
+            return f"error:{e}"
 
-return String(givenInput.value || '').trim() === String(expectedGiven || '').trim()
-    && String(familyInput.value || '').trim() === String(expectedFamily || '').trim()
-    && String(passwordInput.value || '') === String(expectedPassword || '');
-            """,
-            given_name,
-            family_name,
-            password,
-        )
-        if not values_ok:
-            print("[Debug] Final form field validation failed; retrying fill.")
+    # mouse / js via element
+    selectors = [
+        "tag:button@@text():Complete sign up",
+        "tag:button@@text():Complete signup",
+        "tag:button@@text():Create Account",
+        "tag:button@@text()=完成注册",
+        'xpath://button[contains(translate(normalize-space(.), "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"), "complete sign")]',
+        'xpath://button[@type="submit"]',
+    ]
+    for sel in selectors:
+        try:
+            btn = page.ele(sel, timeout=0.5)
+        except Exception:
+            btn = None
+        if not btn:
+            continue
+        try:
+            # scroll into view
+            try:
+                btn.scroll.to_see()
+            except Exception:
+                pass
+            if strategy == "js":
+                try:
+                    page.run_js("arguments[0].click()", btn)
+                except Exception:
+                    btn.click(by_js=True)
+                return f"clicked:js:{sel[:40]}"
+            # preferred: real mouse click
+            try:
+                # actions chain if available
+                page.actions.move_to(btn).click()
+                return f"clicked:actions:{sel[:40]}"
+            except Exception:
+                btn.click()
+                return f"clicked:mouse:{sel[:40]}"
+        except Exception:
+            continue
+    return "no-button-mouse"
+
+
+def _signup_still_on_profile() -> bool:
+    """True if we are still stuck on the final name/password form."""
+    try:
+        if has_profile_form():
+            # Confirm the submit button is still there (not mid-transition)
+            still = page.run_js(
+                r"""
+const t = ((document.body && document.body.innerText) || '').toLowerCase();
+return t.includes('complete sign up') || t.includes('create a free account');
+                """
+            )
+            return bool(still)
+        return False
+    except Exception:
+        return True
+
+
+def fill_profile_and_submit(timeout=75):
+    """
+    Final signup form: name + password + Turnstile + Complete sign up.
+
+    Design (learned from flaky runs):
+      - Fill fields ONCE (re-fill thrashing kills React state)
+      - NEVER turnstile.reset() unless totally stuck
+      - Dismiss cookie banner first
+      - Prefer real mouse click over form.requestSubmit spam
+      - Only re-click on retry; verify we actually leave the form
+    """
+    given_name, family_name, password = build_profile()
+    slog("PROFILE", f"fill form  name={given_name} {family_name}")
+    deadline = time.time() + timeout
+    fields_filled = False
+    turnstile_ready = False
+    last_click_status = ""
+    click_attempts = 0
+    last_heartbeat = 0.0
+    cookie_dismissed = False
+
+    # Strategy rotation for clicks
+    strategies = ["mouse", "mouse", "js", "actions_via_mouse", "form"]
+
+    while time.time() < deadline:
+        now = time.time()
+        if now - last_heartbeat >= 10:
+            rem = max(0, int(deadline - now))
+            slog(
+                "PROFILE",
+                f"…waiting  filled={fields_filled}  cf={turnstile_ready}  "
+                f"click_try={click_attempts}  last={last_click_status or '-'}  t-{rem}s",
+            )
+            last_heartbeat = now
+
+        # Cookie bar blocks real clicks on some viewports
+        if not cookie_dismissed:
+            if _dismiss_cookie_banner():
+                slog("PROFILE", "dismissed cookie banner (Accept All)")
+                time.sleep(0.4)
+            cookie_dismissed = True  # try once early; re-try later if needed
+
+        # ── 1) fill fields (only if not already correct) ──
+        if not fields_filled:
+            filled = _fill_profile_fields(given_name, family_name, password)
+            if filled == "not-ready":
+                time.sleep(0.6)
+                continue
+            if filled != "filled":
+                slog("PROFILE", f"fill status={filled}", level="warn")
+                time.sleep(0.5)
+                continue
+            fields_filled = True
+            slog("PROFILE", "fields OK — waiting Turnstile")
             time.sleep(0.5)
+
+        # ── 2) wait / solve turnstile WITHOUT reset ──
+        token = _read_turnstile_token()
+        if token and len(token) > 20:
+            if not turnstile_ready:
+                slog("TURNSTILE", f"ready  token_len={len(token)}")
+            turnstile_ready = True
+        else:
+            turnstile_ready = False
+            # First try: wait briefly for natural / auto solve (no reset)
+            if click_attempts == 0:
+                slog("TURNSTILE", "waiting natural solve…")
+                natural_deadline = time.time() + 5
+                clicked_box = False
+                while time.time() < natural_deadline:
+                    token = _read_turnstile_token()
+                    if token and len(token) > 20:
+                        turnstile_ready = True
+                        slog("TURNSTILE", f"natural ok  token_len={len(token)}")
+                        break
+                    # mid-wait: one interactive checkbox click (still no reset)
+                    if not clicked_box and time.time() > natural_deadline - 2.5:
+                        clicked_box = True
+                        try:
+                            getTurnstileToken(reset=False)
+                        except Exception:
+                            pass
+                    time.sleep(0.6)
+
+            if not turnstile_ready:
+                slog("TURNSTILE", "solving (no reset)…")
+                try:
+                    token = getTurnstileToken(reset=False)
+                except Exception as e:
+                    slog("TURNSTILE", f"solve error: {e}", level="warn")
+                    token = ""
+                if token and len(token) > 20:
+                    turnstile_ready = True
+                    slog("TURNSTILE", f"solved  token_len={len(token)}")
+                else:
+                    time.sleep(1.0)
+                    continue
+
+            # beat for React to enable Complete sign up after CF Success
+            time.sleep(1.2)
+
+        # Re-dismiss cookie bar if it reappeared
+        if _dismiss_cookie_banner():
+            slog("PROFILE", "cookie banner again — accepted", level="warn")
+            time.sleep(0.3)
+
+        # Ensure fields still correct (don't thrash — helper skips if OK)
+        chk = _fill_profile_fields(given_name, family_name, password)
+        if chk != "filled":
+            fields_filled = False
+            slog("PROFILE", f"fields lost ({chk}) — will re-fill", level="warn")
             continue
 
-        turnstile_state = page.run_js(
-            """
-const challengeInput = document.querySelector('input[name="cf-turnstile-response"]');
-if (!challengeInput) {
-    return 'not-found';
-}
-const value = String(challengeInput.value || '').trim();
-return value ? 'ready' : 'pending';
-            """
-        )
-
-        if turnstile_state == "pending" and not turnstile_token:
-            print("[*] Turnstile detected on final form; running humanized click flow.")
-            turnstile_token = getTurnstileToken()
-            if turnstile_token:
-                synced = page.run_js(
-                    """
-const token = arguments[0];
-const challengeInput = document.querySelector('input[name="cf-turnstile-response"]');
-if (!challengeInput) {
-    return false;
-}
-const nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
-if (nativeSetter) {
-    nativeSetter.call(challengeInput, token);
-} else {
-    challengeInput.value = token;
-}
-challengeInput.dispatchEvent(new Event('input', { bubbles: true }));
-challengeInput.dispatchEvent(new Event('change', { bubbles: true }));
-return String(challengeInput.value || '').trim() === String(token || '').trim();
-                    """,
-                    turnstile_token,
-                )
-                if synced:
-                    print("[*] Turnstile response synced into final signup form.")
-
-        time.sleep(1.2)
-
+        # ── 3) click Complete sign up ──
+        strat = strategies[click_attempts % len(strategies)]
+        if strat == "actions_via_mouse":
+            strat = "mouse"
+        click_attempts += 1
         try:
-            submit_button = page.ele('tag:button@@text()=完成注册') or page.ele('tag:button@@text():Create Account') or page.ele('tag:button@@text():Sign up')
-        except Exception:
-            submit_button = None
+            status = _click_complete_signup(strategy=strat) or ""
+        except Exception as e:
+            status = f"error:{e}"
+        last_click_status = status
 
-        if not submit_button:
-            clicked = page.run_js(
-                r"""
-const challengeInput = document.querySelector('input[name="cf-turnstile-response"]');
-if (challengeInput && !String(challengeInput.value || '').trim()) {
-    return false;
-}
-const buttons = Array.from(document.querySelectorAll('button[type="submit"], button'));
-const submitButton = buttons.find((node) => {
-    const text = (node.innerText || node.textContent || '').replace(/\s+/g, '');
-    const t = text.toLowerCase(); return text === '完成注册' || text.includes('完成注册') || t.includes('create account') || t.includes('sign up') || t.includes('complete');
-});
-if (!submitButton || submitButton.disabled || submitButton.getAttribute('aria-disabled') === 'true') {
-    return false;
-}
-submitButton.focus();
-submitButton.click();
-return true;
-                """
-            )
-        else:
-            challenge_value = page.run_js(
-                """
-const challengeInput = document.querySelector('input[name="cf-turnstile-response"]');
-return challengeInput ? String(challengeInput.value || '').trim() : 'not-found';
-                """
-            )
-            if challenge_value not in ('not-found', ''):
-                submit_button.click()
-                clicked = True
-            else:
-                clicked = False
+        if status == "disabled":
+            if click_attempts % 2 == 1:
+                slog("SUBMIT", f"button still disabled  try={click_attempts}  diag={_diagnose_signup_form()}", level="warn")
+            # wait for React to enable after CF
+            time.sleep(1.2)
+            continue
 
-        if clicked:
-            print(f"[*] Filled profile and clicked complete signup: {given_name} {family_name} / {password}")
-            # Jangan buru-buru navigasi — biarkan accounts.x.ai selesai set session
-            # dan (kalau ada) redirect ke grok.com sendiri.
+        if status == "no-token":
+            turnstile_ready = False
+            slog("SUBMIT", "token missing at click time — re-solve", level="warn")
+            time.sleep(0.8)
+            continue
+
+        if status in ("no-button", "no-button-mouse"):
+            slog("SUBMIT", f"{status}  try={click_attempts}  diag={_diagnose_signup_form()}", level="warn")
+            time.sleep(0.8)
+            continue
+
+        if "clicked" not in str(status) and not str(status).startswith("error"):
+            time.sleep(0.6)
+            continue
+
+        slog("SUBMIT", f"click ({status})  name={given_name} {family_name}  try={click_attempts}")
+
+        # Wait for leave / network — do NOT re-fill during this wait
+        left = False
+        for i in range(14):  # ~7s
+            time.sleep(0.5)
+            if not _signup_still_on_profile():
+                left = True
+                break
+            err = _page_error_snip()
+            if err and i in (3, 8):
+                slog("SUBMIT", f"page error: {err}", level="warn")
+
+        if left:
+            slog("SUBMIT", "left profile form ✓")
             _wait_post_register_settle(timeout=25)
             return {
                 "given_name": given_name,
@@ -1304,9 +1717,21 @@ return challengeInput ? String(challengeInput.value || '').trim() : 'not-found';
                 "password": password,
             }
 
-        time.sleep(0.5)
+        # Still stuck — diagnose, maybe cookie, maybe need different click strat
+        diag = _diagnose_signup_form()
+        slog("SUBMIT", f"still on form after click  status={status}  diag={diag}", level="warn")
+        if diag.get("cookieBanner"):
+            cookie_dismissed = False  # force re-dismiss next loop
+        # If token vanished, re-solve
+        if not diag.get("tokenLen") and not diag.get("tsRespLen"):
+            turnstile_ready = False
+        time.sleep(0.6)
 
-    raise Exception("Final signup form or complete button not found")
+    diag = _diagnose_signup_form()
+    raise Exception(
+        f"Stuck on Complete sign up (last_click={last_click_status}, "
+        f"attempts={click_attempts}, diag={diag})"
+    )
 
 
 def _wait_post_register_settle(timeout=25):
@@ -1327,7 +1752,7 @@ def _wait_post_register_settle(timeout=25):
             except Exception:
                 cur = ""
             if cur != last_url:
-                print(f"[*] Post-register URL: {cur[:120]}")
+                slog("SETTLE", f"url={cur[:120]}")
                 last_url = cur
 
             wanted, _ = _collect_grok_session_cookies()
@@ -1340,15 +1765,15 @@ def _wait_post_register_settle(timeout=25):
             has_sso = bool(wanted.get("sso"))
 
             if on_grok and has_sso:
-                print("[*] Register settled (redirected to grok.com + SSO present)")
+                slog("SETTLE", "ok — grok.com + SSO")
                 time.sleep(1.5)
                 return
             if has_sso and left_signup:
-                print("[*] Register settled (SSO present, left signup form)")
+                slog("SETTLE", "ok — SSO + left signup")
                 time.sleep(1.5)
                 return
             if has_sso and not has_profile_form():
-                print("[*] Register settled (SSO present, profile form gone)")
+                slog("SETTLE", "ok — SSO + profile form gone")
                 time.sleep(1.5)
                 return
         except PageDisconnectedError:
@@ -1356,7 +1781,7 @@ def _wait_post_register_settle(timeout=25):
         except Exception:
             pass
         time.sleep(0.8)
-    print("[*] Post-register settle timeout — lanjut collect SSO di halaman sekarang")
+    slog("SETTLE", "timeout — lanjut collect SSO di halaman sekarang", level="warn")
 
 
 def extract_visible_numbers(timeout=60):
@@ -1607,7 +2032,7 @@ def wait_for_sso_cookie(timeout=90):
             except Exception:
                 cur = ""
             if cur and cur != last_url:
-                print(f"[*] SSO wait URL: {cur[:140]}")
+                slog("SSO", f"url={cur[:140]}")
                 last_url = cur
 
             wanted, names_seen = _collect_grok_session_cookies()
@@ -1617,13 +2042,13 @@ def wait_for_sso_cookie(timeout=90):
             # ── Phase 1: tunggu SSO tanpa navigasi paksa ──
             if phase == "wait_sso":
                 if has_sso:
-                    print("[*] SSO cookie muncul — tunggu session settle sebentar...")
+                    slog("SSO", "cookie muncul — settle session…")
                     phase = "settle"
                     sso_ready_at = time.time()
                 else:
                     # Kalau natural redirect ke grok.com, lanjut collect di sana
                     if "grok.com" in cur:
-                        print("[*] Natural redirect ke grok.com, lanjut collect SSO di sana...")
+                        slog("SSO", "natural redirect → grok.com")
                         phase = "settle"
                         visited_grok = True
                         sso_ready_at = time.time()
@@ -1639,7 +2064,7 @@ def wait_for_sso_cookie(timeout=90):
 
                 # Baru buka grok.com SETELAH sso ada, dan hanya jika belum di grok.com
                 if has_sso and not visited_grok and "grok.com" not in cur:
-                    print("[*] SSO ready — opening https://grok.com/ to settle session cookies...")
+                    slog("SSO", "open https://grok.com/ to settle cookies")
                     try:
                         page.get("https://grok.com/")
                     except Exception:
@@ -1675,18 +2100,18 @@ def wait_for_sso_cookie(timeout=90):
                     if cred.get("cloudflare_cookies"):
                         parts.append(cred["cloudflare_cookies"])
                     cred["cookie_header"] = "; ".join(parts)
-                    print(
-                        f"[*] Grok session cookies ready "
-                        f"(sso=yes, sso-rw={'yes' if wanted.get('sso-rw') else 'mirrored'}, "
-                        f"cf={'yes' if cred.get('cloudflare_cookies') else 'no'})"
+                    slog(
+                        "SSO",
+                        f"ready  sso=yes  sso-rw={'yes' if wanted.get('sso-rw') else 'mirrored'}  "
+                        f"cf={'yes' if cred.get('cloudflare_cookies') else 'no'}  "
+                        f"key={cred['apiKey'][:40]}…",
                     )
-                    print(f"[*] credential format: {cred['apiKey'][:48]}...")
                     return cred
 
         except PageDisconnectedError:
             refresh_active_page()
         except Exception as e:
-            print(f"[*] SSO wait error: {e}")
+            slog("SSO", f"wait error: {e}", level="warn")
 
         time.sleep(1)
 
@@ -2093,10 +2518,15 @@ def push_sso_to_api(new_tokens: list) -> None:
 
 def run_single_registration(output_path=DEFAULT_SSO_FILE, extract_numbers=False):
     # One round: open signup -> register -> capture SSO -> write file -> push 9router.
+    slog("FLOW", "① open sign-up")
     open_signup_page()
+    slog("FLOW", "② email step")
     email, dev_token = fill_email_and_submit()
+    slog("FLOW", "③ OTP / IMAP")
     fill_code_and_submit(email, dev_token)
+    slog("FLOW", "④ profile + Turnstile + Complete sign up")
     profile = fill_profile_and_submit()
+    slog("FLOW", "⑤ wait SSO cookies")
     sso_cred = wait_for_sso_cookie()  # dict: apiKey / sso_token / providerSpecificData
     append_sso_to_txt(sso_cred, output_path)
 
@@ -2131,49 +2561,48 @@ def run_single_registration(output_path=DEFAULT_SSO_FILE, extract_numbers=False)
             **profile,
         }
 
-    if run_logger:
-        run_logger.info(
-            "CREATED | email=%s | password=%s | given=%s | family=%s | apiKey=%s",
-            email,
-            profile.get("password", ""),
-            profile.get("given_name", ""),
-            profile.get("family_name", ""),
-            (result.get("apiKey") or "")[:40],
-        )
+    slog(
+        "CREATED",
+        f"email={email}  name={profile.get('given_name','')} {profile.get('family_name','')}  "
+        f"pass={profile.get('password','')}",
+    )
 
     # Primary path: SSO → Device OAuth Build → 9router grok-cli
     try:
+        slog("FLOW", "⑥ convert SSO → Build OAuth → 9router")
         convert_and_push_grok_cli(result)
+        slog("PUSH", "9router import OK")
     except Exception as e:
-        print(f"[Warn] grok-cli convert/push failed: {e}")
+        slog("PUSH", f"convert/push failed: {e}", level="error")
 
     # Optional: grok2api Web pool (off by default)
     try:
         push_sso_to_grok2api([result])
     except Exception as e:
-        print(f"[Warn] grok2api push failed: {e}")
+        slog("PUSH", f"grok2api failed: {e}", level="warn")
 
     # Optional: 9router grok-web cookie import (off by default)
     try:
         push_sso_to_9router([result])
     except Exception as e:
-        print(f"[Warn] 9router grok-web push failed: {e}")
+        slog("PUSH", f"grok-web failed: {e}", level="warn")
 
-    print(f"[*] Round complete, email: {email}")
+    slog("DONE", f"account complete  email={email}")
     return result
 
 
 def convert_and_push_grok_cli(result: dict) -> None:
     """
-    Convert Web SSO → Build OAuth, then hand tokens to 9router.
+    Path A: pure HTTP convert Web SSO → Build OAuth, then push to 9router grok-cli
+    via POST /api/oauth/grok-cli/import-token (NOT raw SQLite — UI won't see DB-only writes).
 
-    When launched from 9router Add Account, NINEROUTER_IMPORT_MODE=direct:
-    tokens are emitted on stdout and saved in-process (createProviderConnection).
-    Standalone CLI still uses HTTP POST /api/providers if mode=http.
+    Config (config.json → grok_cli):
+      enabled: true
+      base_url: "http://127.0.0.1:20127"
+      data_dir: "~/.9router"
     """
     conf = _load_config()
     gcli = conf.get("grok_cli") if isinstance(conf.get("grok_cli"), dict) else {}
-    # Default enabled when embedded; only skip if explicitly false
     if gcli.get("enabled") is False:
         print("[*] grok-cli convert disabled (grok_cli.enabled=false)")
         return
@@ -2182,6 +2611,7 @@ def convert_and_push_grok_cli(result: dict) -> None:
     from sso_to_build import convert_sso_to_build
 
     email = str(result.get("email") or "").strip()
+    # Human name for displayName (matches manual OAuth cards like "Neo Lin")
     given = str(result.get("given_name") or "").strip()
     family = str(result.get("family_name") or "").strip()
     display = f"{given} {family}".strip()
@@ -2192,6 +2622,9 @@ def convert_and_push_grok_cli(result: dict) -> None:
         tokens,
         base_url=str(gcli.get("base_url") or "http://127.0.0.1:20127"),
         data_dir=str(gcli.get("data_dir") or "~/.9router"),
+        # Dashboard password login (Gsuiteto9router style) — works for https://ai.khalid.id
+        password=str(gcli.get("password") or gcli.get("dashboard_password") or ""),
+        cli_token=str(gcli.get("cli_token") or ""),
         name=email or tokens.name,
         email=email or tokens.email,
         display_name=display or tokens.name,
@@ -2238,6 +2671,7 @@ def load_display_mode_from_config() -> str:
 def main():
     # Loop registrations; restart browser between rounds.
     global run_logger, WORKER_ID, DEFAULT_SSO_FILE, DISPLAY_MODE
+    global WORKER_TOTAL, POOL_TOTAL, POOL_OFFSET
 
     config_count = load_run_count()
     config_display = load_display_mode_from_config()
@@ -2292,41 +2726,50 @@ def main():
         ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         args.output = os.path.join(_sso_dir, f"sso_{ts}_w{wid}.txt")
 
+    WORKER_ID = wid
+    # This worker's share (from --count); pool env set by run_pool.py
+    WORKER_TOTAL = int(args.count) if args.count and args.count > 0 else int(os.environ.get("GROK_WORKER_SHARE", "0") or "0")
+    if args.count and args.count > 0:
+        WORKER_TOTAL = int(args.count)
+    POOL_TOTAL = int(os.environ.get("GROK_POOL_TOTAL", "0") or "0")
+    POOL_OFFSET = int(os.environ.get("GROK_POOL_OFFSET", "0") or "0")
+    if POOL_TOTAL <= 0 and WORKER_TOTAL > 0:
+        POOL_TOTAL = WORKER_TOTAL  # single-process: global == local
+
     run_logger = setup_run_logger()
-    print(f"[*] worker={wid} count={args.count} display={DISPLAY_MODE} output={args.output}")
-    if DISPLAY_MODE == "headless":
-        print("[*] headless: no focus steal, but Turnstile may fail more — switch to --offscreen if stuck")
-    elif DISPLAY_MODE == "offscreen":
-        print(
-            "[*] offscreen: one Chromium process, window minimized; "
-            "soft-reset between accounts (no relaunch blink)"
-        )
+    slog(
+        "BOOT",
+        f"share={WORKER_TOTAL or '∞'}  pool={POOL_TOTAL or WORKER_TOTAL or '∞'}  "
+        f"offset={POOL_OFFSET}  display={DISPLAY_MODE}  out={os.path.basename(args.output)}",
+    )
+    slog(
+        "BOOT",
+        "log legend: W# local/share · #global/total · remW left-on-worker · ✓ok ✗fail",
+    )
 
     current_round = 0
     collected_sso: list = []
     try:
+        slog("BROWSER", "starting Chromium…")
         start_browser()  # single process for all rounds
         while True:
             if args.count > 0 and current_round >= args.count:
                 break
 
             current_round += 1
-            print(f"\n[*] [w{wid}] Starting round {current_round}")
-            round_succeeded = False
+            progress_begin_account(current_round)
             hard_fail = False
 
             try:
                 result = run_single_registration(args.output, extract_numbers=args.extract_numbers)
-                # Keep raw token for legacy grok2api ssoBasic push; prefer sso_token
                 collected_sso.append(result.get("sso_token") or result.get("sso") or result.get("apiKey") or "")
-                round_succeeded = True
+                progress_end_account(True, f"email={result.get('email','')}")
             except KeyboardInterrupt:
-                print("\n[Info] Interrupted; stopping further rounds.")
+                slog("STOP", "interrupted by user", level="warn")
                 break
             except Exception as error:
-                print(f"[Error] [w{wid}] Round {current_round} failed: {error}")
+                progress_end_account(False, str(error))
                 err_l = str(error).lower()
-                # Only full relaunch if browser/CDP looks dead
                 hard_fail = any(
                     k in err_l
                     for k in (
@@ -2339,8 +2782,13 @@ def main():
                     )
                 )
             finally:
-                # Default soft reset = same window stays minimized, no top-flash relaunch
                 if args.count == 0 or current_round < args.count:
+                    slog(
+                        "BROWSER",
+                        "soft-reset → next account"
+                        if not hard_fail
+                        else "FULL restart (browser unhealthy)",
+                    )
                     restart_browser(force_full=hard_fail)
                     _apply_window_policy(quiet=True)
 
@@ -2348,10 +2796,13 @@ def main():
                 time.sleep(2)
 
     finally:
+        slog(
+            "SUMMARY",
+            f"worker finished  ✓{_progress_ok}  ✗{_progress_fail}  "
+            f"share={WORKER_TOTAL or current_round}",
+        )
         if collected_sso:
-            print(f"\n[*] [w{wid}] Done; pushing {len(collected_sso)} token(s) to API...")
             push_sso_to_api(collected_sso)
-
         stop_browser()
 
 

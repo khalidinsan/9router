@@ -358,6 +358,13 @@ export async function setupGrokRegister({ onLog = () => {} } = {}) {
 
 const IMPORT_MARKER = "@@GROK_CLI_IMPORT@@";
 
+/**
+ * Structured slog from farm.py, e.g.:
+ * 14:24:01 [W1 1/40 · #1/200 · remW 40 · ✓0 ✗0] EMAIL          alias=...
+ */
+const SLOG_RE =
+  /^(?<ts>\d{2}:\d{2}:\d{2})\s+\[W(?<wid>[^\s·\]]+)(?:\s+(?<cur>\d+)\/(?<share>\d+))?(?:\s*·\s*#(?<gidx>\d+)\/(?<gtotal>\d+))?(?:\s*·\s*remW\s+(?<remw>\d+))?(?:\s*·\s*✓(?<ok>\d+)\s*✗(?<fail>\d+))?\]\s+(?<phase>\S+)\s+(?<msg>.*)$/;
+
 function parseFarmLogLine(line) {
   // In-process import payload from push_9router_grok_cli.py
   if (line.includes(IMPORT_MARKER)) {
@@ -372,8 +379,43 @@ function parseFarmLogLine(line) {
       }
     }
   }
+
+  const slog = line.match(SLOG_RE);
+  if (slog?.groups) {
+    const g = slog.groups;
+    const phase = (g.phase || "RUN").trim().toUpperCase();
+    const msg = (g.msg || "").trim();
+    const emailMatch = msg.match(/(?:alias|email)=([^\s]+)/i);
+    let level = "info";
+    if (phase === "FAIL" || phase === "STOP" || /error|failed/i.test(msg)) level = "error";
+    else if (phase === "OK" || phase === "CREATED" || phase === "DONE" || phase === "PUSH")
+      level = "success";
+    else if (phase === "SUBMIT" || /warn|still on form|retry/i.test(msg)) level = "warn";
+
+    return {
+      type: "slog",
+      worker: String(g.wid || ""),
+      phase,
+      message: msg,
+      email: emailMatch ? emailMatch[1] : null,
+      level,
+      progress: {
+        localCur: g.cur ? Number(g.cur) : null,
+        localShare: g.share ? Number(g.share) : null,
+        globalIdx: g.gidx ? Number(g.gidx) : null,
+        globalTotal: g.gtotal ? Number(g.gtotal) : null,
+        remW: g.remw ? Number(g.remw) : null,
+        ok: g.ok != null ? Number(g.ok) : null,
+        fail: g.fail != null ? Number(g.fail) : null,
+      },
+    };
+  }
+
+  // legacy formats
   const created = line.match(/CREATED\s*\|\s*email=([^\s|]+)/i);
   if (created) return { type: "created", email: created[1].trim() };
+  const created2 = line.match(/\[\w[^\]]*\]\s+CREATED\s+email=(\S+)/i);
+  if (created2) return { type: "created", email: created2[1].trim() };
   const done = line.match(/Round complete,\s*email:\s*(\S+)/i);
   if (done) return { type: "created", email: done[1].trim() };
   return { type: "log" };
@@ -637,20 +679,60 @@ export async function runGrokRegister(opts = {}) {
         return;
       }
 
+      const parsed = parseFarmLogLine(text);
+
+      if (parsed.type === "slog") {
+        const p = parsed.progress || {};
+        onLog({
+          level: parsed.level || "info",
+          step: (parsed.phase || "farm").toLowerCase(),
+          message: parsed.message || text,
+          worker: parsed.worker || null,
+          phase: parsed.phase || null,
+          email: parsed.email || null,
+          progress: {
+            worker: parsed.worker || null,
+            localCur: p.localCur,
+            localShare: p.localShare,
+            globalIdx: p.globalIdx,
+            globalTotal: p.globalTotal,
+            remW: p.remW,
+            ok: p.ok,
+            fail: p.fail,
+          },
+        });
+        if (
+          (parsed.phase === "CREATED" || parsed.phase === "OK" || parsed.phase === "DONE") &&
+          parsed.email &&
+          !created.has(parsed.email)
+        ) {
+          created.add(parsed.email);
+        }
+        return;
+      }
+
+      if (parsed.type === "created" && parsed.email && !created.has(parsed.email)) {
+        created.add(parsed.email);
+        onLog({
+          level: "success",
+          step: "created",
+          message: `Account created: ${parsed.email}`,
+          email: parsed.email,
+        });
+        return;
+      }
+
+      // Skip pure noise heartbeats from IMAP wait
+      if (/\[IMAP\]\s*waiting\.\.\./i.test(text)) return;
+
       const level = /\[Error\]|error|failed|Traceback/i.test(text)
         ? "error"
-        : /Warn|warning/i.test(text)
+        : /Warn|warning|still on form/i.test(text)
           ? "warn"
-          : /CREATED|success|complete|ready/i.test(text)
+          : /CREATED|success|complete|ready|✓/i.test(text)
             ? "success"
             : "info";
       onLog({ level, step: "farm", message: text });
-
-      const parsed = parseFarmLogLine(text);
-      if (parsed.type === "created" && parsed.email && !created.has(parsed.email)) {
-        // May also get IMPORT marker later — mark provisional
-        created.add(parsed.email);
-      }
     };
 
     readline.createInterface({ input: child.stdout }).on("line", handleLine);
