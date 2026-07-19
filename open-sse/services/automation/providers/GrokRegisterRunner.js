@@ -499,6 +499,58 @@ export async function importGrokCliInProcess(payload) {
 /**
  * Run bundled farm pool.
  */
+/**
+ * Kill a child process and its descendants (pool.py + Chromium workers).
+ */
+export function killProcessTree(child, { graceMs = 2500 } = {}) {
+  if (!child || child.killed) return;
+  const pid = child.pid;
+  if (!pid) return;
+
+  try {
+    if (process.platform === "win32") {
+      spawn("taskkill", ["/PID", String(pid), "/T", "/F"], {
+        stdio: "ignore",
+        windowsHide: true,
+      });
+      return;
+    }
+    // Negative PID = process group (spawn with detached:true → new group)
+    try {
+      process.kill(-pid, "SIGTERM");
+    } catch {
+      try {
+        child.kill("SIGTERM");
+      } catch {
+        /* ignore */
+      }
+    }
+    setTimeout(() => {
+      try {
+        process.kill(-pid, "SIGKILL");
+      } catch {
+        try {
+          child.kill("SIGKILL");
+        } catch {
+          /* ignore */
+        }
+      }
+      // Orphan farm Chromium profiles (same marker as standalone)
+      try {
+        spawn("pkill", ["-f", "user-data-dir=.*/grok_pw_w"], { stdio: "ignore" });
+      } catch {
+        /* ignore */
+      }
+    }, graceMs);
+  } catch {
+    try {
+      child.kill("SIGKILL");
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
 export async function runGrokRegister(opts = {}) {
   const {
     count = 1,
@@ -511,6 +563,8 @@ export async function runGrokRegister(opts = {}) {
     onLog = () => {},
     onResult = () => {},
     onDone = () => {},
+    /** Optional: registerAbort(fn) so callers can force-stop the farm process tree */
+    registerAbort = null,
   } = opts;
 
   let status = await getGrokRegisterStatus();
@@ -614,8 +668,10 @@ export async function runGrokRegister(opts = {}) {
     errors: [],
   };
   const created = new Set();
+  let forcedStop = false;
 
   await new Promise((resolve, reject) => {
+    // detached → own process group on Unix so we can kill pool + worker Chromium together
     const child = spawn(python, args, {
       cwd: root,
       env: {
@@ -630,7 +686,20 @@ export async function runGrokRegister(opts = {}) {
         IMAP_PORT: String(emailCfg.imapPort || 993),
       },
       stdio: ["ignore", "pipe", "pipe"],
+      detached: process.platform !== "win32",
     });
+
+    if (typeof registerAbort === "function") {
+      registerAbort(() => {
+        forcedStop = true;
+        onLog({
+          level: "warn",
+          step: "stop",
+          message: "Force stop requested — killing farm + Chromium…",
+        });
+        killProcessTree(child);
+      });
+    }
 
     // Serialize in-process imports (sql.js / connection writes)
     let importChain = Promise.resolve();
@@ -750,11 +819,22 @@ export async function runGrokRegister(opts = {}) {
           const missing = Math.max(0, summary.total - summary.success);
           if (missing > 0) summary.failed = missing;
         }
-        onLog({
-          level: code === 0 ? "success" : "warn",
-          step: "done",
-          message: `Farm exited code ${code}; saved≈${summary.success} (direct DB, no HTTP)`,
-        });
+        if (forcedStop) {
+          summary.stopped = true;
+          summary.errors = summary.errors || [];
+          summary.errors.push("Force stopped by user");
+          onLog({
+            level: "warn",
+            step: "stop",
+            message: `Farm force-stopped; saved≈${summary.success} before stop`,
+          });
+        } else {
+          onLog({
+            level: code === 0 ? "success" : "warn",
+            step: "done",
+            message: `Farm exited code ${code}; saved≈${summary.success} (direct DB, no HTTP)`,
+          });
+        }
         // Always resolve with summary so SSE gets a clean `done` (not failed/error).
         // Zero registrations is a soft result, not a transport failure.
         onDone(summary);

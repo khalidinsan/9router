@@ -64,7 +64,10 @@ export async function GET(request) {
         // Always end with `done` (summary carries success/failed). Avoid SSE `error`
         // events for finished runs — they surface as scary red "automation failed"
         // even when the farm exited cleanly with 0 accounts registered.
-        if (run.status === "done" || run.status === "failed") {
+        const isTerminal = (st) =>
+          st === "done" || st === "failed" || st === "stopped";
+
+        if (isTerminal(run.status)) {
           emitter.done(finishSummary(run));
           controller.close();
           return;
@@ -99,7 +102,8 @@ export async function GET(request) {
             emitter.result(results[lastResultsLength++]);
           }
 
-          if (currentRun.status === "done" || currentRun.status === "failed") {
+          // "stopping" keeps streaming logs until process dies → "stopped"/"done"
+          if (isTerminal(currentRun.status)) {
             clearInterval(intervalId);
             emitter.done(finishSummary(currentRun));
             controller.close();

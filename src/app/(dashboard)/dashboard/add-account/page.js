@@ -57,6 +57,48 @@ function phaseClass(step) {
   return PHASE_COLORS[k] || PHASE_COLORS.farm;
 }
 
+/** Format seconds → "1h 02m" / "12m 05s" / "45s" */
+function formatDuration(sec) {
+  if (!Number.isFinite(sec) || sec < 0) return "—";
+  const s = Math.round(sec);
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const r = s % 60;
+  if (h > 0) return `${h}h ${String(m).padStart(2, "0")}m`;
+  if (m > 0) return `${m}m ${String(r).padStart(2, "0")}s`;
+  return `${r}s`;
+}
+
+/**
+ * Throughput + ETA from success count (acc/min) and remaining work.
+ * @param {number} ok - successful accounts so far
+ * @param {number} fail - failed accounts
+ * @param {number} total - planned total
+ * @param {number} elapsedSec - seconds since run started
+ */
+function computeRateEta(ok, fail, total, elapsedSec) {
+  const done = Math.max(0, (ok || 0) + (fail || 0));
+  const tot = Math.max(0, Number(total) || 0);
+  const elapsed = Math.max(0, elapsedSec || 0);
+  // Prefer success rate for "acc/min"; fall back to done/min if no successes yet
+  const rateBase = ok > 0 ? ok : done;
+  const perMin = elapsed >= 8 && rateBase > 0 ? (rateBase / elapsed) * 60 : 0;
+  const remaining = tot > 0 ? Math.max(0, tot - (ok > 0 ? ok : done)) : 0;
+  // ETA: remaining successes / success-per-sec (or remaining done if only failures)
+  let etaSec = null;
+  if (perMin > 0 && tot > 0 && remaining > 0) {
+    etaSec = (remaining / perMin) * 60;
+  } else if (tot > 0 && remaining === 0 && done > 0) {
+    etaSec = 0;
+  }
+  return {
+    perMin,
+    etaSec,
+    elapsedSec: elapsed,
+    remaining,
+  };
+}
+
 /** Derive live worker cards from structured farm logs. */
 function deriveWorkerBoard(logs, totalAccounts, concurrent) {
   const map = new Map();
@@ -145,6 +187,10 @@ export default function AddAccountPage() {
   const [grokStatusLoading, setGrokStatusLoading] = useState(false);
   const [logFilter, setLogFilter] = useState("all"); // all | W1 | W2 | …
   const [logAutoScroll, setLogAutoScroll] = useState(true);
+  const [activeRunId, setActiveRunId] = useState(null);
+  const [stopping, setStopping] = useState(false);
+  const [runStartedAt, setRunStartedAt] = useState(null); // ms epoch
+  const [nowTick, setNowTick] = useState(() => Date.now());
   const logRef = useRef(null);
   const eventSourceRef = useRef(null);
 
@@ -269,6 +315,13 @@ export default function AddAccountPage() {
     }
   }, [logs, logAutoScroll]);
 
+  // Live clock for elapsed / rate / ETA while running
+  useEffect(() => {
+    if (!running && !stopping) return undefined;
+    const id = setInterval(() => setNowTick(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [running, stopping]);
+
   const appendLog = useCallback((entry) => {
     setLogs((prev) => {
       const next = [
@@ -297,6 +350,16 @@ export default function AddAccountPage() {
   const progressPct =
     progressTotal > 0 ? Math.min(100, Math.round((progressDone / progressTotal) * 100)) : 0;
 
+  const elapsedSec = runStartedAt
+    ? Math.max(0, (nowTick - runStartedAt) / 1000)
+    : 0;
+  const { perMin: accPerMin, etaSec } = computeRateEta(
+    progressOk,
+    progressFail,
+    progressTotal,
+    elapsedSec
+  );
+
   const filteredLogs =
     !isGrokRegister || logFilter === "all"
       ? logs
@@ -308,6 +371,36 @@ export default function AddAccountPage() {
         );
 
   const workerIds = workerBoard?.workers?.map((w) => w.id) || [];
+
+  const handleForceStop = async () => {
+    if (!activeRunId || stopping) return;
+    setStopping(true);
+    appendLog({
+      level: "warn",
+      step: "stop",
+      message: "Force stop… killing farm + Chromium",
+    });
+    try {
+      const res = await fetch("/api/account-automation/stop", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ runId: activeRunId }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data.error || "Stop failed");
+      }
+      appendLog({
+        level: "warn",
+        step: "stop",
+        message: data.message || "Stop signal sent",
+      });
+    } catch (e) {
+      setError(e.message);
+      appendLog({ level: "error", step: "stop", message: e.message });
+      setStopping(false);
+    }
+  };
 
   const attachSse = (runId, { onFinish } = {}) => {
     const es = new EventSource(
@@ -321,6 +414,8 @@ export default function AddAccountPage() {
       if (finished) return;
       finished = true;
       closeEventSource();
+      setStopping(false);
+      setActiveRunId(null);
       onFinish?.();
     };
 
@@ -344,7 +439,13 @@ export default function AddAccountPage() {
       try {
         const data = JSON.parse(e.data);
         setSummary(data);
-        if (data?.error && data.success === 0 && data.failed > 0) {
+        if (data?.stopped || data?.status === "stopped") {
+          appendLog({
+            level: "warn",
+            step: "stop",
+            message: `Stopped — ✓${data.success || 0} saved before stop`,
+          });
+        } else if (data?.error && data.success === 0 && data.failed > 0) {
           // Soft failure summary — log once, not as SSE transport error
           appendLog({
             level: "warn",
@@ -439,11 +540,14 @@ export default function AddAccountPage() {
     }
 
     setRunning(true);
+    setStopping(false);
     setLogs([]);
     setResults([]);
     setSummary(null);
     setError(null);
     setLogFilter("all");
+    setRunStartedAt(Date.now());
+    setActiveRunId(null);
     closeEventSource();
 
     try {
@@ -507,10 +611,12 @@ export default function AddAccountPage() {
 
       const runId = data.runId;
       if (!runId) throw new Error("No run ID returned from server");
+      setActiveRunId(runId);
 
       attachSse(runId, {
         onFinish: () => {
           setRunning(false);
+          setStopping(false);
           if (isGrokRegister) refreshGrokStatus();
         },
       });
@@ -518,6 +624,8 @@ export default function AddAccountPage() {
       setError(err.message);
       appendLog({ level: "error", step: "start", message: err.message });
       setRunning(false);
+      setStopping(false);
+      setActiveRunId(null);
     }
   };
 
@@ -808,18 +916,30 @@ export default function AddAccountPage() {
             </div>
           )}
 
-          <div className="flex items-center gap-3">
+          <div className="flex flex-wrap items-center gap-3">
             <Button
               onClick={handleRun}
-              disabled={running || setupRunning || !canRun}
-              loading={running}
+              disabled={running || setupRunning || !canRun || stopping}
+              loading={running && !stopping}
               icon="play_arrow"
             >
               {isGrokRegister ? "Run Grok Register" : "Run Automation"}
             </Button>
             {running && (
+              <Button
+                variant="secondary"
+                onClick={handleForceStop}
+                disabled={stopping || !activeRunId}
+                loading={stopping}
+                icon="stop_circle"
+                className="!border-red-500/40 !text-red-500 hover:!bg-red-500/10"
+              >
+                {stopping ? "Stopping…" : "Force Stop"}
+              </Button>
+            )}
+            {running && (
               <span className="text-sm text-text-muted animate-pulse">
-                Automation running…
+                {stopping ? "Force stopping workers + Chrome…" : "Automation running…"}
               </span>
             )}
           </div>
@@ -847,7 +967,7 @@ export default function AddAccountPage() {
                     </span>
                   </div>
                 </div>
-                <div className="flex flex-wrap gap-3 text-sm tabular-nums">
+                <div className="flex flex-wrap gap-x-4 gap-y-1 text-sm tabular-nums">
                   <span className="text-emerald-500">
                     ✓ <strong>{progressOk}</strong>
                   </span>
@@ -862,16 +982,62 @@ export default function AddAccountPage() {
                   </span>
                   {running && (
                     <span className="text-sky-400 animate-pulse text-xs self-center">
-                      running…
+                      {stopping ? "stopping…" : "running…"}
                     </span>
                   )}
                 </div>
               </div>
-              <div className="h-2.5 w-full rounded-full bg-surface-2 overflow-hidden">
+              <div className="h-2.5 w-full rounded-full bg-surface-2 overflow-hidden mb-3">
                 <div
                   className="h-full rounded-full bg-gradient-to-r from-emerald-600 to-emerald-400 transition-all duration-500"
                   style={{ width: `${progressPct}%` }}
                 />
+              </div>
+              {/* Rate + ETA */}
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs sm:text-sm">
+                <div className="rounded-lg bg-surface-2/80 px-2.5 py-1.5">
+                  <div className="text-[10px] uppercase text-text-muted tracking-wide">
+                    Elapsed
+                  </div>
+                  <div className="font-semibold tabular-nums text-text-main">
+                    {formatDuration(elapsedSec)}
+                  </div>
+                </div>
+                <div className="rounded-lg bg-surface-2/80 px-2.5 py-1.5">
+                  <div className="text-[10px] uppercase text-text-muted tracking-wide">
+                    Acc / min
+                  </div>
+                  <div className="font-semibold tabular-nums text-sky-400">
+                    {accPerMin > 0 ? `~${accPerMin.toFixed(1)}` : "—"}
+                  </div>
+                </div>
+                <div className="rounded-lg bg-surface-2/80 px-2.5 py-1.5">
+                  <div className="text-[10px] uppercase text-text-muted tracking-wide">
+                    ETA left
+                  </div>
+                  <div className="font-semibold tabular-nums text-amber-400">
+                    {etaSec == null
+                      ? progressOk === 0 && progressDone === 0
+                        ? "…"
+                        : "—"
+                      : etaSec <= 0
+                        ? "done"
+                        : `~${formatDuration(etaSec)}`}
+                  </div>
+                </div>
+                <div className="rounded-lg bg-surface-2/80 px-2.5 py-1.5">
+                  <div className="text-[10px] uppercase text-text-muted tracking-wide">
+                    Finish ~
+                  </div>
+                  <div className="font-semibold tabular-nums text-text-main">
+                    {etaSec != null && etaSec > 0 && runStartedAt
+                      ? new Date(Date.now() + etaSec * 1000).toLocaleTimeString([], {
+                          hour: "2-digit",
+                          minute: "2-digit",
+                        })
+                      : "—"}
+                  </div>
+                </div>
               </div>
             </div>
 
@@ -1083,7 +1249,7 @@ export default function AddAccountPage() {
 
       {summary && (
         <Card title="Summary" icon="summarize">
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
             <div className="rounded-lg border border-border-subtle bg-bg px-3 py-2">
               <div className="text-[11px] text-text-muted uppercase">Total</div>
               <div className="text-xl font-semibold tabular-nums text-text-main">
@@ -1108,7 +1274,28 @@ export default function AddAccountPage() {
                 {savedOk}
               </div>
             </div>
+            <div className="rounded-lg border border-sky-500/20 bg-sky-500/5 px-3 py-2">
+              <div className="text-[11px] text-sky-600/80 uppercase">Acc / min</div>
+              <div className="text-xl font-semibold tabular-nums text-sky-400">
+                {elapsedSec > 0 && progressOk > 0
+                  ? `~${((progressOk / elapsedSec) * 60).toFixed(1)}`
+                  : "—"}
+              </div>
+            </div>
+            <div className="rounded-lg border border-border-subtle bg-bg px-3 py-2">
+              <div className="text-[11px] text-text-muted uppercase">
+                {summary.stopped || summary.status === "stopped" ? "Stopped after" : "Duration"}
+              </div>
+              <div className="text-xl font-semibold tabular-nums text-text-main">
+                {formatDuration(elapsedSec)}
+              </div>
+            </div>
           </div>
+          {(summary.stopped || summary.status === "stopped") && (
+            <p className="mt-2 text-xs text-amber-600 dark:text-amber-400">
+              Run was force-stopped. Partial results above were already saved.
+            </p>
+          )}
           {Array.isArray(summary.errors) && summary.errors.length > 0 && (
             <div className="mt-3 rounded-lg border border-amber-500/20 bg-amber-500/5 px-3 py-2 text-xs text-amber-700 dark:text-amber-300 space-y-1">
               {summary.errors.slice(0, 5).map((err, i) => (

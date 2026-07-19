@@ -49,17 +49,25 @@ function attachRunHandlers(runId) {
     onDone: (summary) => {
       const current = globalThis.accountAutomationRuns.get(runId);
       if (current) {
-        // Always "done" when the farm process finished cleanly — even if 0 accounts
+        // Always terminal when the farm process finished — even if 0 accounts
         // succeeded. "failed" is reserved for hard crashes (no summary / spawn errors).
-        current.status = "done";
+        // "stopped" = user force-stop.
+        const st = summary?.stopped
+          ? "stopped"
+          : current.status === "stopping"
+            ? "stopped"
+            : "done";
+        current.status = st;
         current.endedAt = new Date().toISOString();
         current.summary = {
           total: summary?.total ?? 0,
           success: summary?.success ?? 0,
           failed: summary?.failed ?? 0,
           errors: summary?.errors || [],
-          status: "done",
+          stopped: Boolean(summary?.stopped),
+          status: st,
         };
+        current.abort = null;
       }
     },
   };
@@ -131,14 +139,36 @@ async function spawnGrokRegister(runId, options) {
       stagger: options.stagger,
       autoSetup: options.autoSetup !== false,
       email: options.email || null,
+      registerAbort: (fn) => {
+        const current = globalThis.accountAutomationRuns.get(runId);
+        if (current) current.abort = fn;
+      },
       ...handlers,
     });
   } catch (error) {
     const current = globalThis.accountAutomationRuns.get(runId);
     if (current) {
+      // Force-stop also rejects/aborts mid-flight in some paths
+      if (current.status === "stopping" || current.status === "stopped") {
+        current.status = "stopped";
+        current.endedAt = new Date().toISOString();
+        current.abort = null;
+        if (!current.summary) {
+          current.summary = {
+            total: options.count || 0,
+            success: current.results.filter((r) => r.success).length,
+            failed: 0,
+            errors: ["Force stopped by user"],
+            stopped: true,
+            status: "stopped",
+          };
+        }
+        return;
+      }
       current.status = "failed";
       current.endedAt = new Date().toISOString();
       current.error = error.message;
+      current.abort = null;
       current.logs.push({
         level: "error",
         step: "grok-register",

@@ -2747,6 +2747,25 @@ def main():
         "log legend: W# local/share · #global/total · remW left-on-worker · ✓ok ✗fail",
     )
 
+    # Pool/TUI sends SIGTERM to the whole process group on quit — close Chromium cleanly.
+    def _on_term(signum=None, frame=None):
+        try:
+            slog("STOP", f"signal {signum} — quitting browser", level="warn")
+        except Exception:
+            pass
+        try:
+            stop_browser()
+        except Exception:
+            pass
+        raise SystemExit(143 if signum == getattr(__import__("signal"), "SIGTERM", 15) else 130)
+
+    try:
+        import signal as _signal
+        _signal.signal(_signal.SIGTERM, _on_term)
+        _signal.signal(_signal.SIGINT, _on_term)
+    except Exception:
+        pass
+
     current_round = 0
     collected_sso: list = []
     try:

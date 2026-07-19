@@ -30,15 +30,18 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
-# ── pool helpers (reuse pool.py) ──────────────────────────────────────────
+# ── pool helpers (reuse run_pool) ──────────────────────────────────────────
 from pool import (
     ROOT,
     SCRIPT,
     _mask_proxy,
+    kill_orphan_farm_chrome,
     load_pool_config,
     load_proxy_file,
     platform_is_mac,
+    spawn_worker_process,
     split_workload,
+    terminate_worker_tree,
 )
 
 # ── log line parser ────────────────────────────────────────────────────────
@@ -356,14 +359,12 @@ class PoolRunner:
         w.status = "starting"
         w.started_at = time.time()
         try:
-            proc = subprocess.Popen(
+            # Own process group so quit kills Python + Chromium children
+            proc = spawn_worker_process(
                 cmd,
                 cwd=str(ROOT),
                 env=env,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                bufsize=1,
+                capture_output=True,
             )
         except Exception as e:
             w.status = "dead"
@@ -445,27 +446,33 @@ class PoolRunner:
             self.event_q.put(("worker_exit", w.wid))
 
     def stop_all(self) -> None:
+        """Stop every worker Python process + its Chromium tree."""
         self.state.stopping = True
         self._stop.set()
+        ports: list[int] = []
         for w in self.state.workers.values():
-            p = w.proc
-            if p and p.poll() is None:
-                try:
-                    p.terminate()
-                except Exception:
-                    pass
-        deadline = time.time() + 6
-        for w in self.state.workers.values():
-            p = w.proc
-            if not p:
-                continue
-            while p.poll() is None and time.time() < deadline:
-                time.sleep(0.15)
-            if p.poll() is None:
-                try:
-                    p.kill()
-                except Exception:
-                    pass
+            ports.append(w.debug_port)
+            terminate_worker_tree(
+                w.proc,
+                debug_port=w.debug_port,
+                grace_sec=2.5,
+            )
+            w.status = "dead" if (w.proc and w.proc.poll()) else w.status
+        # Final sweep (orphans / detached Chrome for Testing)
+        kill_orphan_farm_chrome(ports)
+        self.event_q.put(
+            (
+                "log",
+                LogLine(
+                    ts=time.strftime("%H:%M:%S"),
+                    wid="pool",
+                    phase="POOL",
+                    message="all workers + Chromium stopped",
+                    raw="",
+                    level="info",
+                ),
+            )
+        )
 
 
 # ── Textual UI ─────────────────────────────────────────────────────────────
@@ -525,20 +532,38 @@ def run_tui(args_ns: argparse.Namespace) -> int:
         filled = max(0, min(width, filled))
         return "█" * filled + "░" * (width - filled)
 
+    def _fmt_dur(sec: float) -> str:
+        if not sec or sec < 0 or sec != sec:  # NaN
+            return "—"
+        s = int(round(sec))
+        h, s = divmod(s, 3600)
+        m, s = divmod(s, 60)
+        if h:
+            return f"{h}h {m:02d}m"
+        if m:
+            return f"{m}m {s:02d}s"
+        return f"{s}s"
+
     class SummaryPanel(Static):
         def render(self):
             elapsed = time.time() - state.started_at if state.started_at else 0
-            mins = int(elapsed // 60)
-            secs = int(elapsed % 60)
             tot = state.total if state.total > 0 else 0
             done = state.done
+            ok = state.ok
+            fail = state.fail
             pct = (done / tot * 100) if tot else 0
-            rate = (done / (elapsed / 60.0)) if elapsed > 15 and done else 0
+            # acc/min: prefer successful accounts; else total done (early stage)
+            rate_base = ok if ok > 0 else done
+            rate = (rate_base / (elapsed / 60.0)) if elapsed >= 8 and rate_base > 0 else 0.0
+            remaining = max(0, tot - (ok if ok > 0 else done)) if tot else 0
+            eta_sec = (remaining / rate * 60.0) if rate > 0 and remaining > 0 else (
+                0.0 if tot and remaining == 0 and done > 0 else None
+            )
 
             head = Text()
             head.append(" Grok Farm ", style="bold white on dark_blue")
             head.append(f"  {display}  ", style="dim")
-            head.append(f"elapsed {mins:02d}:{secs:02d}", style="cyan")
+            head.append(f"elapsed {_fmt_dur(elapsed)}", style="cyan")
             if state.stopping:
                 head.append("  STOPPING…", style="bold red")
 
@@ -548,18 +573,37 @@ def run_tui(args_ns: argparse.Namespace) -> int:
                 stats.append(f"({pct:.0f}%)  ", style="dim")
             else:
                 stats.append(f"  done={done}  ∞ mode  ", style="bold")
-            stats.append(f"✓{state.ok} ", style="bold green")
-            stats.append(f"✗{state.fail}  ", style="bold red")
+            stats.append(f"✓{ok} ", style="bold green")
+            stats.append(f"✗{fail}  ", style="bold red")
             stats.append(f"alive={state.alive}/{len(state.workers)}  ", style="cyan")
-            if rate:
-                stats.append(f"~{rate:.1f}/min", style="dim")
+
+            rate_line = Text("  ")
+            if rate > 0:
+                rate_line.append(f"~{rate:.1f} acc/min  ", style="bold cyan")
+            else:
+                rate_line.append("acc/min …  ", style="dim")
+            if eta_sec is None:
+                rate_line.append("ETA …", style="dim")
+            elif eta_sec <= 0:
+                rate_line.append("ETA done", style="green")
+            else:
+                rate_line.append(f"ETA ~{_fmt_dur(eta_sec)}", style="yellow")
+                try:
+                    finish_ts = time.strftime(
+                        "%H:%M", time.localtime(time.time() + eta_sec)
+                    )
+                    rate_line.append(f"  (≈{finish_ts})", style="dim")
+                except Exception:
+                    pass
+            if remaining and tot:
+                rate_line.append(f"  left {remaining}", style="dim")
 
             bar = Text("  ")
             bar.append(_ascii_bar(done, tot, 40), style="green" if done else "dim")
             if tot:
                 bar.append(f"  {pct:.0f}%", style="dim")
 
-            return Group(head, stats, bar)
+            return Group(head, stats, rate_line, bar)
 
     class FarmApp(App):
         CSS = """
@@ -567,7 +611,7 @@ def run_tui(args_ns: argparse.Namespace) -> int:
             layout: vertical;
         }
         #summary {
-            height: 5;
+            height: 7;
             border: solid $accent;
             padding: 0 1;
             margin: 0 0 1 0;
@@ -755,8 +799,20 @@ def run_tui(args_ns: argparse.Namespace) -> int:
         def action_quit_stop(self) -> None:
             if not state.stopping:
                 state.stopping = True
-                self.query_one("#log", RichLog).write("[bold red]stopping all workers…[/]")
+                try:
+                    self.query_one("#log", RichLog).write(
+                        "[bold red]stopping all workers + Chromium…[/]"
+                    )
+                except Exception:
+                    pass
+                # Synchronous: wait until process groups + CDP ports are dead
                 runner.stop_all()
+                try:
+                    self.query_one("#log", RichLog).write(
+                        "[bold green]Chrome closed. Bye.[/]"
+                    )
+                except Exception:
+                    pass
             self.exit(self._exit_code)
 
     app = FarmApp()

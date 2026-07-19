@@ -141,6 +141,165 @@ def _mask_proxy(url: str) -> str:
         return "***"
 
 
+def spawn_worker_process(
+    cmd: list[str],
+    *,
+    cwd: str,
+    env: dict,
+    capture_output: bool = False,
+) -> subprocess.Popen:
+    """
+    Spawn a worker in its own process group so Ctrl+C / quit can kill
+    Python + Chromium children together (not leave orphan Chrome windows).
+    """
+    kwargs: dict = {
+        "cwd": cwd,
+        "env": env,
+    }
+    if capture_output:
+        kwargs["stdout"] = subprocess.PIPE
+        kwargs["stderr"] = subprocess.STDOUT
+        kwargs["text"] = True
+        kwargs["bufsize"] = 1
+
+    if sys.platform == "win32":
+        # Kill tree via taskkill /T later
+        kwargs["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+    else:
+        # New session = process group leader (pgid == pid)
+        kwargs["start_new_session"] = True
+
+    return subprocess.Popen(cmd, **kwargs)
+
+
+def _kill_pids(pids: list[int], sig: int = signal.SIGTERM) -> None:
+    for pid in pids:
+        if pid <= 0:
+            continue
+        try:
+            os.kill(pid, sig)
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+
+
+def _pids_listening_on_port(port: int) -> list[int]:
+    """PIDs bound to TCP listen port (Chrome CDP)."""
+    if port <= 0:
+        return []
+    pids: list[int] = []
+    try:
+        out = subprocess.check_output(
+            ["lsof", "-nP", f"-iTCP:{port}", "-sTCP:LISTEN", "-t"],
+            text=True,
+            stderr=subprocess.DEVNULL,
+            timeout=3,
+        )
+        for line in out.split():
+            try:
+                pids.append(int(line.strip()))
+            except ValueError:
+                pass
+    except Exception:
+        pass
+    return pids
+
+
+def kill_orphan_farm_chrome(debug_ports: list[int] | None = None) -> None:
+    """
+    Best-effort sweep of leftover farm Chromium only.
+    Never targets daily Google Chrome.app — only:
+      - CDP ports used by workers
+      - temp profiles grok_pw_w*
+      - Playwright Chrome for Testing with those profiles
+    """
+    ports = list(debug_ports or [])
+    for port in ports:
+        for pid in _pids_listening_on_port(port):
+            _kill_pids([pid], signal.SIGKILL)
+
+    # Profile marker from DrissionPage_example.start_browser()
+    patterns = [
+        r"user-data-dir=.*/grok_pw_w",
+        r"--user-data-dir=.*grok_pw_w",
+    ]
+    for pat in patterns:
+        try:
+            subprocess.run(
+                ["pkill", "-f", pat],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=4,
+            )
+        except Exception:
+            pass
+
+
+def terminate_worker_tree(
+    proc: subprocess.Popen | None,
+    *,
+    debug_port: int = 0,
+    grace_sec: float = 2.5,
+) -> None:
+    """
+    SIGTERM process group (Python worker + Chromium children), then SIGKILL,
+    then port/profile sweep for orphans.
+    """
+    if proc is None:
+        if debug_port:
+            kill_orphan_farm_chrome([debug_port])
+        return
+
+    pid = proc.pid
+    alive = proc.poll() is None
+
+    if alive:
+        if sys.platform == "win32":
+            try:
+                # /T = kill child tree
+                subprocess.run(
+                    ["taskkill", "/PID", str(pid), "/T", "/F"],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    timeout=8,
+                )
+            except Exception:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+        else:
+            # Process group (start_new_session=True → pgid == pid)
+            try:
+                os.killpg(pid, signal.SIGTERM)
+            except (ProcessLookupError, PermissionError, OSError):
+                try:
+                    proc.terminate()
+                except Exception:
+                    pass
+
+            deadline = time.time() + grace_sec
+            while proc.poll() is None and time.time() < deadline:
+                time.sleep(0.1)
+
+            if proc.poll() is None:
+                try:
+                    os.killpg(pid, signal.SIGKILL)
+                except (ProcessLookupError, PermissionError, OSError):
+                    try:
+                        proc.kill()
+                    except Exception:
+                        pass
+                # brief wait after KILL
+                try:
+                    proc.wait(timeout=1.5)
+                except Exception:
+                    pass
+
+    # Chrome sometimes detaches; clean by CDP port + profile
+    ports = [debug_port] if debug_port else []
+    kill_orphan_farm_chrome(ports)
+
+
 def main() -> int:
     cfg = load_pool_config()
 
@@ -272,19 +431,17 @@ def main() -> int:
         )
     print("=" * 60)
 
-    procs: list[subprocess.Popen] = []
+    # (Popen, debug_port) so shutdown can kill Chromium by CDP port too
+    procs: list[tuple[subprocess.Popen, int]] = []
 
     def _shutdown(signum=None, frame=None):
-        print("\n[pool] stopping workers...")
-        for p in procs:
-            if p.poll() is None:
-                p.terminate()
-        deadline = time.time() + 8
-        for p in procs:
-            while p.poll() is None and time.time() < deadline:
-                time.sleep(0.2)
-            if p.poll() is None:
-                p.kill()
+        print("\n[pool] stopping workers + Chromium…")
+        ports = []
+        for p, port in procs:
+            ports.append(port)
+            terminate_worker_tree(p, debug_port=port, grace_sec=2.0)
+        kill_orphan_farm_chrome(ports)
+        print("[pool] all workers stopped")
         sys.exit(130 if signum else 0)
 
     signal.signal(signal.SIGINT, _shutdown)
@@ -337,13 +494,8 @@ def main() -> int:
             print(f"       cmd: {' '.join(cmd)}")
         else:
             env.setdefault("PYTHONUNBUFFERED", "1")
-            procs.append(
-                subprocess.Popen(
-                    cmd,
-                    cwd=str(ROOT),
-                    env=env,
-                )
-            )
+            p = spawn_worker_process(cmd, cwd=str(ROOT), env=env, capture_output=False)
+            procs.append((p, debug_port))
 
         if i + 1 < n_workers and args.stagger_sec > 0:
             print(f"[pool] stagger sleep {args.stagger_sec}s ...")
@@ -354,10 +506,22 @@ def main() -> int:
         print("[pool] dry-run done")
         return 0
 
-    print(f"[pool] {len(procs)} workers running — Ctrl+C to stop all")
-    codes = [p.wait() for p in procs]
+    print(f"[pool] {len(procs)} workers running — Ctrl+C to stop all (closes Chromium too)")
+    t0 = time.time()
+    codes = [p.wait() for p, _ in procs]
+    elapsed = max(0.1, time.time() - t0)
+    # Normal finish: still sweep any orphan chrome
+    kill_orphan_farm_chrome([port for _, port in procs])
     ok = sum(1 for c in codes if c == 0)
-    print(f"[pool] done: {ok}/{len(codes)} workers exit 0  codes={codes}")
+    # Rough throughput: total accounts / wall minutes (worker exit codes only)
+    if total > 0:
+        per_min = total / (elapsed / 60.0)
+        print(
+            f"[pool] done: {ok}/{len(codes)} workers exit 0  codes={codes}  "
+            f"wall={elapsed/60:.1f}m  ~{per_min:.1f} acc/min (planned {total})"
+        )
+    else:
+        print(f"[pool] done: {ok}/{len(codes)} workers exit 0  codes={codes}")
     return 0 if all(c == 0 for c in codes) else 1
 
 
