@@ -494,6 +494,8 @@ def run_tui(args_ns: argparse.Namespace) -> int:
         return 2
 
     cfg = load_pool_config()
+    if getattr(args_ns, "unlimited", False):
+        args_ns.count = 0
     total = args_ns.count
     concurrent = args_ns.workers if args_ns.workers is not None else args_ns.concurrent
     if concurrent < 1:
@@ -834,7 +836,19 @@ def build_arg_parser() -> argparse.ArgumentParser:
         description="Grok farm TUI — live multi-worker dashboard",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    p.add_argument("-n", "--count", type=int, default=cfg["count"], help="total accounts")
+    p.add_argument(
+        "-n",
+        "--count",
+        type=int,
+        default=cfg["count"],
+        help="total accounts (0 = unlimited until stop)",
+    )
+    p.add_argument(
+        "-u",
+        "--unlimited",
+        action="store_true",
+        help="farm forever until quit (same as -n 0)",
+    )
     p.add_argument(
         "-c",
         "--concurrent",

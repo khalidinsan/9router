@@ -3,7 +3,8 @@
 Concurrent Grok farm pool.
 
 Clear semantics:
-  --count N       total accounts to create
+  --count N       total accounts to create (0 = unlimited)
+  --unlimited     same as --count 0 (run until Ctrl+C / stop)
   --concurrent K  how many browsers in parallel
 
 Example:
@@ -12,6 +13,7 @@ Example:
 
 Also:
   python run_pool.py -n 10 -c 2 --offscreen
+  python run_pool.py --unlimited -c 2 --offscreen
   python run_pool.py --dry-run -n 100 -c 3
 """
 
@@ -315,7 +317,13 @@ def main() -> int:
         "--count",
         type=int,
         default=cfg["count"],
-        help=f"TOTAL accounts to create (default {cfg['count']}; 0 = infinite per worker)",
+        help=f"TOTAL accounts to create (default {cfg['count']}; 0 = unlimited until stop)",
+    )
+    parser.add_argument(
+        "-u",
+        "--unlimited",
+        action="store_true",
+        help="farm forever until Ctrl+C / stop (same as -n 0)",
     )
     parser.add_argument(
         "-c",
@@ -369,6 +377,9 @@ def main() -> int:
         help="launch live Terminal UI dashboard (farm_tui.py) instead of raw logs",
     )
     args = parser.parse_args()
+
+    if getattr(args, "unlimited", False):
+        args.count = 0
 
     if args.tui:
         # Hand off to farm_tui with the same CLI flags (minus --tui)

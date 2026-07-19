@@ -210,10 +210,12 @@ export async function POST(request) {
 
     // --- Grok CLI Register (farm) ---
     if (provider === "grok-cli") {
-      const total = Math.max(1, Number(count) || 1);
+      // 0 = unlimited (run until Force stop)
+      const rawCount = Number(count);
+      const total = Number.isFinite(rawCount) && rawCount >= 0 ? Math.floor(rawCount) : 1;
       const conc = Math.max(1, Number(concurrent) || 1);
       if (total > 500) {
-        return NextResponse.json({ error: "count max is 500 per run" }, { status: 400 });
+        return NextResponse.json({ error: "count max is 500 per run (use 0 for unlimited)" }, { status: 400 });
       }
       if (conc > 10) {
         return NextResponse.json({ error: "concurrent max is 10" }, { status: 400 });

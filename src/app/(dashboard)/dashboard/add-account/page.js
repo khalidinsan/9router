@@ -342,13 +342,20 @@ export default function AddAccountPage() {
   const savedOk = results.filter((r) => r.success).length;
   const progressOk = Math.max(workerBoard?.globalOk || 0, savedOk, summary?.success || 0);
   const progressFail = Math.max(workerBoard?.globalFail || 0, summary?.failed || 0);
-  const progressTotal = Number(count) || workerBoard?.globalTotal || 0;
-  const progressDone = Math.min(
-    progressTotal || progressOk + progressFail,
-    progressOk + progressFail
-  );
-  const progressPct =
-    progressTotal > 0 ? Math.min(100, Math.round((progressDone / progressTotal) * 100)) : 0;
+  const progressTotal = Number(count) > 0
+    ? Number(count)
+    : Number(count) === 0
+      ? 0
+      : workerBoard?.globalTotal || 0;
+  const isUnlimited = progressTotal === 0;
+  const progressDone = isUnlimited
+    ? progressOk + progressFail
+    : Math.min(progressTotal, progressOk + progressFail);
+  const progressPct = isUnlimited
+    ? 0
+    : progressTotal > 0
+      ? Math.min(100, Math.round((progressDone / progressTotal) * 100))
+      : 0;
 
   const elapsedSec = runStartedAt
     ? Math.max(0, (nowTick - runStartedAt) / 1000)
@@ -527,8 +534,9 @@ export default function AddAccountPage() {
 
   const handleRun = async () => {
     if (isGrokRegister) {
-      if (Number(count) < 1) {
-        setError("Count must be at least 1.");
+      const n = Number(count);
+      if (!Number.isFinite(n) || n < 0) {
+        setError("Count must be 0 (unlimited) or a positive number.");
         return;
       }
     } else {
@@ -576,7 +584,11 @@ export default function AddAccountPage() {
       const body = isGrokRegister
         ? {
             provider: "grok-cli",
-            count: Math.max(1, Number(count) || 1),
+            // 0 = unlimited until Force stop
+            count: (() => {
+              const n = Number(count);
+              return Number.isFinite(n) && n >= 0 ? Math.floor(n) : 1;
+            })(),
             concurrent: Math.max(1, Number(concurrent) || 1),
             display,
             stagger: Math.max(0, Number(stagger) || 0),
@@ -635,7 +647,7 @@ export default function AddAccountPage() {
     imapUser.trim() &&
     (imapPass.trim() || hasSavedImapPass);
   const canRun = isGrokRegister
-    ? Number(count) >= 1 && Number(concurrent) >= 1 && emailReady
+    ? Number.isFinite(Number(count)) && Number(count) >= 0 && Number(concurrent) >= 1 && emailReady
     : parsedCount > 0;
 
   return (
@@ -819,11 +831,11 @@ export default function AddAccountPage() {
                 <Input
                   label="Total accounts"
                   type="number"
-                  min={1}
+                  min={0}
                   max={500}
                   value={count}
                   onChange={(e) => setCount(e.target.value)}
-                  hint="How many Grok accounts to create."
+                  hint="How many to create. Use 0 for unlimited (stop manually)."
                 />
                 <Input
                   label="Concurrent"
@@ -960,11 +972,18 @@ export default function AddAccountPage() {
                   <div className="text-lg font-semibold tabular-nums text-text-main">
                     {progressDone}
                     <span className="text-text-muted font-normal">
-                      /{progressTotal || "?"}
+                      /{isUnlimited ? "∞" : progressTotal || "?"}
                     </span>
-                    <span className="ml-2 text-sm font-normal text-text-muted">
-                      ({progressPct}%)
-                    </span>
+                    {!isUnlimited && (
+                      <span className="ml-2 text-sm font-normal text-text-muted">
+                        ({progressPct}%)
+                      </span>
+                    )}
+                    {isUnlimited && (
+                      <span className="ml-2 text-sm font-normal text-sky-400">
+                        unlimited
+                      </span>
+                    )}
                   </div>
                 </div>
                 <div className="flex flex-wrap gap-x-4 gap-y-1 text-sm tabular-nums">
@@ -1016,13 +1035,15 @@ export default function AddAccountPage() {
                     ETA left
                   </div>
                   <div className="font-semibold tabular-nums text-amber-400">
-                    {etaSec == null
-                      ? progressOk === 0 && progressDone === 0
-                        ? "…"
-                        : "—"
-                      : etaSec <= 0
-                        ? "done"
-                        : `~${formatDuration(etaSec)}`}
+                    {isUnlimited
+                      ? "∞"
+                      : etaSec == null
+                        ? progressOk === 0 && progressDone === 0
+                          ? "…"
+                          : "—"
+                        : etaSec <= 0
+                          ? "done"
+                          : `~${formatDuration(etaSec)}`}
                   </div>
                 </div>
                 <div className="rounded-lg bg-surface-2/80 px-2.5 py-1.5">

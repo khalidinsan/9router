@@ -2677,7 +2677,19 @@ def main():
     config_display = load_display_mode_from_config()
 
     parser = argparse.ArgumentParser(description="xAI auto-register and capture SSO / Grok CLI tokens")
-    parser.add_argument("--count", type=int, default=config_count, help=f"rounds (0=infinite; default config run.count={config_count})")
+    parser.add_argument(
+        "-n",
+        "--count",
+        type=int,
+        default=config_count,
+        help=f"rounds (0=unlimited until stop; default config run.count={config_count})",
+    )
+    parser.add_argument(
+        "-u",
+        "--unlimited",
+        action="store_true",
+        help="farm forever until Ctrl+C / stop (same as -n 0)",
+    )
     parser.add_argument("--output", default=None, help="SSO output txt path")
     parser.add_argument("--worker-id", default="", help="Worker id (pool); also set via GROK_WORKER_ID")
     parser.add_argument(
@@ -2698,6 +2710,8 @@ def main():
     )
     parser.add_argument("--extract-numbers", action="store_true", help="Also extract visible numbers after signup")
     args = parser.parse_args()
+    if getattr(args, "unlimited", False):
+        args.count = 0
 
     if args.worker_id:
         WORKER_ID = str(args.worker_id).strip()

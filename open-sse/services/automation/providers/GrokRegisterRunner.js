@@ -242,7 +242,7 @@ export async function getGrokRegisterStatus() {
     );
   }
   if (ready) {
-    instructions.push("Ready. Set Total accounts + Concurrent, then Run Grok Register.");
+    instructions.push("Ready. Set Total accounts (0 = unlimited) + Concurrent, then Run Grok Register.");
   }
 
   return {
@@ -708,10 +708,11 @@ export async function runGrokRegister(opts = {}) {
     args.push("--proxy", String(proxy).trim());
   }
 
+  const totalAccounts = Math.max(0, Number(count) || 0);
   onLog({
     level: "info",
     step: "start",
-    message: `Starting farm: ${count} accounts, concurrent ${concurrent}, display=${display}`,
+    message: `Starting farm: ${totalAccounts > 0 ? totalAccounts : "∞ unlimited"} accounts, concurrent ${concurrent}, display=${display}`,
   });
   onLog({
     level: "info",
