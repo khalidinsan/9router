@@ -23,6 +23,9 @@ from sso_to_build import BuildTokens
 DEFAULT_BASE = "http://127.0.0.1:20127"
 IMPORT_MARKER = "@@GROK_CLI_IMPORT@@"
 
+# Cache dashboard session cookie per base_url (password auth)
+_session_cache: Dict[str, str] = {}
+
 
 def _compute_cli_token(data_dir: Optional[str] = None) -> Optional[str]:
     base = Path(os.path.expanduser(data_dir or "~/.9router"))
@@ -87,12 +90,54 @@ def emit_import_marker(payload: Dict[str, Any]) -> None:
     print(line, flush=True)
 
 
+def _login_dashboard(base_url: str, password: str) -> str:
+    """Dashboard password login → Cookie header auth_token=..."""
+    import requests
+
+    base = base_url.rstrip("/")
+    if base in _session_cache:
+        return _session_cache[base]
+
+    resp = requests.post(
+        f"{base}/api/auth/login",
+        json={"password": password},
+        timeout=20,
+    )
+    if resp.status_code not in (200, 201):
+        raise RuntimeError(
+            f"9router login HTTP {resp.status_code}: {resp.text[:200]}"
+        )
+
+    cookie_header = None
+    for c in resp.cookies:
+        if c.name == "auth_token":
+            cookie_header = f"auth_token={c.value}"
+            break
+    if not cookie_header:
+        raw = resp.headers.get("Set-Cookie") or ""
+        for part in raw.split(","):
+            part = part.strip()
+            if part.lower().startswith("auth_token="):
+                cookie_header = part.split(";", 1)[0].strip()
+                break
+    if not cookie_header:
+        raise RuntimeError(
+            "9router login OK but auth_token cookie missing "
+            "(check Set-Cookie / SameSite on remote)"
+        )
+
+    _session_cache[base] = cookie_header
+    print("[*] 9router login OK (session cookie cached)")
+    return cookie_header
+
+
 def push_build_tokens_to_9router(
     tokens: BuildTokens,
     *,
     base_url: str = DEFAULT_BASE,
     data_dir: Optional[str] = None,
     cli_token: Optional[str] = None,
+    password: Optional[str] = None,
     name: str = "",
     email: str = "",
     display_name: str = "",
@@ -100,11 +145,15 @@ def push_build_tokens_to_9router(
     """
     Prefer direct mode when embedded in 9router (NINEROUTER_IMPORT_MODE=direct).
     Otherwise HTTP POST /api/providers for standalone CLI use.
+
+    Auth for HTTP (priority):
+      1. password / NINEROUTER_PASSWORD (dashboard login → Cookie)
+      2. cli_token / ~/.9router CLI token
     """
     payload = build_import_payload(
         tokens, name=name, email=email, display_name=display_name
     )
-    # Always emit for in-process parent (9router)
+    # Always emit for in-process parent (9router Add Account runner)
     emit_import_marker(payload)
 
     mode = (os.environ.get("NINEROUTER_IMPORT_MODE") or "http").strip().lower()
@@ -120,34 +169,52 @@ def push_build_tokens_to_9router(
             "email": payload.get("email"),
         }
 
-    # --- HTTP fallback (external / legacy) ---
+    # --- HTTP fallback (external / standalone) ---
     try:
         import requests
     except ImportError as e:
         raise RuntimeError("requests required for HTTP import mode") from e
 
     base = (base_url or DEFAULT_BASE).rstrip("/")
-    token = (cli_token or "").strip() or _compute_cli_token(data_dir)
-    if not token:
-        raise RuntimeError(
-            "9router CLI token missing (~/.9router/machine-id + auth/cli-secret). "
-            "When running inside 9router Add Account, set NINEROUTER_IMPORT_MODE=direct."
-        )
+    headers: Dict[str, str] = {"Content-Type": "application/json"}
+    auth_mode = "none"
 
-    headers = {
-        "Content-Type": "application/json",
-        "x-9r-cli-token": token,
-    }
+    pwd = (password or os.environ.get("NINEROUTER_PASSWORD") or "").strip()
+    if pwd:
+        cookie = _login_dashboard(base, pwd)
+        headers["Cookie"] = cookie
+        auth_mode = "password-cookie"
+    else:
+        token = (cli_token or "").strip() or _compute_cli_token(data_dir)
+        if token:
+            headers["x-9r-cli-token"] = token
+            auth_mode = "cli-token"
+        else:
+            raise RuntimeError(
+                "No 9router auth: set grok_cli.password (dashboard password) "
+                "for remote URL, or ensure ~/.9router CLI token for localhost. "
+                "When running inside 9router Add Account, set NINEROUTER_IMPORT_MODE=direct."
+            )
+
     url = f"{base}/api/providers"
-    print(f"[*] 9router POST {url} (HTTP fallback) name={payload.get('name')}")
-    resp = requests.post(url, headers=headers, json=payload, timeout=30)
+    print(
+        f"[*] 9router POST {url} auth={auth_mode} "
+        f"name={payload.get('name')} email={payload.get('email')}"
+    )
+    resp = requests.post(url, headers=headers, json=payload, timeout=45)
+
+    if resp.status_code == 401 and pwd:
+        _session_cache.pop(base, None)
+        headers["Cookie"] = _login_dashboard(base, pwd)
+        resp = requests.post(url, headers=headers, json=payload, timeout=45)
+
     if resp.status_code not in (200, 201):
         raise RuntimeError(
             f"9router grok-cli import HTTP {resp.status_code}: {resp.text[:300]}"
         )
 
     data = resp.json() if resp.content else {}
-    conn = data.get("connection") or {}
+    conn = data.get("connection") or data or {}
     conn_id = conn.get("id") or ""
     print(f"[*] 9router grok-cli imported via HTTP id={conn_id}")
     return {
