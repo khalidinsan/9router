@@ -53,6 +53,12 @@ const DEFAULT_SETTINGS = {
   pxpipeAutoInstall: true,
   pxpipeMinChars: 25000,
   pxpipeTimeoutMs: 15000,
+  // Grok CLI register (Add Account) — catch-all + IMAP for OTP
+  grokRegisterEmailDomain: "",
+  grokRegisterImapUser: "",
+  grokRegisterImapPass: "",
+  grokRegisterImapHost: "imap.gmail.com",
+  grokRegisterImapPort: 993,
 };
 
 async function readRaw() {

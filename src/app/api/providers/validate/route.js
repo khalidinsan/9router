@@ -489,39 +489,29 @@ export async function POST(request) {
         }
 
         case "grok-web": {
-          const token = apiKey.startsWith("sso=") ? apiKey.slice(4) : apiKey;
-          // Cloudflare-bypass: send POST with same browser fingerprint headers as GrokWebExecutor
+          // grok2api-style: sso=<jwt>; sso-rw=<jwt> [; cf_clearance=...]
+          const { buildSSOCookie, buildGrokWebHeaders, classifyGrokWebError } = await import("open-sse/utils/grokWebAuth.js");
+          const cookieHeader = buildSSOCookie(apiKey, body?.providerSpecificData || {});
+          if (!cookieHeader) {
+            isValid = false;
+            error = "Missing SSO cookie";
+            break;
+          }
           const randomHex = (n) => {
             const a = new Uint8Array(n);
             crypto.getRandomValues(a);
             return Array.from(a, (b) => b.toString(16).padStart(2, "0")).join("");
           };
           const statsigId = Buffer.from("e:TypeError: Cannot read properties of null (reading 'children')").toString("base64");
-          const traceId = randomHex(16);
-          const spanId = randomHex(8);
           const res = await fetch("https://grok.com/rest/app-chat/conversations/new", {
             method: "POST",
-            headers: {
-              Accept: "*/*",
-              "Accept-Encoding": "gzip, deflate, br, zstd",
-              "Accept-Language": "en-US,en;q=0.9",
-              "Cache-Control": "no-cache",
-              "Content-Type": "application/json",
-              Cookie: `sso=${token}`,
-              Origin: "https://grok.com",
-              Pragma: "no-cache",
-              Referer: "https://grok.com/",
-              "Sec-Ch-Ua": '"Google Chrome";v="136", "Chromium";v="136", "Not(A:Brand";v="24"',
-              "Sec-Ch-Ua-Mobile": "?0",
-              "Sec-Ch-Ua-Platform": '"macOS"',
-              "Sec-Fetch-Dest": "empty",
-              "Sec-Fetch-Mode": "cors",
-              "Sec-Fetch-Site": "same-origin",
-              "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36",
-              "x-statsig-id": statsigId,
-              "x-xai-request-id": crypto.randomUUID(),
-              traceparent: `00-${traceId}-${spanId}-00`,
-            },
+            headers: buildGrokWebHeaders({
+              cookie: cookieHeader,
+              statsigId,
+              requestId: crypto.randomUUID(),
+              traceId: randomHex(16),
+              spanId: randomHex(8),
+            }),
             body: JSON.stringify({
               temporary: true, modelName: "grok-4", modelMode: "MODEL_MODE_GROK_4", message: "ping",
               fileAttachments: [], imageAttachments: [],
@@ -532,11 +522,13 @@ export async function POST(request) {
               forceSideBySide: false, isAsyncChat: false, disableSelfHarmShortCircuit: false,
             }),
           });
-          // Cookie valid = any non-401/403 response (200, 400, 429 all mean cookie accepted)
           if (res.status === 401 || res.status === 403) {
+            const upstreamBody = await res.text().catch(() => "");
+            const classified = classifyGrokWebError(res.status, upstreamBody);
             isValid = false;
-            error = "Invalid SSO cookie — re-paste from grok.com DevTools → Cookies → sso";
+            error = classified.message;
           } else {
+            // 200 / 400 / 429 etc. mean the cookie was accepted by auth layer
             isValid = true;
           }
           break;

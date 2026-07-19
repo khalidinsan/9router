@@ -725,22 +725,27 @@ async function testApiKeyConnection(connection, effectiveProxy = null) {
         return { valid: res.ok, error: res.ok ? null : "Invalid API key" };
       }
       case "grok-web": {
-        const token = connection.apiKey.startsWith("sso=") ? connection.apiKey.slice(4) : connection.apiKey;
+        const { buildSSOCookie, buildGrokWebHeaders, classifyGrokWebError } = await import("open-sse/utils/grokWebAuth.js");
+        const cookie = buildSSOCookie(connection.apiKey, connection.providerSpecificData || {});
+        if (!cookie) return { valid: false, error: "Missing SSO cookie" };
         const randomHex = (n) => Array.from(crypto.getRandomValues(new Uint8Array(n)), (b) => b.toString(16).padStart(2, "0")).join("");
         const statsigId = Buffer.from("e:TypeError: Cannot read properties of null (reading 'children')").toString("base64");
         const res = await fetchWithConnectionProxy("https://grok.com/rest/app-chat/conversations/new", {
           method: "POST",
-          headers: {
-            Accept: "*/*", "Content-Type": "application/json",
-            Cookie: `sso=${token}`, Origin: "https://grok.com", Referer: "https://grok.com/",
-            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36",
-            "x-statsig-id": statsigId, "x-xai-request-id": crypto.randomUUID(),
-            traceparent: `00-${randomHex(16)}-${randomHex(8)}-00`,
-          },
-          body: JSON.stringify({ temporary: true, modelName: "grok-4", message: "ping", fileAttachments: [], imageAttachments: [], disableSearch: false, enableImageGeneration: false, sendFinalMetadata: true }),
+          headers: buildGrokWebHeaders({
+            cookie,
+            statsigId,
+            requestId: crypto.randomUUID(),
+            traceId: randomHex(16),
+            spanId: randomHex(8),
+          }),
+          body: JSON.stringify({ temporary: true, modelName: "grok-4", modelMode: "MODEL_MODE_GROK_4", message: "ping", fileAttachments: [], imageAttachments: [], disableSearch: false, enableImageGeneration: false, sendFinalMetadata: true }),
         }, effectiveProxy);
-        const valid = res.status !== 401 && res.status !== 403;
-        return { valid, error: valid ? null : "Invalid SSO cookie" };
+        if (res.status === 401 || res.status === 403) {
+          const upstreamBody = await res.text().catch(() => "");
+          return { valid: false, error: classifyGrokWebError(res.status, upstreamBody).message };
+        }
+        return { valid: true, error: null };
       }
       case "perplexity-web": {
         let sessionToken = connection.apiKey;

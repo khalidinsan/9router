@@ -548,26 +548,36 @@ export default function ProvidersPage() {
       </div>
       )}
 
-      {/* Web Cookie Providers — use browser subscription cookie instead of API key */}
-      {/* <div className="flex flex-col gap-4">
+      {/* Web Cookie Providers — browser subscription cookie (e.g. grok-web sso=) */}
+      {Object.keys(WEB_COOKIE_PROVIDERS).length > 0 && (
+      <div className="flex flex-col gap-4">
         <div className="flex items-center justify-between">
-          <h2 className="text-xl font-semibold flex items-center gap-2">
+          <h2 className="text-lg sm:text-xl font-semibold flex items-center gap-2 leading-tight">
             Web Cookie Providers{" "}
           </h2>
         </div>
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-          {Object.entries(WEB_COOKIE_PROVIDERS).map(([key, info]) => (
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 sm:gap-4 lg:grid-cols-3 xl:grid-cols-4">
+          {Object.entries(WEB_COOKIE_PROVIDERS)
+            .filter(([key, info]) => matchSearch(info.name || key))
+            .sort((a, b) => {
+              const ca = getProviderStats(a[0], "cookie").total > 0 ? 0 : 1;
+              const cb = getProviderStats(b[0], "cookie").total > 0 ? 0 : 1;
+              if (ca !== cb) return ca - cb;
+              return (a[1].priority || 999) - (b[1].priority || 999);
+            })
+            .map(([key, info]) => (
             <ApiKeyProviderCard
               key={key}
               providerId={key}
               provider={info}
-              stats={getProviderStats(key, "apikey")}
-              authType="apikey"
-              onToggle={(active) => handleToggleProvider(key, "apikey", active)}
+              stats={getProviderStats(key, "cookie")}
+              authType="cookie"
+              onToggle={(active) => handleToggleProvider(key, "cookie", active)}
             />
           ))}
         </div>
-      </div> */}
+      </div>
+      )}
 
       <AddCompatibleModal
         variant="openai"
@@ -628,12 +638,14 @@ function ProviderCard({ providerId, provider, stats, authType, onToggle }) {
     oauth: "bg-blue-500",
     apikey: "bg-amber-500",
     compatible: "bg-orange-500",
+    cookie: "bg-pink-500",
   };
   const dotLabels = {
     free: "Free",
     oauth: "OAuth",
     apikey: "API Key",
     compatible: "Compatible",
+    cookie: "Cookie",
   };
 
   return (
@@ -747,12 +759,14 @@ function ApiKeyProviderCard({
     oauth: "bg-blue-500",
     apikey: "bg-amber-500",
     compatible: "bg-orange-500",
+    cookie: "bg-pink-500",
   };
   const dotLabels = {
     free: "Free",
     oauth: "OAuth",
     apikey: "API Key",
     compatible: "Compatible",
+    cookie: "Cookie",
   };
 
   const getIconPath = () => {

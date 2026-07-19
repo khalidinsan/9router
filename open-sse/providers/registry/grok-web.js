@@ -15,7 +15,9 @@ export default {
   },
   category: "webCookie",
   authType: "cookie",
-  authHint: "Paste your sso= cookie value from grok.com",
+  // grok2api-compatible: bare JWT is enough (sso-rw is mirrored server-side).
+  // Full header also accepted: sso=...; sso-rw=...; cf_clearance=...
+  authHint: "Paste sso JWT from grok.com (or full cookie: sso=...; sso-rw=...). Optional CF cookies via providerSpecificData.cloudflareCookies.",
   transport: {
     baseUrl: "https://grok.com/rest/app-chat/conversations/new",
     format: "grok-web",
@@ -34,6 +36,11 @@ export default {
     { id: "grok-4.1-expert", name: "Grok 4.1 Expert" },
     { id: "grok-4.1-thinking", name: "Grok 4.1 Thinking" },
     { id: "grok-4.2", name: "Grok 4.2 (4.20 Beta)" },
+    { id: "grok-4.5", name: "Grok 4.5 (alias → fast)" },
+    { id: "grok-chat-fast", name: "Grok Chat Fast" },
+    { id: "grok-chat-auto", name: "Grok Chat Auto" },
+    { id: "grok-chat-expert", name: "Grok Chat Expert" },
+    { id: "grok-chat-heavy", name: "Grok Chat Heavy" },
   ],
   passthroughModels: true,
 };

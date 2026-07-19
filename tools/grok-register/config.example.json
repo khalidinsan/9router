@@ -1,0 +1,40 @@
+{
+  "run": {
+    "count": 10
+  },
+  "pool": {
+    "count": 1,
+    "concurrent": 1,
+    "stagger_sec": 15,
+    "display": "offscreen",
+    "proxies": []
+  },
+  "email": {
+    "domain": "yourdomain.com",
+    "imap_user": "you@gmail.com",
+    "imap_pass": "abcd efgh ijkl mnop",
+    "imap_host": "imap.gmail.com",
+    "imap_port": 993
+  },
+  "proxy": "",
+  "browser_proxy": "",
+  "grok_cli": {
+    "enabled": true,
+    "base_url": "http://127.0.0.1:20127",
+    "data_dir": "~/.9router",
+    "_comment": "When run from 9router Add Account, import is DIRECT (createProviderConnection). HTTP base_url only used for standalone CLI."
+  },
+  "grok2api": {
+    "enabled": false,
+    "base_url": "http://127.0.0.1:8000",
+    "username": "admin",
+    "password": "your-admin-password",
+    "tier": "auto"
+  },
+  "ninerouter": {
+    "enabled": false,
+    "base_url": "http://127.0.0.1:20127",
+    "provider": "grok-web",
+    "data_dir": "~/.9router"
+  }
+}

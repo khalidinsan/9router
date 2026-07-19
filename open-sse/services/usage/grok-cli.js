@@ -23,8 +23,11 @@
  *   }
  * }
  *
- * Free/promo exhausted: cap=0, used=0, prepaid=0, no weekly/monthly signal,
- * and no paid subscriptionTier → synthetic depleted On-demand bar.
+ * Free Build accounts: billing does NOT expose the rolling free token pool.
+ * grok2api estimates ~1_000_000 tokens / rolling 24h from local usage audits
+ * (confirmed by free-usage-exhausted: "tokens (actual/limit): N/1000000").
+ * Free tokens = observedTokens (local 24h) / 1_000_000 estimated.
+ * Do NOT show a fake depleted "On-demand 1/1" bar for free accounts.
  */
 
 import { proxyAwareFetch } from "../../utils/proxyFetch.js";
@@ -39,6 +42,11 @@ const USAGE = U("grok-cli");
 const BILLING_URL = USAGE.url || "https://cli-chat-proxy.grok.com/v1/billing?format=credits";
 const USER_URL = USAGE.userUrl || "https://cli-chat-proxy.grok.com/v1/user?include=subscription";
 
+/** Free Build rolling window (matches grok2api estimatedFreeTokenLimit + freeUsageWindow). */
+export const GROK_CLI_FREE_TOKEN_LIMIT = 1_000_000;
+export const GROK_CLI_FREE_WINDOW_MS = 24 * 60 * 60 * 1000;
+const FREE_TOKEN_QUOTA_NAME = "Free tokens (est. 24h)";
+
 /** Unwrap protobuf-json `{ val: n }` or plain numbers/strings. */
 function unwrapVal(value, fallback = 0) {
   if (value == null) return fallback;
@@ -46,6 +54,38 @@ function unwrapVal(value, fallback = 0) {
     return toFiniteNumber(value.val, fallback);
   }
   return toFiniteNumber(value, fallback);
+}
+
+function normalizePlanKey(value) {
+  if (typeof value !== "string") return "";
+  return value.toLowerCase().replace(/[\s_\-+]+/g, "").replace(/plus$/i, "plus");
+}
+
+function isFreePlanName(value) {
+  const key = normalizePlanKey(value);
+  return (
+    key === "free" ||
+    key === "grokfree" ||
+    key === "freetier" ||
+    key === "basic" ||
+    key === "grokbasic" ||
+    key === "xbasic"
+  );
+}
+
+function isPaidPlanName(value) {
+  const key = normalizePlanKey(value);
+  return (
+    key === "super" ||
+    key === "supergrok" ||
+    key === "supergrokpro" ||
+    key === "supergrokheavy" ||
+    key === "supergroklite" ||
+    key === "grokpro" ||
+    key === "xpremium" ||
+    key === "xpremiumplus" ||
+    key === "apikey"
+  );
 }
 
 function buildGrokCliHeaders(accessToken, providerSpecificData = {}) {
@@ -104,13 +144,51 @@ function subscriptionTier(user, config) {
   return typeof rawTier === "string" ? rawTier.trim() : "";
 }
 
-function resolvePlan(user, config) {
+function resolvePlan(user, config, { freeProfile = false } = {}) {
   const tier = subscriptionTier(user, config);
+  if (isFreePlanName(tier) || freeProfile) return "Free";
   const named = formatPlanName(tier);
   if (named) return named;
-  if (user?.hasGrokCodeAccess === true) return "Grok Code";
+  // hasGrokCodeAccess is true for free Build accounts too — do not treat as paid.
+  if (user?.hasGrokCodeAccess === true && !freeProfile) return "Grok Code";
   if (config?.isUnifiedBillingUser === true) return "Grok Build";
   return "Grok Build";
+}
+
+/**
+ * Paid billing signals (mirrors grok2api Billing.IsPaid, without plan name).
+ * creditUsagePercent alone is NOT paid — free accounts can have a %.
+ */
+function hasPaidBillingSignals(config, root) {
+  const monthlyLimit = unwrapVal(
+    config.monthlyLimit ?? config.monthly_limit ?? root.monthlyLimit ?? root.monthly_limit,
+    NaN,
+  );
+  const onDemandCap = unwrapVal(config.onDemandCap ?? root.onDemandCap, NaN);
+  const onDemandUsed = unwrapVal(config.onDemandUsed ?? root.onDemandUsed, NaN);
+  const prepaid = unwrapVal(config.prepaidBalance ?? root.prepaidBalance, NaN);
+  return (
+    (Number.isFinite(monthlyLimit) && monthlyLimit > 0) ||
+    (Number.isFinite(onDemandCap) && onDemandCap > 0) ||
+    (Number.isFinite(onDemandUsed) && onDemandUsed > 0) ||
+    (Number.isFinite(prepaid) && prepaid > 0)
+  );
+}
+
+function freeTokenQuota(observedTokens) {
+  const used = Math.max(0, Math.floor(toFiniteNumber(observedTokens, 0)));
+  const total = GROK_CLI_FREE_TOKEN_LIMIT;
+  const remaining = Math.max(0, total - used);
+  return {
+    used,
+    total,
+    remainingPercentage: (remaining / total) * 100,
+    // Rolling 24h window — exact wall-clock reset is unknown without exhaustion probe.
+    resetAt: null,
+    unlimited: false,
+    estimated: true,
+    unit: "tokens",
+  };
 }
 
 function periodLabel(config) {
@@ -177,9 +255,16 @@ function makeQuota({ used, total, resetAt, unlimited = false }) {
 
 /**
  * Map billing JSON → normalized quotas object for the dashboard.
- * Returns { quotas, periodEnd, exhausted, subscriptionAccess } or empty quotas.
+ * Returns { quotas, periodEnd, exhausted, subscriptionAccess, plan } or empty quotas.
+ *
+ * @param {object|null} billing
+ * @param {object|null} user
+ * @param {{ observedTokens?: number }} [options]
+ *   observedTokens — tokens used through this connection in the free rolling window
+ *   (typically last 24h from local usageHistory). Used only for Free estimate bars.
  */
-export function parseGrokCliBilling(billing, user = null) {
+export function parseGrokCliBilling(billing, user = null, options = {}) {
+  const observedTokens = Math.max(0, Math.floor(toFiniteNumber(options?.observedTokens, 0)));
   const root = billing && typeof billing === "object" ? billing : {};
   const config =
     root.config && typeof root.config === "object" && !Array.isArray(root.config)
@@ -199,7 +284,12 @@ export function parseGrokCliBilling(billing, user = null) {
   const quotas = {};
   const label = periodLabel(config);
   const tier = subscriptionTier(user, config);
-  const subscriptionAccess = Boolean(tier) && !/^(free|none|null)$/i.test(tier);
+  // Free/Basic tiers are not "subscription access" (paid).
+  const subscriptionAccess =
+    Boolean(tier) && !isFreePlanName(tier) && !/^(none|null)$/i.test(tier);
+  const paidPlan = isPaidPlanName(tier);
+  const freePlan = isFreePlanName(tier);
+  const paidBilling = hasPaidBillingSignals(config, root);
 
   // ── Primary (unified billing / SuperGrok): weekly credit % ──────────────
   // Official CLI /usage surfaces creditUsagePercent + productUsage, not on-demand $.
@@ -297,22 +387,6 @@ export function parseGrokCliBilling(billing, user = null) {
       total: onDemandCap,
       resetAt: periodEnd,
     });
-  } else if (
-    !hasPercentOrIncludedQuota &&
-    !subscriptionAccess &&
-    Number.isFinite(onDemandCap) &&
-    onDemandCap === 0 &&
-    Number.isFinite(onDemandUsed)
-  ) {
-    // Cap 0 with no weekly/monthly allotment and no paid tier = free/promo exhausted.
-    // UI treats total===0 as unlimited, so use a synthetic 1/1 depleted row.
-    quotas["On-demand"] = {
-      used: 1,
-      total: 1,
-      remainingPercentage: 0,
-      resetAt: periodEnd,
-      unlimited: false,
-    };
   }
 
   // Prepaid top-up balance (remaining credits; no fixed allotment known)
@@ -369,6 +443,21 @@ export function parseGrokCliBilling(billing, user = null) {
     }
   }
 
+  // ── Free Build rolling token estimate (grok2api-style) ──────────────────
+  // Billing API does not return free token used/limit. When there is no paid
+  // allotment and no paid tier, surface local 24h observed tokens vs ~1M.
+  const freeProfile =
+    freePlan ||
+    (!paidPlan &&
+      !subscriptionAccess &&
+      !paidBilling &&
+      !hasPercentOrIncludedQuota &&
+      Object.keys(quotas).length === 0);
+
+  if (freeProfile && Object.keys(quotas).length === 0) {
+    quotas[FREE_TOKEN_QUOTA_NAME] = freeTokenQuota(observedTokens);
+  }
+
   // Exhausted when every finite quota bar is at 0% remaining
   const exhausted =
     Object.keys(quotas).length > 0 &&
@@ -377,11 +466,12 @@ export function parseGrokCliBilling(billing, user = null) {
     );
 
   return {
-    plan: resolvePlan(user, config),
+    plan: resolvePlan(user, config, { freeProfile }),
     quotas,
     periodEnd,
     exhausted,
     subscriptionAccess,
+    freeProfile,
     rawConfig: config,
   };
 }
@@ -390,13 +480,20 @@ export function parseGrokCliBilling(billing, user = null) {
  * @param {string} accessToken
  * @param {object|null} providerSpecificData
  * @param {object|null} proxyOptions
+ * @param {{ observedTokens?: number }} [options]
  */
-export async function getGrokCliUsage(accessToken, providerSpecificData = null, proxyOptions = null) {
+export async function getGrokCliUsage(
+  accessToken,
+  providerSpecificData = null,
+  proxyOptions = null,
+  options = {},
+) {
   if (!accessToken) {
     return { message: "Grok CLI access token not available." };
   }
 
   const headers = buildGrokCliHeaders(accessToken, providerSpecificData);
+  const observedTokens = options?.observedTokens;
 
   try {
     // Fetch billing + user profile in parallel (same pattern as official CLI startup)
@@ -433,7 +530,7 @@ export async function getGrokCliUsage(accessToken, providerSpecificData = null, 
       user = await userRes.json().catch(() => null);
     }
 
-    const parsed = parseGrokCliBilling(billing, user);
+    const parsed = parseGrokCliBilling(billing, user, { observedTokens });
 
     if (!parsed.quotas || Object.keys(parsed.quotas).length === 0) {
       return {
@@ -446,8 +543,7 @@ export async function getGrokCliUsage(accessToken, providerSpecificData = null, 
     }
 
     // Dashboard hides QuotaTable whenever `message` is set, so only attach a
-    // message when there are no quota rows to render. Depleted accounts keep
-    // the 0% On-demand bar without a blocking message.
+    // message when there are no quota rows to render.
     return {
       plan: parsed.plan,
       quotas: parsed.quotas,

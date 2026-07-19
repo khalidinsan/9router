@@ -739,6 +739,37 @@ function formatLogDate(date = new Date()) {
 // No-op: request log is now derived from usageHistory table on read.
 export async function appendRequestLog() {}
 
+/**
+ * Sum prompt+completion tokens for a connection since an ISO timestamp (or Date/ms).
+ * Used by Grok CLI free-tier estimate (rolling ~1M tokens / 24h, same as grok2api).
+ */
+export async function sumConnectionTokensSince(connectionId, since) {
+  if (!connectionId) return 0;
+  try {
+    const db = await getAdapter();
+    const sinceIso =
+      since instanceof Date
+        ? since.toISOString()
+        : typeof since === "number"
+          ? new Date(since).toISOString()
+          : String(since || "");
+    if (!sinceIso) return 0;
+
+    const row = db.get(
+      `SELECT
+         COALESCE(SUM(COALESCE(promptTokens, 0) + COALESCE(completionTokens, 0)), 0) AS total
+       FROM usageHistory
+       WHERE connectionId = ? AND timestamp >= ?`,
+      [connectionId, sinceIso],
+    );
+    const total = Number(row?.total ?? 0);
+    return Number.isFinite(total) ? Math.max(0, Math.floor(total)) : 0;
+  } catch (e) {
+    console.error("[usageRepo] sumConnectionTokensSince failed:", e.message);
+    return 0;
+  }
+}
+
 export async function getRecentLogs(limit = 200) {
   try {
     const db = await getAdapter();

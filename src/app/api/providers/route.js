@@ -88,6 +88,97 @@ export async function POST(request) {
   try {
     const body = await request.json();
     const provider = normalizeProviderId(body.provider);
+
+    // Farm import: Grok Build OAuth tokens → grok-cli connection (same as device login).
+    // Body: { provider: "grok-cli", accessToken, refreshToken?, idToken?, email?, name?, displayName?, expiresIn?, expiresAt?, scope? }
+    if (
+      provider === "grok-cli" &&
+      typeof body.accessToken === "string" &&
+      body.accessToken.trim()
+    ) {
+      const accessToken = body.accessToken.trim();
+      const refreshToken =
+        typeof body.refreshToken === "string" ? body.refreshToken.trim() : null;
+      const idToken =
+        typeof body.idToken === "string" ? body.idToken.trim() : null;
+
+      let email =
+        typeof body.email === "string" && body.email.trim() ? body.email.trim() : null;
+      let userId =
+        typeof body.userId === "string" && body.userId.trim() ? body.userId.trim() : null;
+      let displayName =
+        typeof body.displayName === "string" && body.displayName.trim()
+          ? body.displayName.trim()
+          : null;
+
+      try {
+        const claimSource = idToken || accessToken;
+        const parts = claimSource.split(".");
+        if (parts.length >= 2) {
+          const b64 = parts[1].replace(/-/g, "+").replace(/_/g, "/");
+          const padded = b64 + "=".repeat((4 - (b64.length % 4)) % 4);
+          const payload = JSON.parse(Buffer.from(padded, "base64").toString("utf8"));
+          if (!email) email = payload.email || payload.preferred_username || null;
+          if (!userId) userId = payload.sub || payload.principal_id || null;
+          if (!displayName) {
+            const joined = [payload.given_name, payload.family_name]
+              .filter(Boolean)
+              .join(" ")
+              .trim();
+            if (joined) displayName = joined;
+          }
+        }
+      } catch {
+        /* ignore */
+      }
+
+      let expiresAt = null;
+      if (typeof body.expiresAt === "string" && body.expiresAt.trim()) {
+        expiresAt = body.expiresAt.trim();
+      } else if (typeof body.expiresIn === "number" && body.expiresIn > 0) {
+        expiresAt = new Date(Date.now() + body.expiresIn * 1000).toISOString();
+      }
+
+      const scope =
+        typeof body.scope === "string" && body.scope.trim()
+          ? body.scope.trim()
+          : "openid profile email offline_access grok-cli:access api:access conversations:read conversations:write";
+
+      const connectionName =
+        (typeof body.name === "string" && body.name.trim()) ||
+        email ||
+        displayName ||
+        "Grok CLI";
+
+      const connection = await createProviderConnection({
+        provider: "grok-cli",
+        authType: "oauth",
+        name: connectionName,
+        email: email || null,
+        displayName: displayName || connectionName,
+        accessToken,
+        refreshToken: refreshToken || null,
+        expiresAt,
+        expiresIn: typeof body.expiresIn === "number" ? body.expiresIn : undefined,
+        scope,
+        testStatus: "active",
+        providerSpecificData: {
+          authMethod: "device_code",
+          idToken: idToken || null,
+          email: email || null,
+          userId: userId || null,
+          hasGrokCodeAccess: body.hasGrokCodeAccess ?? null,
+          subscriptionTier: body.subscriptionTier ?? null,
+        },
+      });
+
+      const result = { ...connection };
+      delete result.accessToken;
+      delete result.refreshToken;
+      delete result.apiKey;
+      return NextResponse.json({ connection: result }, { status: 201 });
+    }
+
     const { apiKey, name, displayName, priority, globalPriority, defaultModel, testStatus } = body;
     const proxyConfig = normalizeProxyConfig(body);
     if (proxyConfig.error) {

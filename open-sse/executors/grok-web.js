@@ -2,6 +2,11 @@ import { BaseExecutor } from "./base.js";
 import { PROVIDERS } from "../config/providers.js";
 import { SSE_DONE, SSE_HEADERS_NO_BUFFER } from "../utils/sseConstants.js";
 import { sseChunk } from "../utils/sse.js";
+import {
+  buildSSOCookie,
+  buildGrokWebHeaders,
+  classifyGrokWebError,
+} from "../utils/grokWebAuth.js";
 
 const GROK_CHAT_API = PROVIDERS["grok-web"].baseUrl;
 const GROK_USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36";
@@ -21,6 +26,12 @@ const MODEL_MAP = {
   "grok-4.2": { grokModel: "grok-420", modelMode: "MODEL_MODE_GROK_420", isThinking: false },
   "grok-4.20": { grokModel: "grok-420", modelMode: "MODEL_MODE_GROK_420", isThinking: false },
   "grok-4.20-beta": { grokModel: "grok-420", modelMode: "MODEL_MODE_GROK_420", isThinking: false },
+  // Aliases commonly used by clients / grok2api naming
+  "grok-4.5": { grokModel: "grok-4-1-thinking-1129", modelMode: "MODEL_MODE_FAST", isThinking: false },
+  "grok-chat-fast": { grokModel: "grok-4-1-thinking-1129", modelMode: "MODEL_MODE_FAST", isThinking: false },
+  "grok-chat-auto": { grokModel: "grok-4-1-thinking-1129", modelMode: "MODEL_MODE_AUTO", isThinking: false },
+  "grok-chat-expert": { grokModel: "grok-4-1-thinking-1129", modelMode: "MODEL_MODE_EXPERT", isThinking: true },
+  "grok-chat-heavy": { grokModel: "grok-4", modelMode: "MODEL_MODE_HEAVY", isThinking: true },
 };
 
 function randomString(length, alphanumeric = false) {
@@ -258,38 +269,34 @@ export class GrokWebExecutor extends BaseExecutor {
       },
     };
 
-    const traceId = randomHex(16);
-    const spanId = randomHex(8);
-    const headers = {
-      Accept: "*/*",
-      "Accept-Encoding": "gzip, deflate, br, zstd",
-      "Accept-Language": "en-US,en;q=0.9",
-      Baggage: "sentry-environment=production,sentry-release=d6add6fb0460641fd482d767a335ef72b9b6abb8,sentry-public_key=b311e0f2690c81f25e2c4cf6d4f7ce1c",
-      "Cache-Control": "no-cache",
-      "Content-Type": "application/json",
-      Origin: "https://grok.com",
-      Pragma: "no-cache",
-      Referer: "https://grok.com/",
-      "Sec-Ch-Ua": '"Google Chrome";v="136", "Chromium";v="136", "Not(A:Brand";v="24"',
-      "Sec-Ch-Ua-Mobile": "?0",
-      "Sec-Ch-Ua-Platform": '"macOS"',
-      "Sec-Fetch-Dest": "empty",
-      "Sec-Fetch-Mode": "cors",
-      "Sec-Fetch-Site": "same-origin",
-      "User-Agent": GROK_USER_AGENT,
-      "x-statsig-id": generateStatsigId(),
-      "x-xai-request-id": crypto.randomUUID(),
-      traceparent: `00-${traceId}-${spanId}-00`,
-    };
-
-    // Strip "sso=" prefix if user pasted it
-    if (credentials.apiKey) {
-      let token = credentials.apiKey;
-      if (token.startsWith("sso=")) token = token.slice(4);
-      headers["Cookie"] = `sso=${token}`;
+    // grok2api-style cookie: sso=<jwt>; sso-rw=<jwt> [; cf_clearance=...]
+    const cookie = buildSSOCookie(
+      credentials?.apiKey || credentials?.accessToken || "",
+      credentials?.providerSpecificData || {},
+    );
+    if (!cookie) {
+      const errResp = new Response(JSON.stringify({
+        error: {
+          message: "Missing Grok Web SSO cookie. Paste raw JWT or sso=... from grok.com.",
+          type: "invalid_request",
+          code: "missing_sso",
+        },
+      }), { status: 401, headers: { "Content-Type": "application/json" } });
+      return { response: errResp, url: GROK_CHAT_API, headers: {}, transformedBody: grokPayload };
     }
 
-    log?.info?.("GROK-WEB", `Query to ${model} (grok=${grokModel}, mode=${modelMode}), len=${message.length}`);
+    const traceId = randomHex(16);
+    const spanId = randomHex(8);
+    const headers = buildGrokWebHeaders({
+      cookie,
+      userAgent: GROK_USER_AGENT,
+      statsigId: generateStatsigId(),
+      requestId: crypto.randomUUID(),
+      traceId,
+      spanId,
+    });
+
+    log?.info?.("GROK-WEB", `Query to ${model} (grok=${grokModel}, mode=${modelMode}), len=${message.length}, cookie=${cookie.includes("sso-rw=") ? "sso+sso-rw" : "sso"}`);
 
     let response;
     try {
@@ -306,12 +313,16 @@ export class GrokWebExecutor extends BaseExecutor {
 
     if (!response.ok) {
       const status = response.status;
-      let errMsg = `Grok returned HTTP ${status}`;
-      if (status === 401 || status === 403) errMsg = "Grok auth failed — SSO cookie may be expired. Re-paste your sso cookie value from grok.com.";
-      else if (status === 429) errMsg = "Grok rate limited. Wait a moment and retry, or rotate cookies.";
-      log?.warn?.("GROK-WEB", errMsg);
+      let upstreamBody = "";
+      try { upstreamBody = (await response.clone().text()).slice(0, 400); } catch { /* ignore */ }
+      const classified = classifyGrokWebError(status, upstreamBody);
+      log?.warn?.("GROK-WEB", classified.message);
       const errResp = new Response(JSON.stringify({
-        error: { message: errMsg, type: "upstream_error", code: `HTTP_${status}` },
+        error: {
+          message: classified.message,
+          type: "upstream_error",
+          code: classified.code,
+        },
       }), { status, headers: { "Content-Type": "application/json" } });
       return { response: errResp, url: GROK_CHAT_API, headers, transformedBody: grokPayload };
     }

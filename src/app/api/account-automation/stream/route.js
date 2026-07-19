@@ -48,12 +48,24 @@ export async function GET(request) {
           results: run.results || [],
         });
 
+        const finishSummary = (currentRun) => {
+          const results = currentRun.results || [];
+          return (
+            currentRun.summary || {
+              total: results.length,
+              success: results.filter((r) => r.success).length,
+              failed: results.filter((r) => !r.success).length,
+              status: currentRun.status || "done",
+              error: currentRun.error || null,
+            }
+          );
+        };
+
+        // Always end with `done` (summary carries success/failed). Avoid SSE `error`
+        // events for finished runs — they surface as scary red "automation failed"
+        // even when the farm exited cleanly with 0 accounts registered.
         if (run.status === "done" || run.status === "failed") {
-          if (run.status === "done") {
-            emitter.done({ total: lastResultsLength, status: "done" });
-          } else {
-            emitter.error(run.error || "automation failed");
-          }
+          emitter.done(finishSummary(run));
           controller.close();
           return;
         }
@@ -63,7 +75,13 @@ export async function GET(request) {
         const sendUpdates = () => {
           const currentRun = globalThis.accountAutomationRuns.get(runId);
           if (!currentRun) {
-            emitter.error("run disappeared");
+            emitter.done({
+              total: 0,
+              success: 0,
+              failed: 0,
+              status: "failed",
+              error: "run disappeared",
+            });
             clearInterval(intervalId);
             controller.close();
             return;
@@ -83,11 +101,7 @@ export async function GET(request) {
 
           if (currentRun.status === "done" || currentRun.status === "failed") {
             clearInterval(intervalId);
-            if (currentRun.status === "done") {
-              emitter.done({ total: results.length, status: "done" });
-            } else {
-              emitter.error(currentRun.error || "automation failed");
-            }
+            emitter.done(finishSummary(currentRun));
             controller.close();
           }
         };

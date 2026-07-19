@@ -6,6 +6,8 @@ import { getUsageForProvider } from "open-sse/services/usage.js";
 import { getExecutor } from "open-sse/executors/index.js";
 import { resolveConnectionProxyConfig } from "@/lib/network/connectionProxy";
 import { USAGE_APIKEY_PROVIDERS } from "@/shared/constants/providers";
+import { sumConnectionTokensSince } from "@/lib/usageDb";
+import { GROK_CLI_FREE_WINDOW_MS } from "open-sse/services/usage/grok-cli.js";
 
 // Detect auth-expired messages returned by usage providers instead of throwing
 const AUTH_EXPIRED_PATTERNS = ["expired", "authentication", "unauthorized", "401", "re-authorize"];
@@ -167,6 +169,19 @@ export async function GET(request, { params }) {
       }
     }
 
+    // Grok free Build: estimate used tokens from local rolling 24h window
+    // (billing API does not expose free token pool — same approach as grok2api).
+    if (connection.provider === "grok-cli") {
+      try {
+        connection.observedTokens = await sumConnectionTokensSince(
+          connection.id,
+          Date.now() - GROK_CLI_FREE_WINDOW_MS,
+        );
+      } catch {
+        connection.observedTokens = 0;
+      }
+    }
+
     // Fetch usage from provider API
     let usage = await getUsageForProvider(connection, proxyOptions);
 
@@ -174,8 +189,12 @@ export async function GET(request, { params }) {
     // force-refresh token and retry once (OAuth only)
     if (isOAuth && isAuthExpiredMessage(usage) && connection.refreshToken) {
       try {
+        const observedTokens = connection.observedTokens;
         const retryResult = await refreshAndUpdateCredentials(connection, true, proxyOptions);
         connection = retryResult.connection;
+        if (connection.provider === "grok-cli") {
+          connection.observedTokens = observedTokens ?? 0;
+        }
         usage = await getUsageForProvider(connection, proxyOptions);
       } catch (retryError) {
         console.warn(`[Usage] ${connection.provider}: force refresh failed: ${retryError.message}`);

@@ -46,11 +46,15 @@ const USAGE_HANDLERS = {
   "vercel-ai-gateway": (c) => getVercelAiGatewayUsage(c.apiKey, c.proxyOptions),
   "codebuddy-cn": (c) => getCodeBuddyCnUsage(c.accessToken, c.apiKey, c.providerSpecificData, c.proxyOptions),
   kimchi: (c) => getKimchiUsage(c.apiKey, c.proxyOptions),
-  "grok-cli": (c) => getGrokCliUsage(c.accessToken, c.providerSpecificData, c.proxyOptions),
+  "grok-cli": (c) =>
+    getGrokCliUsage(c.accessToken, c.providerSpecificData, c.proxyOptions, {
+      observedTokens: c.observedTokens,
+    }),
 };
 
 export async function getUsageForProvider(connection, proxyOptions = null) {
-  const { provider, accessToken, apiKey, providerSpecificData, projectId } = connection;
+  const { provider, accessToken, apiKey, providerSpecificData, projectId, observedTokens } =
+    connection;
   const providerDataWithProjectId = {
     ...(providerSpecificData || {}),
     ...(projectId ? { projectId } : {}),
@@ -58,5 +62,13 @@ export async function getUsageForProvider(connection, proxyOptions = null) {
 
   const handler = USAGE_HANDLERS[provider];
   if (!handler) return { message: `Usage API not implemented for ${provider}` };
-  return await handler({ provider, accessToken, apiKey, providerSpecificData, providerDataWithProjectId, proxyOptions });
+  return await handler({
+    provider,
+    accessToken,
+    apiKey,
+    providerSpecificData,
+    providerDataWithProjectId,
+    proxyOptions,
+    observedTokens,
+  });
 }

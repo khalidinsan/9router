@@ -178,9 +178,41 @@ describe("parseGrokCliBilling", () => {
     expect(parsed.quotas["On-demand"]).toBeUndefined();
   });
 
-  it("marks depleted free/promo account as exhausted", () => {
+  it("estimates free Build tokens instead of fake On-demand 1/1", () => {
+    // Free farmed accounts: billing returns cap=0 with no weekly percent.
+    // grok2api shows ~used / 1_000_000 tokens from local audits — do the same.
+    const parsed = parseGrokCliBilling(EXHAUSTED_BILLING, USER_PROFILE, {
+      observedTokens: 988,
+    });
+    expect(parsed.plan).toBe("Free");
+    expect(parsed.freeProfile).toBe(true);
+    expect(parsed.quotas["On-demand"]).toBeUndefined();
+    expect(parsed.quotas["Free tokens (est. 24h)"]).toMatchObject({
+      used: 988,
+      total: 1_000_000,
+      remainingPercentage: expect.closeTo(99.9012, 3),
+      estimated: true,
+      unit: "tokens",
+    });
+    expect(parsed.exhausted).toBe(false);
+  });
+
+  it("shows unused free account as 0 / 1_000_000 tokens", () => {
     const parsed = parseGrokCliBilling(EXHAUSTED_BILLING, USER_PROFILE);
-    expect(parsed.quotas["On-demand"].remainingPercentage).toBe(0);
+    expect(parsed.plan).toBe("Free");
+    expect(parsed.quotas["Free tokens (est. 24h)"]).toMatchObject({
+      used: 0,
+      total: 1_000_000,
+      remainingPercentage: 100,
+    });
+    expect(parsed.exhausted).toBe(false);
+  });
+
+  it("marks free tokens exhausted when local usage hits the estimate limit", () => {
+    const parsed = parseGrokCliBilling(EXHAUSTED_BILLING, USER_PROFILE, {
+      observedTokens: 1_065_387,
+    });
+    expect(parsed.quotas["Free tokens (est. 24h)"].remainingPercentage).toBe(0);
     expect(parsed.exhausted).toBe(true);
   });
 
@@ -304,7 +336,7 @@ describe("getUsageForProvider(grok-cli)", () => {
     expect(usage.message).toMatch(/expired|re-authorize/i);
   });
 
-  it("returns depleted on-demand bar without blocking message when cap is zero", async () => {
+  it("returns free token estimate without blocking message when cap is zero", async () => {
     proxyAwareFetch
       .mockResolvedValueOnce(jsonResponse(EXHAUSTED_BILLING))
       .mockResolvedValueOnce(jsonResponse(USER_PROFILE));
@@ -312,13 +344,18 @@ describe("getUsageForProvider(grok-cli)", () => {
     const usage = await getUsageForProvider({
       provider: "grok-cli",
       accessToken: "test-token",
+      observedTokens: 988,
     });
 
     // Dashboard hides QuotaTable when `message` is set — keep message empty
-    // so the 0% bar still renders for exhausted free/promo accounts.
+    // so the free estimate bar still renders.
     expect(usage.message).toBeUndefined();
-    expect(usage.quotas["On-demand"].remainingPercentage).toBe(0);
-    expect(usage.quotas["On-demand"].total).toBe(1);
+    expect(usage.plan).toBe("Free");
+    expect(usage.quotas["On-demand"]).toBeUndefined();
+    expect(usage.quotas["Free tokens (est. 24h)"]).toMatchObject({
+      used: 988,
+      total: 1_000_000,
+    });
   });
 
   it("reports active paid access when provider exposes no numeric quota", async () => {
