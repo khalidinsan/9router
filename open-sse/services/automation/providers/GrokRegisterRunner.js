@@ -7,6 +7,7 @@
 
 import { spawn } from "node:child_process";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import readline from "node:readline";
 import { fileURLToPath } from "node:url";
@@ -500,47 +501,104 @@ export async function importGrokCliInProcess(payload) {
  * Run bundled farm pool.
  */
 /**
- * Kill a child process and its descendants (pool.py + Chromium workers).
+ * Snapshot ~/.9router/db/data.sqlite before a farm run so a bad stop/crash
+ * can be recovered without relying only on upgrade-time backups.
+ */
+function backupDbBeforeFarm(onLog) {
+  try {
+    const home = os.homedir();
+    const src = path.join(home, ".9router", "db", "data.sqlite");
+    if (!fs.existsSync(src)) return null;
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+    const dir = path.join(home, ".9router", "db", "backups", `pre-farm-${stamp}`);
+    fs.mkdirSync(dir, { recursive: true });
+    const dest = path.join(dir, "data.sqlite");
+    fs.copyFileSync(src, dest);
+    const sizeMb = (fs.statSync(dest).size / 1024 / 1024).toFixed(2);
+    onLog?.({
+      level: "info",
+      step: "backup",
+      message: `DB safety copy → ${dest} (${sizeMb} MB)`,
+    });
+    // Keep last 10 pre-farm snapshots (don't touch upgrade backups)
+    const backupsRoot = path.join(home, ".9router", "db", "backups");
+    const prefarm = fs
+      .readdirSync(backupsRoot, { withFileTypes: true })
+      .filter((e) => e.isDirectory() && e.name.startsWith("pre-farm-"))
+      .map((e) => ({
+        name: e.name,
+        full: path.join(backupsRoot, e.name),
+        mtime: fs.statSync(path.join(backupsRoot, e.name)).mtimeMs,
+      }))
+      .sort((a, b) => b.mtime - a.mtime);
+    for (const old of prefarm.slice(10)) {
+      try {
+        fs.rmSync(old.full, { recursive: true, force: true });
+      } catch {
+        /* ignore */
+      }
+    }
+    return dest;
+  } catch (e) {
+    onLog?.({
+      level: "warn",
+      step: "backup",
+      message: `pre-farm DB backup failed: ${e.message}`,
+    });
+    return null;
+  }
+}
+
+/**
+ * Kill farm child (pool.py) + descendants only.
+ *
+ * NEVER use process.kill(-pid) / process-group kill here — if the child is not
+ * a separate process-group leader (or detach failed), that can SIGTERM the
+ * entire Next.js server. sql.js may then flush an empty/corrupt in-memory DB
+ * over ~/.9router/db/data.sqlite and wipe all provider accounts.
  */
 export function killProcessTree(child, { graceMs = 2500 } = {}) {
   if (!child || child.killed) return;
   const pid = child.pid;
-  if (!pid) return;
+  if (!pid || pid <= 1) return;
+
+  // Never signal our own process / process group
+  if (pid === process.pid) {
+    console.error("[grok-register] refuse to kill own pid");
+    return;
+  }
+
+  const run = (cmd, args) => {
+    try {
+      spawn(cmd, args, { stdio: "ignore", windowsHide: true });
+    } catch {
+      /* ignore */
+    }
+  };
 
   try {
     if (process.platform === "win32") {
-      spawn("taskkill", ["/PID", String(pid), "/T", "/F"], {
-        stdio: "ignore",
-        windowsHide: true,
-      });
+      run("taskkill", ["/PID", String(pid), "/T", "/F"]);
       return;
     }
-    // Negative PID = process group (spawn with detached:true → new group)
+
+    // 1) children of pool.py (workers) — recursive-ish via repeated -P
+    run("pkill", ["-TERM", "-P", String(pid)]);
     try {
-      process.kill(-pid, "SIGTERM");
+      child.kill("SIGTERM");
     } catch {
-      try {
-        child.kill("SIGTERM");
-      } catch {
-        /* ignore */
-      }
+      /* ignore */
     }
+
     setTimeout(() => {
+      run("pkill", ["-KILL", "-P", String(pid)]);
       try {
-        process.kill(-pid, "SIGKILL");
-      } catch {
-        try {
-          child.kill("SIGKILL");
-        } catch {
-          /* ignore */
-        }
-      }
-      // Orphan farm Chromium profiles (same marker as standalone)
-      try {
-        spawn("pkill", ["-f", "user-data-dir=.*/grok_pw_w"], { stdio: "ignore" });
+        if (!child.killed) child.kill("SIGKILL");
       } catch {
         /* ignore */
       }
+      // Farm Chromium only (temp profile marker from farm.py)
+      run("pkill", ["-f", "user-data-dir=.*/grok_pw_w"]);
     }, graceMs);
   } catch {
     try {
@@ -661,6 +719,9 @@ export async function runGrokRegister(opts = {}) {
     message: `IMAP ${emailCfg.imapUser} @ ${emailCfg.imapHost} domain=${emailCfg.domain}`,
   });
 
+  // Always snapshot DB before farm mutations / force-stop risk
+  backupDbBeforeFarm(onLog);
+
   const summary = {
     total: Math.max(0, Number(count) || 0),
     success: 0,
@@ -671,7 +732,9 @@ export async function runGrokRegister(opts = {}) {
   let forcedStop = false;
 
   await new Promise((resolve, reject) => {
-    // detached → own process group on Unix so we can kill pool + worker Chromium together
+    // Do NOT use detached process groups — force-stop must only signal this child
+    // (see killProcessTree). Group kill previously risked taking down Next.js +
+    // wiping sql.js-backed provider data.
     const child = spawn(python, args, {
       cwd: root,
       env: {
@@ -686,7 +749,6 @@ export async function runGrokRegister(opts = {}) {
         IMAP_PORT: String(emailCfg.imapPort || 993),
       },
       stdio: ["ignore", "pipe", "pipe"],
-      detached: process.platform !== "win32",
     });
 
     if (typeof registerAbort === "function") {
