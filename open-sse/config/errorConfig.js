@@ -61,6 +61,11 @@ export const ERROR_RULES = [
   { text: "no credentials",           cooldownMs: COOLDOWN.long },
   { text: "request not allowed",      cooldownMs: COOLDOWN.short },
   { text: "improperly formed request", cooldownMs: COOLDOWN.long },
+  // Grok free promo / spending (also handled specially for grok-cli disable)
+  { text: "free-usage-exhausted",     cooldownMs: COOLDOWN.long },
+  { text: "free usage exhausted",     cooldownMs: COOLDOWN.long },
+  { text: "spending-limit",           cooldownMs: COOLDOWN.long },
+  { text: "spending limit",           cooldownMs: COOLDOWN.long },
   { text: "rate limit",               backoff: true },
   { text: "too many requests",        backoff: true },
   { text: "quota exceeded",           backoff: true },

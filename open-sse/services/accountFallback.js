@@ -27,6 +27,19 @@ export function isKimchiQuotaExhausted(provider, errorText) {
   return KIMCHI_QUOTA_EXHAUSTED_PATTERNS.some(p => p.test(text));
 }
 
+function errorTextToLower(errorText) {
+  if (!errorText) return "";
+  const text = typeof errorText === "string"
+    ? errorText
+    : (() => { try { return JSON.stringify(errorText); } catch { return String(errorText); } })();
+  return text.toLowerCase();
+}
+
+function isGrokCliProvider(provider) {
+  const pid = String(provider || "").toLowerCase();
+  return pid === "grok-cli" || pid === "gcli";
+}
+
 /**
  * Grok CLI: xAI permanently denies chat (bot-flag / free gate).
  * @param {string} provider
@@ -34,18 +47,52 @@ export function isKimchiQuotaExhausted(provider, errorText) {
  * @param {string|object} errorText
  */
 export function isGrokCliChatPermissionDenied(provider, status, errorText) {
-  const pid = String(provider || "").toLowerCase();
-  if (pid !== "grok-cli" && pid !== "gcli") return false;
+  if (!isGrokCliProvider(provider)) return false;
   if (Number(status) !== 403) return false;
-  if (!errorText) return false;
-  const text = typeof errorText === "string"
-    ? errorText
-    : (() => { try { return JSON.stringify(errorText); } catch { return String(errorText); } })();
-  const lower = text.toLowerCase();
+  const lower = errorTextToLower(errorText);
   return (
     lower.includes("permission-denied") ||
     lower.includes("access to the chat endpoint is denied")
   );
+}
+
+/**
+ * Grok CLI free promo / token pool exhausted (or paid spending limit).
+ * Prefer disable over delete so the row remains for audit/reauth.
+ */
+export function isGrokCliFreeOrCreditExhausted(provider, status, errorText) {
+  if (!isGrokCliProvider(provider)) return false;
+  const code = Number(status);
+  const lower = errorTextToLower(errorText);
+  if (
+    lower.includes("free-usage-exhausted") ||
+    lower.includes("free usage exhausted") ||
+    lower.includes("tokens (actual/limit)") ||
+    /tokens\s*\([^)]*\/\s*1000000\)/i.test(lower) ||
+    lower.includes("personal-team-blocked:spending-limit") ||
+    lower.includes("spending-limit") ||
+    lower.includes("spending limit")
+  ) {
+    return true;
+  }
+  // 402 from Build often means spending limit / no remaining credits
+  if (code === 402) return true;
+  return false;
+}
+
+/**
+ * Payload to deactivate a grok-cli connection that hit free/credit exhaustion.
+ */
+export function buildGrokCliQuotaExhaustedUpdate(now = new Date()) {
+  return {
+    isActive: false,
+    testStatus: "quota_exhausted",
+    lastErrorType: "quota_exhausted",
+    errorCode: 402,
+    lastError: "Grok free/credit quota exhausted",
+    lastErrorAt: now.toISOString(),
+    quotaExhaustedAt: now.toISOString(),
+  };
 }
 
 /**

@@ -39,7 +39,10 @@ export {
   checkFallbackError,
   isAccountUnavailable,
   getUnavailableUntil,
-  filterAvailableAccounts
+  filterAvailableAccounts,
+  isGrokCliChatPermissionDenied,
+  isGrokCliFreeOrCreditExhausted,
+  buildGrokCliQuotaExhaustedUpdate,
 } from "./services/accountFallback.js";
 
 export {

@@ -515,6 +515,7 @@ export async function importGrokCliInProcess(payload) {
     displayName ||
     "Grok CLI";
 
+  const botFlag = accessClaims?.bot_flag_source ?? null;
   const connection = await createProviderConnection({
     provider: "grok-cli",
     authType: "oauth",
@@ -532,7 +533,11 @@ export async function importGrokCliInProcess(payload) {
       idToken: payload.idToken || null,
       email: email || null,
       userId: userId || null,
-      botFlagSource: accessClaims?.bot_flag_source ?? null,
+      botFlagSource: botFlag,
+      botFlagged: botFlag != null && botFlag !== 0 && botFlag !== "0" && botFlag !== false,
+      reauthRequired: false,
+      quotaExhausted: false,
+      importedAt: new Date().toISOString(),
     },
   });
 

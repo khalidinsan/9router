@@ -7,38 +7,45 @@ import {
   getProxyPools,
 } from "@/lib/localDb";
 import { resolveConnectionProxyConfig, pickProxyPoolId } from "@/lib/network/connectionProxy";
-import { formatRetryAfter, checkFallbackError, isModelLockActive, buildModelLockUpdate, getEarliestModelLockUntil } from "open-sse/services/accountFallback.js";
+import {
+  formatRetryAfter,
+  checkFallbackError,
+  isModelLockActive,
+  buildModelLockUpdate,
+  getEarliestModelLockUntil,
+  isGrokCliChatPermissionDenied,
+  isGrokCliFreeOrCreditExhausted,
+  buildGrokCliQuotaExhaustedUpdate,
+} from "open-sse/services/accountFallback.js";
 import { MAX_RATE_LIMIT_COOLDOWN_MS } from "open-sse/config/errorConfig.js";
 import { resolveProviderId, FREE_PROVIDERS } from "@/shared/constants/providers.js";
 import * as log from "../utils/logger.js";
 
-/**
- * Grok CLI chat permanently denied by xAI (bot-flagged / free gate).
- * These accounts never recover via cooldown — auto-delete from pool.
- */
-function isGrokCliChatPermissionDenied(provider, status, errorText) {
-  const pid = String(provider || "").toLowerCase();
-  if (pid !== "grok-cli" && pid !== "gcli") return false;
-  if (Number(status) !== 403) return false;
-  const text =
-    typeof errorText === "string"
-      ? errorText
-      : (() => {
-          try {
-            return JSON.stringify(errorText || "");
-          } catch {
-            return String(errorText || "");
-          }
-        })();
-  const lower = text.toLowerCase();
-  return (
-    lower.includes("permission-denied") ||
-    lower.includes("access to the chat endpoint is denied")
-  );
-}
-
 // Mutex to prevent race conditions during account selection
 let selectionMutex = Promise.resolve();
+
+/** Higher score = prefer this grok-cli connection first. */
+function scoreGrokCliConnection(conn) {
+  const psd = conn?.providerSpecificData || {};
+  let score = 0;
+  if (psd.botFlagged === true) score -= 1000;
+  if (psd.reauthRequired === true) score -= 800;
+  if (psd.quotaExhausted === true || conn?.testStatus === "quota_exhausted") score -= 900;
+  if (psd.freeProfile === true) score += 50;
+  // More free remaining % is better (unknown → neutral)
+  const rem = Number(psd.freeRemainingPct);
+  if (Number.isFinite(rem)) score += Math.max(0, Math.min(100, rem));
+  // Prefer less recently used (spread load)
+  if (conn?.lastUsedAt) {
+    const ageMin = (Date.now() - new Date(conn.lastUsedAt).getTime()) / 60000;
+    if (Number.isFinite(ageMin)) score += Math.min(30, ageMin / 10);
+  } else {
+    score += 20;
+  }
+  // Lower priority number is better (fill-first style)
+  score -= (conn?.priority || 0) * 0.01;
+  return score;
+}
 
 /**
  * Get provider credentials from localDb
@@ -99,10 +106,22 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
       return null;
     }
 
-    // Filter out model-locked and excluded connections
+    // Filter out model-locked, excluded, and grok-cli permanently bad rows
     const availableConnections = connections.filter(c => {
       if (excludeSet.has(c.id)) return false;
       if (isModelLockActive(c, model)) return false;
+      // Prefer skipping bot-flagged / reauth-required / free-exhausted even if still isActive
+      const psd = c.providerSpecificData || {};
+      if (
+        (providerId === "grok-cli" || providerId === "gcli") &&
+        (psd.botFlagged === true ||
+          psd.reauthRequired === true ||
+          c.testStatus === "quota_exhausted" ||
+          c.testStatus === "permission_denied" ||
+          c.testStatus === "reauth_required")
+      ) {
+        return false;
+      }
       return true;
     });
 
@@ -136,6 +155,11 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
       return null;
     }
 
+    // grok-cli: prefer clean accounts with more free remaining, then least recently used
+    if (providerId === "grok-cli" || providerId === "gcli") {
+      availableConnections.sort((a, b) => scoreGrokCliConnection(b) - scoreGrokCliConnection(a));
+    }
+
     const settings = await getSettings();
     // Per-provider strategy overrides global setting
     const providerOverride = (settings.providerStrategies || {})[providerId] || {};
@@ -151,7 +175,7 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
     }
     if (connection) {
       // skip strategy
-    } else if (strategy === "round-robin") {
+    } else if (strategy === "round-robin" && providerId !== "grok-cli" && providerId !== "gcli") {
       const stickyLimit = providerOverride.stickyRoundRobinLimit || settings.stickyRoundRobinLimit || 3;
 
       // Sort by lastUsed (most recent first) to find current candidate
@@ -191,8 +215,14 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
         });
       }
     } else {
-      // Default: fill-first (already sorted by priority in getProviderConnections)
+      // Default fill-first — for grok-cli list is already score-sorted (best first)
       connection = availableConnections[0];
+      if (providerId === "grok-cli" || providerId === "gcli") {
+        await updateProviderConnection(connection.id, {
+          lastUsedAt: new Date().toISOString(),
+          consecutiveUseCount: 1,
+        });
+      }
     }
 
     const resolvedProxy = await resolveConnectionProxyConfig(connection.providerSpecificData || {});
@@ -269,6 +299,29 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
       });
     }
     return { shouldFallback: true, cooldownMs: 0, deleted: true };
+  }
+
+  // grok-cli: free promo / credit exhausted → disable (keep row for audit)
+  if (isGrokCliFreeOrCreditExhausted(provider, status, errorText)) {
+    const reason =
+      typeof errorText === "string" ? errorText.slice(0, 200) : "quota exhausted";
+    try {
+      await updateProviderConnection(connectionId, {
+        ...buildGrokCliQuotaExhaustedUpdate(),
+        lastError: reason,
+        providerSpecificData: {
+          ...(conn?.providerSpecificData || {}),
+          quotaExhausted: true,
+          freeRemainingPct: 0,
+          lastQuotaCheckAt: new Date().toISOString(),
+        },
+      });
+      log.warn("AUTH", `${connName} DISABLED (grok-cli free/credit exhausted)`);
+      console.error(`❌ grok-cli [${status}]: quota exhausted — disabled ${connName}`);
+    } catch (e) {
+      log.warn("AUTH", `${connName} disable failed: ${e.message}`);
+    }
+    return { shouldFallback: true, cooldownMs: 0, disabled: true };
   }
 
   // Provider-specific precise cooldown (e.g. codex usage_limit_reached resets_at) overrides backoff
