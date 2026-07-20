@@ -166,11 +166,29 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
     const strategy = providerOverride.fallbackStrategy || settings.fallbackStrategy || "fill-first";
 
     let connection;
-    // Pin to preferred connection if specified and available
+    // Pin to preferred connection if specified — hard-fail when unavailable
+    // (used by per-account model test via x-connection-id)
     if (preferredConnectionId) {
       connection = availableConnections.find((c) => c.id === preferredConnectionId);
       if (connection) {
         log.info("AUTH", `${provider} | pinned to ${connection.id?.slice(0, 8)} (${connection.name || connection.email || "unnamed"})`);
+      } else {
+        const exists = connections.find((c) => c.id === preferredConnectionId);
+        const reason = !exists
+          ? "Pinned connection not found"
+          : exists.isActive === false
+            ? "Pinned connection is disabled"
+            : isModelLockActive(exists, model)
+              ? "Pinned connection is model-locked"
+              : excludeSet.has(preferredConnectionId)
+                ? "Pinned connection was excluded"
+                : "Pinned connection unavailable";
+        log.warn("AUTH", `${provider} | pin failed: ${reason} (${preferredConnectionId.slice(0, 8)})`);
+        return {
+          pinFailed: true,
+          error: reason,
+          preferredConnectionId,
+        };
       }
     }
     if (connection) {

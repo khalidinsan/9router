@@ -77,6 +77,12 @@ export default function ProviderDetailPage() {
   const [oneByOneSummary, setOneByOneSummary] = useState(null);
   const stopOneByOneRef = useRef(false);
   const [importingQoderModels, setImportingQoderModels] = useState(false);
+  // Per-account model test: open panel + results keyed by connectionId
+  const [accountModelTestOpenId, setAccountModelTestOpenId] = useState(null);
+  const [accountModelResults, setAccountModelResults] = useState({}); // { [connId]: { [modelId]: result } }
+  const [accountModelTesting, setAccountModelTesting] = useState({}); // { [connId]: { [modelId]: true } }
+  const [accountModelTestingAll, setAccountModelTestingAll] = useState({}); // { [connId]: true }
+  const [accountModelSummary, setAccountModelSummary] = useState({}); // { [connId]: string }
   const { copied, copy } = useCopyToClipboard();
 
   const AG_RISK_STORAGE_KEY = "ag_risk_confirmed";
@@ -902,6 +908,144 @@ export default function ProviderDetailPage() {
 
   const isSelected = (connectionId) => selectedConnectionIds.includes(connectionId);
 
+  // Models available for per-account test (same catalog as Models section, llm only)
+  const accountTestModels = (() => {
+    const builtIn = (models || [])
+      .filter((m) => {
+        const k = getModelKind(m);
+        return !k || k === "llm";
+      })
+      .map((m) => ({ id: m.id, name: m.name || m.id }));
+    const freeExtra = (kiloFreeModels || [])
+      .filter((fm) => !builtIn.some((m) => m.id === fm.id))
+      .map((m) => ({ id: m.id, name: m.name || m.id }));
+    const customRows = getProviderCustomModelRows({
+      customModels,
+      modelAliases,
+      providerAlias: providerStorageAlias,
+      builtInModels: models || [],
+      type: "llm",
+    }).map((m) => ({ id: m.id, name: m.name || m.id }));
+    const seen = new Set();
+    const out = [];
+    for (const m of [...customRows, ...builtIn, ...freeExtra]) {
+      if (!m?.id || seen.has(m.id)) continue;
+      seen.add(m.id);
+      out.push(m);
+    }
+    return out;
+  })();
+
+  const refreshConnectionsQuiet = useCallback(async () => {
+    try {
+      const res = await fetch("/api/providers", { cache: "no-store" });
+      if (!res.ok) return;
+      const data = await res.json();
+      const list = data.connections || [];
+      setConnections(list.filter((c) => c.provider === providerId));
+    } catch {
+      /* ignore */
+    }
+  }, [providerId]);
+
+  const handleAccountTestModel = async (connectionId, modelId) => {
+    setAccountModelTesting((prev) => ({
+      ...prev,
+      [connectionId]: { ...(prev[connectionId] || {}), [modelId]: true },
+    }));
+    try {
+      const res = await fetch("/api/models/test", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: `${providerStorageAlias}/${modelId}`,
+          connectionId,
+        }),
+      });
+      const data = await res.json();
+      setAccountModelResults((prev) => ({
+        ...prev,
+        [connectionId]: {
+          ...(prev[connectionId] || {}),
+          [modelId]: {
+            ok: !!data.ok,
+            latencyMs: data.latencyMs,
+            error: data.error || null,
+            status: data.status,
+          },
+        },
+      }));
+      // 403/402 may have deleted/disabled the connection
+      if (data.status === 403 || data.status === 402 || /deleted|disabled|permission/i.test(data.error || "")) {
+        await refreshConnectionsQuiet();
+      }
+    } catch (e) {
+      setAccountModelResults((prev) => ({
+        ...prev,
+        [connectionId]: {
+          ...(prev[connectionId] || {}),
+          [modelId]: { ok: false, error: e.message || "Network error" },
+        },
+      }));
+    } finally {
+      setAccountModelTesting((prev) => {
+        const next = { ...(prev[connectionId] || {}) };
+        delete next[modelId];
+        return { ...prev, [connectionId]: next };
+      });
+    }
+  };
+
+  const handleAccountTestAllModels = async (connectionId) => {
+    if (accountModelTestingAll[connectionId]) return;
+    setAccountModelTestingAll((prev) => ({ ...prev, [connectionId]: true }));
+    setAccountModelSummary((prev) => ({ ...prev, [connectionId]: "" }));
+    try {
+      const res = await fetch(`/api/providers/${connectionId}/test-models`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          models: accountTestModels.map((m) => m.id),
+          concurrency: 3,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setAccountModelSummary((prev) => ({
+          ...prev,
+          [connectionId]: data.error || "Test failed",
+        }));
+        return;
+      }
+      const map = {};
+      for (const r of data.results || []) {
+        map[r.modelId] = {
+          ok: !!r.ok,
+          latencyMs: r.latencyMs,
+          error: r.error || null,
+          status: r.status,
+        };
+      }
+      setAccountModelResults((prev) => ({ ...prev, [connectionId]: map }));
+      setAccountModelSummary((prev) => ({
+        ...prev,
+        [connectionId]: `Done: ${data.okCount ?? 0} ok, ${data.failCount ?? 0} failed`,
+      }));
+      await refreshConnectionsQuiet();
+    } catch (e) {
+      setAccountModelSummary((prev) => ({
+        ...prev,
+        [connectionId]: e.message || "Network error",
+      }));
+    } finally {
+      setAccountModelTestingAll((prev) => {
+        const n = { ...prev };
+        delete n[connectionId];
+        return n;
+      });
+    }
+  };
+
   const connectionsList = (
     <div className="flex min-w-0 flex-col divide-y divide-black/[0.03] dark:divide-white/[0.03]">
       {connections
@@ -930,6 +1074,20 @@ export default function ProviderDetailPage() {
                   onToggle: (on) => handleAutoPingConnection(conn.id, on),
                   provider: providerId,
                 } : null}
+                modelTestPanel={{
+                  open: accountModelTestOpenId === conn.id,
+                  models: accountTestModels,
+                  results: accountModelResults[conn.id] || {},
+                  testing: accountModelTesting[conn.id] || {},
+                  testingAll: !!accountModelTestingAll[conn.id],
+                  summary: accountModelSummary[conn.id] || "",
+                  onToggle: () =>
+                    setAccountModelTestOpenId((prev) =>
+                      prev === conn.id ? null : conn.id
+                    ),
+                  onTestModel: (modelId) => handleAccountTestModel(conn.id, modelId),
+                  onTestAll: () => handleAccountTestAllModels(conn.id),
+                }}
                 onUpdateProxy={async (proxyPoolId) => {
                   try {
                     const res = await fetch(`/api/providers/${conn.id}`, {

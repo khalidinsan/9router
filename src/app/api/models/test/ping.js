@@ -37,7 +37,7 @@ function createSilentWavFile() {
   return new Blob([buffer], { type: "audio/wav" });
 }
 
-async function getInternalHeaders() {
+async function getInternalHeaders(connectionId = null) {
   let apiKey = null;
   try {
     const keys = await getApiKeys();
@@ -47,12 +47,27 @@ async function getInternalHeaders() {
   const headers = { "Content-Type": "application/json" };
   if (apiKey) headers["Authorization"] = `Bearer ${apiKey}`;
   headers["x-9r-cli-token"] = await getConsistentMachineId(CLI_TOKEN_SALT);
+  if (connectionId) headers["x-connection-id"] = String(connectionId);
   return headers;
 }
 
-export async function pingModelByKind(model, kind, baseUrl = `http://127.0.0.1:${process.env.PORT || UPDATER_CONFIG.appPort}`) {
-  const headers = await getInternalHeaders();
+/**
+ * Ping a model through the local 9router OpenAI-compatible API.
+ * @param {string} model - e.g. "gcli/grok-4.5" or "grok-cli/grok-4.5"
+ * @param {string} kind - llm | embedding | image | stt
+ * @param {string} [baseUrl]
+ * @param {{ connectionId?: string }} [options] - pin probe to a specific account
+ */
+export async function pingModelByKind(
+  model,
+  kind,
+  baseUrl = `http://127.0.0.1:${process.env.PORT || UPDATER_CONFIG.appPort}`,
+  options = {},
+) {
+  const connectionId = options?.connectionId || null;
+  const headers = await getInternalHeaders(connectionId);
   const start = Date.now();
+  const pin = connectionId ? { connectionId } : {};
 
   if (kind === "embedding") {
     const res = await fetch(`${baseUrl}/api/v1/embeddings`, {
@@ -68,13 +83,13 @@ export async function pingModelByKind(model, kind, baseUrl = `http://127.0.0.1:$
 
     if (!res.ok) {
       const detail = parsed?.error?.message || parsed?.error || rawText;
-      return { ok: false, latencyMs, error: `HTTP ${res.status}${detail ? `: ${String(detail).slice(0, 240)}` : ""}`, status: res.status };
+      return { ok: false, latencyMs, error: `HTTP ${res.status}${detail ? `: ${String(detail).slice(0, 240)}` : ""}`, status: res.status, ...pin };
     }
     const hasEmbedding = Array.isArray(parsed?.data) && parsed.data.length > 0 && Array.isArray(parsed.data[0]?.embedding);
     if (!hasEmbedding) {
-      return { ok: false, latencyMs, status: res.status, error: "Provider returned no embedding data" };
+      return { ok: false, latencyMs, status: res.status, error: "Provider returned no embedding data", ...pin };
     }
-    return { ok: true, latencyMs, error: null, status: res.status };
+    return { ok: true, latencyMs, error: null, status: res.status, ...pin };
   }
 
   if (kind === "image") {
@@ -91,14 +106,14 @@ export async function pingModelByKind(model, kind, baseUrl = `http://127.0.0.1:$
 
     if (!res.ok) {
       const detail = parsed?.error?.message || parsed?.msg || parsed?.message || parsed?.error || rawText;
-      return { ok: false, latencyMs, error: `HTTP ${res.status}${detail ? `: ${String(detail).slice(0, 240)}` : ""}`, status: res.status };
+      return { ok: false, latencyMs, error: `HTTP ${res.status}${detail ? `: ${String(detail).slice(0, 240)}` : ""}`, status: res.status, ...pin };
     }
 
     const hasImages = Array.isArray(parsed?.data) && parsed.data.length > 0;
     if (!hasImages) {
-      return { ok: false, latencyMs, status: res.status, error: "Provider returned no image data for this model" };
+      return { ok: false, latencyMs, status: res.status, error: "Provider returned no image data for this model", ...pin };
     }
-    return { ok: true, latencyMs, error: null, status: res.status };
+    return { ok: true, latencyMs, error: null, status: res.status, ...pin };
   }
 
   if (kind === "stt") {
@@ -120,14 +135,14 @@ export async function pingModelByKind(model, kind, baseUrl = `http://127.0.0.1:$
 
     if (!res.ok) {
       const detail = parsed?.error?.message || parsed?.msg || parsed?.message || parsed?.error || rawText;
-      return { ok: false, latencyMs, error: `HTTP ${res.status}${detail ? `: ${String(detail).slice(0, 240)}` : ""}`, status: res.status };
+      return { ok: false, latencyMs, error: `HTTP ${res.status}${detail ? `: ${String(detail).slice(0, 240)}` : ""}`, status: res.status, ...pin };
     }
 
     const text = typeof parsed?.text === "string" ? parsed.text : "";
     if (!text.trim()) {
-      return { ok: false, latencyMs, status: res.status, error: "Provider returned no transcription text for this model" };
+      return { ok: false, latencyMs, status: res.status, error: "Provider returned no transcription text for this model", ...pin };
     }
-    return { ok: true, latencyMs, error: null, status: res.status };
+    return { ok: true, latencyMs, error: null, status: res.status, ...pin };
   }
 
   const res = await fetch(`${baseUrl}/api/v1/chat/completions`, {
@@ -141,7 +156,7 @@ export async function pingModelByKind(model, kind, baseUrl = `http://127.0.0.1:$
       stream: false,
       messages: [{ role: "user", content: "hi" }],
     }),
-    signal: AbortSignal.timeout(15000),
+    signal: AbortSignal.timeout(20000),
   });
   const latencyMs = Date.now() - start;
 
@@ -151,7 +166,7 @@ export async function pingModelByKind(model, kind, baseUrl = `http://127.0.0.1:$
 
   if (!res.ok) {
     const detail = parsed?.error?.message || parsed?.msg || parsed?.message || parsed?.error || rawText;
-    return { ok: false, latencyMs, error: `HTTP ${res.status}${detail ? `: ${String(detail).slice(0, 240)}` : ""}`, status: res.status };
+    return { ok: false, latencyMs, error: `HTTP ${res.status}${detail ? `: ${String(detail).slice(0, 240)}` : ""}`, status: res.status, ...pin };
   }
 
   const providerStatus = parsed?.status;
@@ -166,6 +181,7 @@ export async function pingModelByKind(model, kind, baseUrl = `http://127.0.0.1:$
       latencyMs,
       status: res.status,
       error: `Provider status ${providerStatus}: ${String(providerMsg).slice(0, 240)}`,
+      ...pin,
     };
   }
 
@@ -176,6 +192,7 @@ export async function pingModelByKind(model, kind, baseUrl = `http://127.0.0.1:$
       latencyMs,
       status: res.status,
       error: String(providerError).slice(0, 240),
+      ...pin,
     };
   }
 
@@ -186,8 +203,9 @@ export async function pingModelByKind(model, kind, baseUrl = `http://127.0.0.1:$
       latencyMs,
       status: res.status,
       error: "Provider returned no completion choices for this model",
+      ...pin,
     };
   }
 
-  return { ok: true, latencyMs, error: null, status: res.status };
+  return { ok: true, latencyMs, error: null, status: res.status, ...pin };
 }

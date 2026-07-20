@@ -6,7 +6,23 @@ import PropTypes from "prop-types";
 import { Badge, Toggle, Tooltip } from "@/shared/components";
 import CooldownTimer from "./CooldownTimer";
 
-export default function ConnectionRow({ connection, proxyPools, isOAuth, isFirst, isLast, onMoveUp, onMoveDown, onToggleActive, onUpdateProxy, onEdit, onDelete, oneByOneStatus = null, autoPing = null }) {
+export default function ConnectionRow({
+  connection,
+  proxyPools,
+  isOAuth,
+  isFirst,
+  isLast,
+  onMoveUp,
+  onMoveDown,
+  onToggleActive,
+  onUpdateProxy,
+  onEdit,
+  onDelete,
+  oneByOneStatus = null,
+  autoPing = null,
+  // Per-account model test (all providers)
+  modelTestPanel = null,
+}) {
   const [showProxyDropdown, setShowProxyDropdown] = useState(false);
   const [updatingProxy, setUpdatingProxy] = useState(false);
   const proxyDropdownRef = useRef(null);
@@ -135,8 +151,15 @@ export default function ConnectionRow({ connection, proxyPools, isOAuth, isFirst
     return null;
   };
 
+  const panelOpen = modelTestPanel?.open === true;
+  const panelModels = modelTestPanel?.models || [];
+  const panelResults = modelTestPanel?.results || {};
+  const panelTesting = modelTestPanel?.testing || {};
+  const panelTestingAll = modelTestPanel?.testingAll === true;
+
   return (
-    <div className={`group flex min-w-0 flex-col gap-3 rounded-lg p-2 transition-colors hover:bg-black/[0.02] dark:hover:bg-white/[0.02] sm:flex-row sm:items-center sm:justify-between ${connection.isActive === false ? "opacity-60" : ""}`}>
+    <div className={`min-w-0 ${connection.isActive === false ? "opacity-60" : ""}`}>
+    <div className="group flex min-w-0 flex-col gap-3 rounded-lg p-2 transition-colors hover:bg-black/[0.02] dark:hover:bg-white/[0.02] sm:flex-row sm:items-center sm:justify-between">
       <div className="flex min-w-0 flex-1 items-start gap-2 sm:items-center sm:gap-3">
         {/* Priority arrows */}
         <div className="flex shrink-0 flex-col">
@@ -257,6 +280,17 @@ export default function ConnectionRow({ connection, proxyPools, isOAuth, isFirst
               </button>
             </Tooltip>
           )}
+          {modelTestPanel && (
+            <Tooltip text="Test available models on this account only">
+              <button
+                onClick={modelTestPanel.onToggle}
+                className={`flex w-full flex-col items-center rounded px-2 py-1 transition-colors hover:bg-black/5 dark:hover:bg-white/5 ${panelOpen ? "text-primary" : "text-text-muted hover:text-primary"}`}
+              >
+                <span className="material-symbols-outlined text-[18px]">science</span>
+                <span className="text-[10px] leading-tight">Models</span>
+              </button>
+            </Tooltip>
+          )}
           <button onClick={onEdit} className="flex flex-col items-center rounded px-2 py-1 text-text-muted hover:bg-black/5 hover:text-primary dark:hover:bg-white/5">
             <span className="material-symbols-outlined text-[18px]">edit</span>
             <span className="text-[10px] leading-tight">Edit</span>
@@ -273,6 +307,108 @@ export default function ConnectionRow({ connection, proxyPools, isOAuth, isFirst
           title={(connection.isActive ?? true) ? "Disable connection" : "Enable connection"}
         />
       </div>
+    </div>
+
+    {/* Per-account model test panel */}
+    {modelTestPanel && panelOpen && (
+      <div className="mx-2 mb-2 rounded-lg border border-border-subtle bg-bg/60 px-3 py-2.5">
+        <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+          <div className="text-xs font-medium text-text-main">
+            Models on this account
+            <span className="ml-1.5 font-normal text-text-muted">
+              ({panelModels.length})
+            </span>
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              disabled={panelTestingAll || panelModels.length === 0 || connection.isActive === false}
+              onClick={modelTestPanel.onTestAll}
+              className="inline-flex items-center gap-1 rounded-md border border-border-subtle px-2 py-1 text-[11px] font-medium text-text-main hover:bg-black/5 disabled:cursor-not-allowed disabled:opacity-50 dark:hover:bg-white/5"
+            >
+              <span
+                className="material-symbols-outlined text-[14px]"
+                style={panelTestingAll ? { animation: "spin 1s linear infinite" } : undefined}
+              >
+                {panelTestingAll ? "progress_activity" : "playlist_play"}
+              </span>
+              {panelTestingAll ? "Testing…" : "Test all"}
+            </button>
+            <button
+              type="button"
+              onClick={modelTestPanel.onToggle}
+              className="rounded p-1 text-text-muted hover:bg-black/5 dark:hover:bg-white/5"
+              title="Close"
+            >
+              <span className="material-symbols-outlined text-[16px]">close</span>
+            </button>
+          </div>
+        </div>
+        {connection.isActive === false && (
+          <p className="mb-2 text-[11px] text-amber-600 dark:text-amber-400">
+            Account is disabled — enable it to run tests.
+          </p>
+        )}
+        {panelModels.length === 0 ? (
+          <p className="text-[11px] text-text-muted">No models listed for this provider.</p>
+        ) : (
+          <div className="max-h-56 space-y-1 overflow-y-auto">
+            {panelModels.map((m) => {
+              const r = panelResults[m.id];
+              const testing = !!panelTesting[m.id] || panelTestingAll;
+              const statusColor =
+                r?.ok === true
+                  ? "text-emerald-500"
+                  : r?.ok === false
+                    ? "text-red-500"
+                    : "text-text-muted";
+              return (
+                <div
+                  key={m.id}
+                  className="flex min-w-0 items-center gap-2 rounded-md px-1.5 py-1 hover:bg-black/[0.03] dark:hover:bg-white/[0.03]"
+                >
+                  <span className={`material-symbols-outlined shrink-0 text-[16px] ${statusColor}`}>
+                    {testing
+                      ? "progress_activity"
+                      : r?.ok === true
+                        ? "check_circle"
+                        : r?.ok === false
+                          ? "cancel"
+                          : "smart_toy"}
+                  </span>
+                  <div className="min-w-0 flex-1">
+                    <code className="block truncate font-mono text-[11px] text-text-main">
+                      {m.id}
+                    </code>
+                    {r?.error && (
+                      <p className="truncate text-[10px] text-red-500" title={r.error}>
+                        {r.error}
+                      </p>
+                    )}
+                  </div>
+                  {typeof r?.latencyMs === "number" && (
+                    <span className="shrink-0 tabular-nums text-[10px] text-text-muted">
+                      {r.latencyMs}ms
+                    </span>
+                  )}
+                  <button
+                    type="button"
+                    disabled={testing || connection.isActive === false}
+                    onClick={() => modelTestPanel.onTestModel?.(m.id)}
+                    className="shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium text-primary hover:bg-primary/10 disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    Test
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        )}
+        {modelTestPanel.summary && (
+          <p className="mt-2 text-[11px] text-text-muted">{modelTestPanel.summary}</p>
+        )}
+      </div>
+    )}
     </div>
   );
 }
@@ -314,5 +450,18 @@ ConnectionRow.propTypes = {
     on: PropTypes.bool,
     onToggle: PropTypes.func,
     provider: PropTypes.string,
+  }),
+  modelTestPanel: PropTypes.shape({
+    open: PropTypes.bool,
+    models: PropTypes.arrayOf(
+      PropTypes.shape({ id: PropTypes.string, name: PropTypes.string })
+    ),
+    results: PropTypes.object,
+    testing: PropTypes.object,
+    testingAll: PropTypes.bool,
+    summary: PropTypes.string,
+    onToggle: PropTypes.func,
+    onTestModel: PropTypes.func,
+    onTestAll: PropTypes.func,
   }),
 };

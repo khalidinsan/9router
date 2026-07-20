@@ -189,6 +189,8 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
 
   // Extract userAgent from request
   const userAgent = request?.headers?.get("user-agent") || "";
+  // Pin to a specific connection (per-account model test / media-style pin)
+  const preferredConnectionId = request.headers.get("x-connection-id") || null;
 
   // Try with available accounts (fallback on errors)
   const excludeConnectionIds = new Set();
@@ -196,7 +198,15 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
   let lastStatus = null;
 
   while (true) {
-    const credentials = await getProviderCredentials(provider, excludeConnectionIds, model);
+    const credentials = await getProviderCredentials(provider, excludeConnectionIds, model, {
+      preferredConnectionId,
+    });
+
+    // Explicit pin failed (connection missing / disabled / locked)
+    if (credentials?.pinFailed) {
+      log.warn("AUTH", `Pin failed for ${provider}: ${credentials.error}`);
+      return errorResponse(HTTP_STATUS.BAD_REQUEST, credentials.error || "Pinned connection unavailable");
+    }
 
     // All accounts unavailable
     if (!credentials || credentials.allRateLimited) {

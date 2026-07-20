@@ -83,9 +83,17 @@ export async function handleEmbeddings(request) {
   const excludeConnectionIds = new Set();
   let lastError = null;
   let lastStatus = null;
+  const preferredConnectionId = request.headers.get("x-connection-id") || null;
 
   while (true) {
-    const credentials = await getProviderCredentials(provider, excludeConnectionIds, model);
+    const credentials = await getProviderCredentials(provider, excludeConnectionIds, model, {
+      preferredConnectionId,
+    });
+
+    if (credentials?.pinFailed) {
+      log.warn("AUTH", `Pin failed for ${provider}: ${credentials.error}`);
+      return errorResponse(HTTP_STATUS.BAD_REQUEST, credentials.error || "Pinned connection unavailable");
+    }
 
     // All accounts unavailable
     if (!credentials || credentials.allRateLimited) {
