@@ -90,6 +90,30 @@ def emit_import_marker(payload: Dict[str, Any]) -> None:
     print(line, flush=True)
 
 
+def _jwt_payload(token: str) -> Dict[str, Any]:
+    parts = str(token or "").split(".")
+    if len(parts) < 2:
+        return {}
+    try:
+        import base64
+
+        pad = parts[1] + "=" * (-len(parts[1]) % 4)
+        return json.loads(base64.urlsafe_b64decode(pad))
+    except Exception:
+        return {}
+
+
+def access_token_bot_flagged(access_token: str) -> bool:
+    """True if xAI stamped bot_flag_source on this Build/CLI access token."""
+    if os.environ.get("GROK_IMPORT_ALLOW_BOT_FLAG", "").strip() in ("1", "true", "yes"):
+        return False
+    claims = _jwt_payload(access_token)
+    flag = claims.get("bot_flag_source")
+    if flag is None or flag is False or flag == 0 or flag == "0":
+        return False
+    return True
+
+
 def _login_dashboard(base_url: str, password: str) -> str:
     """Dashboard password login → Cookie header auth_token=..."""
     import requests
@@ -153,6 +177,22 @@ def push_build_tokens_to_9router(
     payload = build_import_payload(
         tokens, name=name, email=email, display_name=display_name
     )
+
+    # bot_flag_source only appears on OAuth access tokens (after device convert),
+    # not on Web SSO cookies. Skip import so flagged accounts never hit providers.
+    if access_token_bot_flagged(tokens.access_token or ""):
+        claims = _jwt_payload(tokens.access_token or "")
+        flag = claims.get("bot_flag_source")
+        email_s = payload.get("email") or email or "?"
+        msg = (
+            f"skip import: bot_flag_source={flag} email={email_s} "
+            f"(xAI bot-flagged — chat usually 403). "
+            f"SSO kept on disk; not pushed to 9router. "
+            f"Set GROK_IMPORT_ALLOW_BOT_FLAG=1 to force."
+        )
+        print(f"[*] {msg}", flush=True)
+        raise RuntimeError(msg)
+
     # Always emit for in-process parent (9router Add Account runner)
     emit_import_marker(payload)
 

@@ -1,9 +1,41 @@
-import { getProviderConnections, validateApiKey, updateProviderConnection, getSettings, getProxyPools } from "@/lib/localDb";
+import {
+  getProviderConnections,
+  validateApiKey,
+  updateProviderConnection,
+  deleteProviderConnection,
+  getSettings,
+  getProxyPools,
+} from "@/lib/localDb";
 import { resolveConnectionProxyConfig, pickProxyPoolId } from "@/lib/network/connectionProxy";
 import { formatRetryAfter, checkFallbackError, isModelLockActive, buildModelLockUpdate, getEarliestModelLockUntil } from "open-sse/services/accountFallback.js";
 import { MAX_RATE_LIMIT_COOLDOWN_MS } from "open-sse/config/errorConfig.js";
 import { resolveProviderId, FREE_PROVIDERS } from "@/shared/constants/providers.js";
 import * as log from "../utils/logger.js";
+
+/**
+ * Grok CLI chat permanently denied by xAI (bot-flagged / free gate).
+ * These accounts never recover via cooldown — auto-delete from pool.
+ */
+function isGrokCliChatPermissionDenied(provider, status, errorText) {
+  const pid = String(provider || "").toLowerCase();
+  if (pid !== "grok-cli" && pid !== "gcli") return false;
+  if (Number(status) !== 403) return false;
+  const text =
+    typeof errorText === "string"
+      ? errorText
+      : (() => {
+          try {
+            return JSON.stringify(errorText || "");
+          } catch {
+            return String(errorText || "");
+          }
+        })();
+  const lower = text.toLowerCase();
+  return (
+    lower.includes("permission-denied") ||
+    lower.includes("access to the chat endpoint is denied")
+  );
+}
 
 // Mutex to prevent race conditions during account selection
 let selectionMutex = Promise.resolve();
@@ -212,6 +244,32 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
   const connections = await getProviderConnections({ provider });
   const conn = connections.find(c => c.id === connectionId);
   const backoffLevel = conn?.backoffLevel || 0;
+  const connName = conn?.displayName || conn?.name || conn?.email || connectionId.slice(0, 8);
+
+  // grok-cli: 403 permission-denied on chat → delete account (permanent xAI gate)
+  if (isGrokCliChatPermissionDenied(provider, status, errorText)) {
+    try {
+      await deleteProviderConnection(connectionId);
+      log.warn(
+        "AUTH",
+        `${connName} DELETED (grok-cli 403 permission-denied / chat endpoint denied)`
+      );
+      console.error(
+        `❌ grok-cli [403]: chat permission-denied — deleted connection ${connName}`
+      );
+    } catch (e) {
+      log.warn("AUTH", `${connName} delete failed: ${e.message}`);
+      // Fall through to lock if delete fails
+      await updateProviderConnection(connectionId, {
+        isActive: false,
+        testStatus: "permission_denied",
+        lastError: typeof errorText === "string" ? errorText.slice(0, 200) : "permission-denied",
+        errorCode: 403,
+        lastErrorAt: new Date().toISOString(),
+      });
+    }
+    return { shouldFallback: true, cooldownMs: 0, deleted: true };
+  }
 
   // Provider-specific precise cooldown (e.g. codex usage_limit_reached resets_at) overrides backoff
   let shouldFallback, cooldownMs, newBackoffLevel;
@@ -237,7 +295,6 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
   });
 
   const lockKey = Object.keys(lockUpdate)[0];
-  const connName = conn?.displayName || conn?.name || conn?.email || connectionId.slice(0, 8);
   log.warn("AUTH", `${connName} locked ${lockKey} for ${Math.round(cooldownMs / 1000)}s [${status}]`);
 
   if (provider && status && reason) {

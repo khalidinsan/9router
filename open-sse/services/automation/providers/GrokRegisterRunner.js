@@ -423,6 +423,39 @@ function parseFarmLogLine(line) {
 }
 
 /**
+ * Decode JWT payload (no verify) — used to read xAI claims like bot_flag_source.
+ */
+export function decodeJwtPayload(token) {
+  try {
+    const raw = String(token || "").trim();
+    const parts = raw.split(".");
+    if (parts.length < 2) return null;
+    const b64 = parts[1].replace(/-/g, "+").replace(/_/g, "/");
+    const padded = b64 + "=".repeat((4 - (b64.length % 4)) % 4);
+    return JSON.parse(Buffer.from(padded, "base64").toString("utf8"));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * xAI stamps bot_flag_source on Build/CLI OAuth access tokens for accounts
+ * they treat as automated. Those almost always 403 on chat — skip import.
+ * Override: GROK_IMPORT_ALLOW_BOT_FLAG=1
+ */
+export function isBotFlaggedAccessToken(accessToken) {
+  if (process.env.GROK_IMPORT_ALLOW_BOT_FLAG === "1") return false;
+  const claims = decodeJwtPayload(accessToken);
+  if (!claims) return false;
+  const flag = claims.bot_flag_source;
+  // present and truthy / non-zero → flagged
+  if (flag === undefined || flag === null || flag === false || flag === 0 || flag === "0") {
+    return false;
+  }
+  return true;
+}
+
+/**
  * Save grok-cli connection directly in this 9router process (no HTTP loopback).
  */
 export async function importGrokCliInProcess(payload) {
@@ -438,23 +471,31 @@ export async function importGrokCliInProcess(payload) {
   let email = payload.email || null;
   let userId = payload.userId || null;
   let displayName = payload.displayName || null;
+  let accessClaims = decodeJwtPayload(accessToken);
+  let idClaims = decodeJwtPayload(payload.idToken);
 
   try {
-    const claimSource = payload.idToken || accessToken;
-    const parts = String(claimSource).split(".");
-    if (parts.length >= 2) {
-      const b64 = parts[1].replace(/-/g, "+").replace(/_/g, "/");
-      const padded = b64 + "=".repeat((4 - (b64.length % 4)) % 4);
-      const claims = JSON.parse(Buffer.from(padded, "base64").toString("utf8"));
-      if (!email) email = claims.email || claims.preferred_username || null;
-      if (!userId) userId = claims.sub || claims.principal_id || null;
-      if (!displayName) {
-        const joined = [claims.given_name, claims.family_name].filter(Boolean).join(" ").trim();
-        if (joined) displayName = joined;
-      }
+    const claims = idClaims || accessClaims || {};
+    if (!email) email = claims.email || claims.preferred_username || null;
+    if (!userId) userId = claims.sub || claims.principal_id || null;
+    if (!displayName) {
+      const joined = [claims.given_name, claims.family_name].filter(Boolean).join(" ").trim();
+      if (joined) displayName = joined;
     }
   } catch {
     // ignore jwt parse
+  }
+
+  if (isBotFlaggedAccessToken(accessToken)) {
+    const flag = accessClaims?.bot_flag_source;
+    const err = new Error(
+      `skip import: bot_flag_source=${flag} (xAI bot-flagged — chat usually 403). ` +
+        `email=${email || "?"} Set GROK_IMPORT_ALLOW_BOT_FLAG=1 to force import.`
+    );
+    err.code = "BOT_FLAGGED";
+    err.email = email;
+    err.botFlagSource = flag;
+    throw err;
   }
 
   let expiresAt = null;
@@ -491,6 +532,7 @@ export async function importGrokCliInProcess(payload) {
       idToken: payload.idToken || null,
       email: email || null,
       userId: userId || null,
+      botFlagSource: accessClaims?.bot_flag_source ?? null,
     },
   });
 
@@ -798,12 +840,20 @@ export async function runGrokRegister(opts = {}) {
                   message: "Registered + saved to 9router (direct)",
                 });
               } catch (e) {
+                const isBot = e?.code === "BOT_FLAGGED" || /bot_flag_source/i.test(e?.message || "");
                 onLog({
-                  level: "error",
-                  step: "import",
-                  message: `In-process import failed: ${e.message}`,
+                  level: isBot ? "warn" : "error",
+                  step: isBot ? "skip" : "import",
+                  message: isBot
+                    ? `Skipped bot-flagged account (not imported): ${e.message}`
+                    : `In-process import failed: ${e.message}`,
+                  email: e?.email || parsed.payload?.email || null,
                 });
-                summary.errors.push(e.message);
+                if (isBot) {
+                  summary.skipped = (summary.skipped || 0) + 1;
+                } else {
+                  summary.errors.push(e.message);
+                }
               }
             })
             .catch(() => {});

@@ -28,6 +28,27 @@ export function isKimchiQuotaExhausted(provider, errorText) {
 }
 
 /**
+ * Grok CLI: xAI permanently denies chat (bot-flag / free gate).
+ * @param {string} provider
+ * @param {number} status
+ * @param {string|object} errorText
+ */
+export function isGrokCliChatPermissionDenied(provider, status, errorText) {
+  const pid = String(provider || "").toLowerCase();
+  if (pid !== "grok-cli" && pid !== "gcli") return false;
+  if (Number(status) !== 403) return false;
+  if (!errorText) return false;
+  const text = typeof errorText === "string"
+    ? errorText
+    : (() => { try { return JSON.stringify(errorText); } catch { return String(errorText); } })();
+  const lower = text.toLowerCase();
+  return (
+    lower.includes("permission-denied") ||
+    lower.includes("access to the chat endpoint is denied")
+  );
+}
+
+/**
  * Compute the next-month reset timestamp (00:00 UTC on the 1st of next month).
  * If today is already the 1st, returns today's 00:00 UTC.
  * @param {Date} [now=new Date()]
