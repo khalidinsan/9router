@@ -24,11 +24,12 @@ import * as log from "../utils/logger.js";
 // Mutex to prevent race conditions during account selection
 let selectionMutex = Promise.resolve();
 
-/** Higher score = prefer this grok-cli connection first. */
+/** Higher score = prefer this grok-cli connection first.
+ *  bot_flag / botFlagged is IGNORED — only real request failures matter. */
 function scoreGrokCliConnection(conn) {
   const psd = conn?.providerSpecificData || {};
   let score = 0;
-  if (psd.botFlagged === true) score -= 1000;
+  // Do NOT penalize botFlagged — JWT flag is informational; use until chat 403 / quota error
   if (psd.reauthRequired === true) score -= 800;
   if (psd.quotaExhausted === true || conn?.testStatus === "quota_exhausted") score -= 900;
   if (psd.freeProfile === true) score += 50;
@@ -106,21 +107,16 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
       return null;
     }
 
-    // Filter out model-locked, excluded, and grok-cli permanently bad rows.
-    // NOTE: botFlagged is NOT a hard exclude — many farmed tokens carry JWT
-    // bot_flag_source=1 but chat still works (flash usable policy). Prefer
-    // clean accounts via scoreGrokCliConnection (-1000 penalty) instead.
+    // Filter out model-locked, excluded, and grok-cli rows that already failed hard.
+    // botFlagged / JWT bot_flag: IGNORE completely — pick like any other active
+    // account; only drop after real request errors (403 chat, quota, reauth).
     const isGrokCli = providerId === "grok-cli" || providerId === "gcli";
-    let skippedBot = 0;
     let skippedHard = 0;
     const availableConnections = connections.filter((c) => {
       if (excludeSet.has(c.id)) return false;
       if (isModelLockActive(c, model)) return false;
       const psd = c.providerSpecificData || {};
       if (isGrokCli) {
-        // Soft: count bot-flagged for diagnostics (still eligible)
-        if (psd.botFlagged === true) skippedBot += 1;
-        // Hard: reauth / quota / permission only
         if (
           psd.reauthRequired === true ||
           c.testStatus === "quota_exhausted" ||
@@ -137,9 +133,7 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
     log.debug(
       "AUTH",
       `${provider} | available: ${availableConnections.length}/${connections.length}` +
-        (isGrokCli
-          ? ` (botFlagged-soft=${skippedBot} hard-skip=${skippedHard})`
-          : "")
+        (isGrokCli ? ` (hard-skip=${skippedHard})` : "")
     );
     connections.forEach((c) => {
       const excluded = excludeSet.has(c.id);
