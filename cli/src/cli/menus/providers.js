@@ -138,7 +138,7 @@ const APIKEY_PROVIDERS = {
   openrouter: { id: "openrouter", name: "OpenRouter" },
   glm: { id: "glm", name: "GLM Coding" },
   minimax: { id: "minimax", name: "Minimax Coding" },
-  kimi: { id: "kimi", name: "Kimi Coding" },
+  kimi: { id: "kimi", name: "Kimi" },
   kimchi: { id: "kimchi", name: "Kimchi" },
   agentrouter: { id: "agentrouter", alias: "ar", name: "AgentRouter" },
   openai: { id: "openai", name: "OpenAI" },
