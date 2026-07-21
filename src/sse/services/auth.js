@@ -106,52 +106,82 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
       return null;
     }
 
-    // Filter out model-locked, excluded, and grok-cli permanently bad rows
-    const availableConnections = connections.filter(c => {
+    // Filter out model-locked, excluded, and grok-cli permanently bad rows.
+    // NOTE: botFlagged is NOT a hard exclude — many farmed tokens carry JWT
+    // bot_flag_source=1 but chat still works (flash usable policy). Prefer
+    // clean accounts via scoreGrokCliConnection (-1000 penalty) instead.
+    const isGrokCli = providerId === "grok-cli" || providerId === "gcli";
+    let skippedBot = 0;
+    let skippedHard = 0;
+    const availableConnections = connections.filter((c) => {
       if (excludeSet.has(c.id)) return false;
       if (isModelLockActive(c, model)) return false;
-      // Prefer skipping bot-flagged / reauth-required / free-exhausted even if still isActive
       const psd = c.providerSpecificData || {};
-      if (
-        (providerId === "grok-cli" || providerId === "gcli") &&
-        (psd.botFlagged === true ||
+      if (isGrokCli) {
+        // Soft: count bot-flagged for diagnostics (still eligible)
+        if (psd.botFlagged === true) skippedBot += 1;
+        // Hard: reauth / quota / permission only
+        if (
           psd.reauthRequired === true ||
           c.testStatus === "quota_exhausted" ||
           c.testStatus === "permission_denied" ||
-          c.testStatus === "reauth_required")
-      ) {
-        return false;
+          c.testStatus === "reauth_required"
+        ) {
+          skippedHard += 1;
+          return false;
+        }
       }
       return true;
     });
 
-    log.debug("AUTH", `${provider} | available: ${availableConnections.length}/${connections.length}`);
-    connections.forEach(c => {
+    log.debug(
+      "AUTH",
+      `${provider} | available: ${availableConnections.length}/${connections.length}` +
+        (isGrokCli
+          ? ` (botFlagged-soft=${skippedBot} hard-skip=${skippedHard})`
+          : "")
+    );
+    connections.forEach((c) => {
       const excluded = excludeSet.has(c.id);
       const locked = isModelLockActive(c, model);
       if (excluded || locked) {
         const lockUntil = getEarliestModelLockUntil(c);
-        log.debug("AUTH", `  → ${c.id?.slice(0, 8)} | ${excluded ? "excluded" : ""} ${locked ? `modelLocked(${model}) until ${lockUntil}` : ""}`);
+        log.debug(
+          "AUTH",
+          `  → ${c.id?.slice(0, 8)} | ${excluded ? "excluded" : ""} ${locked ? `modelLocked(${model}) until ${lockUntil}` : ""}`
+        );
       }
     });
 
     if (availableConnections.length === 0) {
       // Find earliest lock expiry across all connections for retry timing
-      const lockedConns = connections.filter(c => isModelLockActive(c, model));
-      const expiries = lockedConns.map(c => getEarliestModelLockUntil(c)).filter(Boolean);
+      const lockedConns = connections.filter((c) => isModelLockActive(c, model));
+      const expiries = lockedConns.map((c) => getEarliestModelLockUntil(c)).filter(Boolean);
       const earliest = expiries.sort()[0] || null;
       if (earliest) {
         const earliestConn = lockedConns[0];
-        log.warn("AUTH", `${provider} | all ${connections.length} accounts locked for ${model || "all"} (${formatRetryAfter(earliest)}) | lastError=${earliestConn?.lastError?.slice(0, 50)}`);
+        log.warn(
+          "AUTH",
+          `${provider} | all ${connections.length} accounts locked for ${model || "all"} (${formatRetryAfter(earliest)}) | lastError=${earliestConn?.lastError?.slice(0, 50)}`
+        );
         return {
           allRateLimited: true,
           retryAfter: earliest,
           retryAfterHuman: formatRetryAfter(earliest),
           lastError: earliestConn?.lastError || null,
-          lastErrorCode: earliestConn?.errorCode || null
+          lastErrorCode: earliestConn?.errorCode || null,
         };
       }
-      log.warn("AUTH", `${provider} | all ${connections.length} accounts unavailable`);
+      // Helpful reason when rows exist but all hard-filtered (quota/reauth/etc.)
+      const reasons = [];
+      if (skippedHard > 0) reasons.push(`${skippedHard} reauth/quota/denied`);
+      const lockedN = connections.filter((c) => isModelLockActive(c, model)).length;
+      if (lockedN > 0) reasons.push(`${lockedN} model-locked`);
+      log.warn(
+        "AUTH",
+        `${provider} | all ${connections.length} accounts unavailable` +
+          (reasons.length ? ` (${reasons.join(", ")})` : "")
+      );
       return null;
     }
 

@@ -217,8 +217,16 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
         return unavailableResponse(status, `[${provider}/${model}] ${errorMsg}`, credentials.retryAfter, credentials.retryAfterHuman);
       }
       if (excludeConnectionIds.size === 0) {
+        // Common for grok-cli when every row is quota_exhausted / reauth_required /
+        // isActive=false — UI may still list historical accounts as "Active"-looking.
         log.warn("AUTH", `No active credentials for provider: ${provider}`);
-        return errorResponse(HTTP_STATUS.NOT_FOUND, `No active credentials for provider: ${provider}`);
+        return errorResponse(
+          HTTP_STATUS.NOT_FOUND,
+          `No active credentials for provider: ${provider}. ` +
+            (provider === "grok-cli" || provider === "gcli"
+              ? "Check Providers: accounts need isActive=true and not reauth/quota_exhausted. JWT bot_flag alone is OK (soft)."
+              : "Enable at least one active connection for this provider.")
+        );
       }
       log.warn("CHAT", "No more accounts available", { provider });
       return errorResponse(lastStatus || HTTP_STATUS.SERVICE_UNAVAILABLE, lastError || "All accounts unavailable");
