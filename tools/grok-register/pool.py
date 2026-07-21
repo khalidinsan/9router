@@ -8,13 +8,13 @@ Clear semantics:
   --concurrent K  how many browsers in parallel
 
 Example:
-  python run_pool.py --count 100 --concurrent 3
+  python pool.py --count 100 --concurrent 3
   → 100 accounts split across 3 workers (34 + 33 + 33)
 
 Also:
-  python run_pool.py -n 10 -c 2 --offscreen
-  python run_pool.py --unlimited -c 2 --offscreen
-  python run_pool.py --dry-run -n 100 -c 3
+  python pool.py -n 10 -c 2 --offscreen
+  python pool.py --unlimited -c 2 --offscreen
+  python pool.py --dry-run -n 100 -c 3
 """
 
 from __future__ import annotations
@@ -34,12 +34,29 @@ CONFIG_PATH = ROOT / "config.json"
 
 
 def load_pool_config() -> dict:
+    from proxy_util import load_proxy_file as _load_pf, load_proxy_list, normalize_proxy
+
     defaults = {
         "count": 1,          # TOTAL accounts
-        "concurrent": 2,     # parallel browsers
-        "stagger_sec": 20,
+        "concurrent": 1,     # parallel browsers (UI default; flash keeps low)
+        "stagger_sec": 15,
         "proxies": [],
-        "display": "offscreen" if sys.platform == "darwin" else "headed",
+        "proxy_file": "",
+        # per_account = rotate 1 proxy per account (default)
+        # per_worker  = sticky proxy for whole worker process
+        "proxy_mode": "per_account",
+        # health check before spawn (latency to accounts.x.ai)
+        "proxy_check": True,
+        "proxy_check_url": "https://accounts.x.ai/",
+        "proxy_max_ms": 4000,
+        "proxy_check_timeout": 12,
+        "proxy_check_workers": 10,
+        # flash-aligned: Mac offscreen · Linux/Win headless
+        "display": (
+            "offscreen"
+            if sys.platform == "darwin"
+            else "headless"
+        ),
     }
     if not CONFIG_PATH.is_file():
         return defaults
@@ -63,13 +80,44 @@ def load_pool_config() -> dict:
         if isinstance(pool.get("stagger_sec"), (int, float)) and pool["stagger_sec"] >= 0:
             out["stagger_sec"] = float(pool["stagger_sec"])
 
-        proxies = pool.get("proxies") or pool.get("proxy_list") or []
-        if isinstance(proxies, list):
-            out["proxies"] = [str(p).strip() for p in proxies if str(p).strip()]
-        if not out["proxies"]:
+        mode = str(pool.get("proxy_mode") or out["proxy_mode"]).strip().lower()
+        if mode in ("per_account", "rotate", "account"):
+            out["proxy_mode"] = "per_account"
+        elif mode in ("per_worker", "worker", "sticky"):
+            out["proxy_mode"] = "per_worker"
+
+        proxies: list[str] = []
+        pf = str(pool.get("proxy_file") or conf.get("proxy_file") or "").strip()
+        if pf:
+            out["proxy_file"] = pf
+            try:
+                proxies = _load_pf(pf)
+            except FileNotFoundError as e:
+                print(f"[Warn] {e}")
+        if not proxies:
+            proxies = load_proxy_list(pool.get("proxies") or pool.get("proxy_list") or [])
+        if not proxies:
             single = str(conf.get("browser_proxy") or conf.get("proxy") or "").strip()
             if single:
-                out["proxies"] = [single]
+                n = normalize_proxy(single)
+                if n:
+                    proxies = [n]
+        out["proxies"] = proxies
+
+        # proxy health check knobs
+        if "proxy_check" in pool:
+            out["proxy_check"] = bool(pool.get("proxy_check"))
+        for key, cast in (
+            ("proxy_check_url", str),
+            ("proxy_max_ms", float),
+            ("proxy_check_timeout", float),
+            ("proxy_check_workers", int),
+        ):
+            if pool.get(key) is not None:
+                try:
+                    out[key] = cast(pool[key])
+                except (TypeError, ValueError):
+                    pass
 
         display = (
             pool.get("display")
@@ -77,10 +125,17 @@ def load_pool_config() -> dict:
             or conf.get("display")
         )
         if isinstance(display, str) and display.strip():
-            d = display.strip().lower()
-            if d in ("bg", "background", "minimized", "minimise", "minimize"):
-                d = "offscreen"
-            if d in ("headed", "offscreen", "headless"):
+            try:
+                from browser_engine import normalize_display, DISPLAY_MODES
+
+                d = normalize_display(display) or display.strip().lower()
+            except Exception:
+                d = display.strip().lower()
+                if d in ("bg", "background", "minimized", "minimise", "minimize"):
+                    d = "offscreen"
+                if d in ("xvfb", "vd"):
+                    d = "virtual"
+            if d in ("headed", "offscreen", "headless", "virtual"):
                 out["display"] = d
         return out
     except Exception as e:
@@ -89,16 +144,14 @@ def load_pool_config() -> dict:
 
 
 def load_proxy_file(path: str) -> list[str]:
-    p = Path(path).expanduser()
-    if not p.is_file():
-        raise SystemExit(f"proxy file not found: {p}")
-    lines = []
-    for line in p.read_text(encoding="utf-8").splitlines():
-        s = line.strip()
-        if not s or s.startswith("#"):
-            continue
-        lines.append(s)
-    return lines
+    from proxy_util import load_proxy_file as _load
+
+    try:
+        return _load(path)
+    except FileNotFoundError as e:
+        # config may list proxy.txt that is not present yet — warn, don't hard-exit
+        print(f"[Warn] {e}", flush=True)
+        return []
 
 
 def split_workload(total: int, concurrent: int) -> list[int]:
@@ -129,18 +182,9 @@ def platform_is_mac() -> bool:
 
 
 def _mask_proxy(url: str) -> str:
-    if not url or "@" not in url:
-        return url
-    try:
-        left, right = url.rsplit("@", 1)
-        if "://" in left:
-            scheme, creds = left.split("://", 1)
-            if ":" in creds:
-                user = creds.split(":", 1)[0]
-                return f"{scheme}://{user}:***@{right}"
-        return f"***@{right}"
-    except Exception:
-        return "***"
+    from proxy_util import mask_proxy
+
+    return mask_proxy(url)
 
 
 def spawn_worker_process(
@@ -163,6 +207,16 @@ def spawn_worker_process(
         kwargs["stderr"] = subprocess.STDOUT
         kwargs["text"] = True
         kwargs["bufsize"] = 1
+        # Windows default pipe encoding is often cp1252; farm logs use Unicode (→ ✓ …)
+        kwargs["encoding"] = "utf-8"
+        kwargs["errors"] = "replace"
+
+    # Always force UTF-8 I/O in workers (TUI pipes stdout; Windows charmap breaks prints)
+    env = dict(env)
+    env.setdefault("PYTHONUTF8", "1")
+    env.setdefault("PYTHONIOENCODING", "utf-8")
+    env.setdefault("PYTHONUNBUFFERED", "1")
+    kwargs["env"] = env
 
     if sys.platform == "win32":
         # Kill tree via taskkill /T later
@@ -219,7 +273,7 @@ def kill_orphan_farm_chrome(debug_ports: list[int] | None = None) -> None:
         for pid in _pids_listening_on_port(port):
             _kill_pids([pid], signal.SIGKILL)
 
-    # Profile marker from DrissionPage_example.start_browser()
+    # Profile marker from farm.start_browser()
     patterns = [
         r"user-data-dir=.*/grok_pw_w",
         r"--user-data-dir=.*grok_pw_w",
@@ -308,7 +362,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(
         description=(
             "Grok farm pool — total accounts + concurrency.\n"
-            "Example: python run_pool.py --count 100 --concurrent 3"
+            "Example: python pool.py --count 100 --concurrent 3"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -349,23 +403,60 @@ def main() -> int:
     )
     parser.add_argument(
         "--proxy-file",
-        default="",
-        help="text file: one proxy URL per line",
+        default=cfg.get("proxy_file") or "",
+        help="proxy list file (URL or Webshare host:port:user:pass)",
     )
     parser.add_argument(
         "--proxy",
         action="append",
         default=[],
-        help="proxy URL (repeatable); round-robin to workers",
+        help="proxy URL (repeatable)",
+    )
+    parser.add_argument(
+        "--proxy-mode",
+        choices=["per_account", "per_worker"],
+        default=cfg.get("proxy_mode") or "per_account",
+        help="per_account=1 proxy per account (rotate); per_worker=sticky per worker",
+    )
+    parser.add_argument(
+        "--proxy-check",
+        action=argparse.BooleanOptionalAction,
+        default=bool(cfg.get("proxy_check", True)),
+        help="probe proxies → accounts.x.ai and drop slow ones (default: on)",
+    )
+    parser.add_argument(
+        "--proxy-max-ms",
+        type=float,
+        default=float(cfg.get("proxy_max_ms") or 4000),
+        help="max acceptable latency ms to accounts.x.ai (default 4000)",
+    )
+    parser.add_argument(
+        "--proxy-check-url",
+        default=str(cfg.get("proxy_check_url") or "https://accounts.x.ai/"),
+        help="URL for proxy health probe",
     )
     parser.add_argument(
         "--display",
-        choices=["headed", "offscreen", "headless"],
-        default=cfg.get("display") or ("offscreen" if platform_is_mac() else "headed"),
-        help="headed | offscreen | headless",
+        choices=["headed", "offscreen", "headless", "virtual"],
+        default=None,
+        help=(
+            "headed | offscreen (Mac) | headless (Linux/VPS flash default) | "
+            "virtual (Camoufox Xvfb). Default: config → env → platform "
+            "(Mac=offscreen, Linux/Win=headless)"
+        ),
     )
     parser.add_argument("--headless", action="store_true", help="shortcut → headless")
     parser.add_argument("--offscreen", action="store_true", help="shortcut → offscreen")
+    parser.add_argument(
+        "--virtual",
+        action="store_true",
+        help="shortcut → virtual (Camoufox headed on Xvfb; Linux)",
+    )
+    parser.add_argument(
+        "--headed",
+        action="store_true",
+        help="shortcut → headed (visible window; debug Turnstile)",
+    )
     parser.add_argument(
         "--dry-run",
         action="store_true",
@@ -405,13 +496,113 @@ def main() -> int:
             "try 2–3 first."
         )
 
-    display = "headless" if args.headless else ("offscreen" if args.offscreen else args.display)
-    if display in ("bg", "background"):
+    # Priority: CLI shortcuts > --display > config.pool.display > env > platform
+    # (same order as flash GROK_HEADLESS / --headed)
+    if getattr(args, "headed", False):
+        display = "headed"
+    elif getattr(args, "virtual", False):
+        display = "virtual"
+    elif args.headless:
+        display = "headless"
+    elif args.offscreen:
         display = "offscreen"
+    elif args.display:
+        display = args.display
+    elif cfg.get("display"):
+        display = str(cfg["display"])
+    else:
+        display = ""
+    try:
+        from browser_engine import resolve_display, normalize_display
 
-    proxies = list(args.proxy) if args.proxy else list(cfg["proxies"])
+        forced = (
+            getattr(args, "headed", False)
+            or getattr(args, "virtual", False)
+            or args.headless
+            or args.offscreen
+            or bool(args.display)
+        )
+        if forced:
+            display = normalize_display(display) or display
+        else:
+            # empty explicit → GROK_DISPLAY / GROK_HEADLESS / platform
+            if display:
+                os.environ.setdefault("GROK_DISPLAY", normalize_display(display) or display)
+            display = resolve_display(display)
+    except Exception:
+        if not display or display in ("bg", "background"):
+            display = "offscreen" if platform_is_mac() else "headless"
+    os.environ["GROK_DISPLAY"] = display
+    # flash-compatible mirror
+    if display == "headless":
+        os.environ["GROK_HEADLESS"] = "true"
+    elif display == "virtual":
+        os.environ["GROK_HEADLESS"] = "virtual"
+    else:
+        os.environ["GROK_HEADLESS"] = "false"
+
+    from proxy_util import encode_proxy_env, load_proxy_list, normalize_proxy
+
+    if args.proxy:
+        proxies = load_proxy_list(args.proxy)
+    else:
+        proxies = list(cfg["proxies"])
     if args.proxy_file:
         proxies = load_proxy_file(args.proxy_file)
+    # normalize any leftover raw lines
+    proxies = [normalize_proxy(p) or p for p in proxies if p]
+    proxy_mode = getattr(args, "proxy_mode", None) or cfg.get("proxy_mode") or "per_account"
+
+    # ── health check: collect only as many good proxies as accounts need ──
+    # e.g. 10 accounts + 100 proxies → stop after 10 KEEP (don't probe all 100)
+    do_check = bool(getattr(args, "proxy_check", cfg.get("proxy_check", True)))
+    if proxies and do_check:
+        from proxy_health import apply_proxy_check, resolve_proxy_need
+
+        need = resolve_proxy_need(
+            total_accounts=total,
+            concurrent=n_workers,
+            proxy_count=len(proxies),
+            proxy_mode=proxy_mode,
+        )
+        print(
+            f"[PROXY-CHECK] plan: need {need} good proxy(ies) "
+            f"for total={total if total > 0 else '∞'} concurrent={n_workers} "
+            f"from {len(proxies)} listed",
+            flush=True,
+        )
+        try:
+            proxies = apply_proxy_check(
+                proxies,
+                enabled=True,
+                target=str(
+                    getattr(args, "proxy_check_url", None)
+                    or cfg.get("proxy_check_url")
+                    or "https://accounts.x.ai/"
+                ),
+                max_ms=float(
+                    getattr(args, "proxy_max_ms", None)
+                    or cfg.get("proxy_max_ms")
+                    or 4000
+                ),
+                timeout=float(cfg.get("proxy_check_timeout") or 12),
+                workers=int(cfg.get("proxy_check_workers") or 10),
+                need=need,
+                total_accounts=total,
+                concurrent=n_workers,
+                proxy_mode=proxy_mode,
+                require_one=True,
+            )
+        except RuntimeError as e:
+            raise SystemExit(f"[proxy-check] {e}") from e
+        try:
+            good_path = ROOT / "proxy.good.txt"
+            good_path.write_text("\n".join(proxies) + "\n", encoding="utf-8")
+            print(f"[PROXY-CHECK] wrote {good_path.name} ({len(proxies)} lines)")
+        except Exception:
+            pass
+    elif proxies and not do_check:
+        print("[PROXY-CHECK] skipped (--no-proxy-check)")
 
     if not SCRIPT.is_file():
         raise SystemExit(f"missing farm script: {SCRIPT}")
@@ -421,24 +612,53 @@ def main() -> int:
     print("Grok farm pool")
     print(f"  python     : {python}")
     print(f"  total      : {total if total > 0 else '∞ (infinite)'}")
-    print(f"  concurrent : {n_workers}")
+    stagger_sec = float(getattr(args, "stagger_sec", 0) or 0)
+    if stagger_sec < 0:
+        stagger_sec = 0.0
+    print(f"  concurrent : {n_workers}  (CLI --concurrent / pool workers)")
     print(f"  split      : {shares}  (sum={sum(shares) if total > 0 else '∞'})")
-    print(f"  stagger    : {args.stagger_sec}s")
+    print(f"  stagger    : {stagger_sec}s between worker process spawns")
     print(f"  display    : {display}")
-    print(f"  proxies    : {len(proxies)} configured")
+    if n_workers <= 1:
+        print(
+            "  [note] concurrent=1 → only W1. Tag [W1 2 · #2] means account #2 on W1, "
+            "NOT a second worker."
+        )
+    elif stagger_sec <= 0:
+        print(
+            "  [!] stagger=0 → all workers start at once. "
+            "Set stagger>0 (e.g. 15) to delay W2 after W1."
+        )
+    print(
+        f"  proxies    : {len(proxies)}  mode={proxy_mode}"
+        + (f"  check={'on' if do_check else 'off'}" if proxies else "")
+    )
     print("-" * 60)
     print("  log tag   : [W2 3/33 · #70/100 · remW 30 · ✓2 ✗0]")
     print("              W=worker local/share  #=global index")
     print("              remW=sisa di worker ini  ✓/✗ = ok/fail worker")
-    print("  phases    : START → FLOW ①..⑥ → OK/FAIL → SCORE")
+    print("  phases    : START → FLOW ①..⑤ → CONVERT → SMOKE → PUSH → OK/FAIL")
     if display == "headed" and platform_is_mac():
         print("  [!] headed on Mac steals focus — prefer --offscreen while working")
     if display == "headless":
-        print("  [!] headless: Turnstile may fail more; try --offscreen if stuck")
+        print(
+            "  [display] headless (flash Linux/VPS mode) — Camoufox preferred; "
+            "if Turnstile stuck: --virtual (Xvfb) or --headed / --offscreen"
+        )
+    if display == "virtual":
+        print(
+            "  [display] virtual = Camoufox headed on Xvfb "
+            "(needs xvfb + pyvirtualdisplay, or: xvfb-run -a …)"
+        )
     if not proxies and n_workers > 1:
         print(
             "  [!] no proxies — all workers share your home IP. "
-            "OK for a tiny test; add pool.proxies or --proxy for safer concurrent."
+            "OK for a tiny test; add pool.proxies / --proxy-file for safer concurrent."
+        )
+    if proxies and proxy_mode == "per_account":
+        print(
+            f"  [proxy] per_account rotate — global account #k uses "
+            f"proxy[(k-1) % {len(proxies)}]; browser full-restart on change"
         )
     print("=" * 60)
 
@@ -465,9 +685,10 @@ def main() -> int:
         offsets.append(running_offset)
         running_offset += share if total > 0 else 0
 
+    t0_pool = time.time()
     for i, share in enumerate(shares):
         wid = str(i + 1)
-        proxy = proxies[i % len(proxies)] if proxies else ""
+        sticky = proxies[i % len(proxies)] if proxies and proxy_mode == "per_worker" else ""
         debug_port = 9300 + int(wid) * 20
         env = os.environ.copy()
         env["GROK_WORKER_ID"] = wid
@@ -476,9 +697,16 @@ def main() -> int:
         env["GROK_WORKER_SHARE"] = str(share)
         env["GROK_POOL_TOTAL"] = str(total if total > 0 else 0)
         env["GROK_POOL_OFFSET"] = str(offsets[i])
-        if proxy:
-            env["GROK_BROWSER_PROXY"] = proxy
+        env["GROK_POOL_CONCURRENT"] = str(n_workers)
+        env["GROK_PROXY_MODE"] = proxy_mode
+        if proxies:
+            env["GROK_PROXIES"] = encode_proxy_env(proxies)
         else:
+            env.pop("GROK_PROXIES", None)
+        if sticky:
+            env["GROK_BROWSER_PROXY"] = sticky
+        else:
+            # per_account: worker picks proxy per account from GROK_PROXIES
             env.pop("GROK_BROWSER_PROXY", None)
             env.pop("BROWSER_PROXY", None)
 
@@ -495,23 +723,53 @@ def main() -> int:
         ]
         g_from = offsets[i] + 1 if total > 0 else 0
         g_to = offsets[i] + share if total > 0 else 0
+        if proxy_mode == "per_worker" and sticky:
+            proxy_note = f"  proxy={_mask_proxy(sticky)} (sticky)"
+        elif proxies:
+            proxy_note = f"  proxies={len(proxies)} (rotate/account)"
+        else:
+            proxy_note = "  proxy=(none)"
         print(
-            f"[pool] worker {wid}/{n_workers}: {share} account(s)"
-            + (f"  global#{g_from}–{g_to}" if total > 0 else "")
+            f"[pool] SPAWN worker W{wid}/{n_workers}: share={share}"
+            + (f"  global#{g_from}–{g_to}" if total > 0 else "  unlimited")
             + f"  cdp≈{debug_port}"
-            + (f"  proxy={_mask_proxy(proxy)}" if proxy else "  proxy=(none)")
+            + proxy_note,
+            flush=True,
         )
         if args.dry_run:
-            print(f"       cmd: {' '.join(cmd)}")
+            print(f"       cmd: {' '.join(cmd)}", flush=True)
         else:
             env.setdefault("PYTHONUNBUFFERED", "1")
             p = spawn_worker_process(cmd, cwd=str(ROOT), env=env, capture_output=False)
             procs.append((p, debug_port))
+            print(
+                f"[pool] W{wid} pid={p.pid} started at t+{time.time() - t0_pool:.1f}s",
+                flush=True,
+            )
 
-        if i + 1 < n_workers and args.stagger_sec > 0:
-            print(f"[pool] stagger sleep {args.stagger_sec}s ...")
+        # Stagger ONLY between different worker PROCESSES (not between accounts
+        # on the same worker — that is farm.py sleep(2) after each account).
+        if i + 1 < n_workers and stagger_sec > 0:
+            next_wid = str(i + 2)
+            print(
+                f"[pool] STAGGER {stagger_sec:.0f}s before spawning W{next_wid} "
+                f"(W{wid} already running)…",
+                flush=True,
+            )
             if not args.dry_run:
-                time.sleep(args.stagger_sec)
+                # Interruptible sleep so SIGINT during stagger still works
+                end = time.time() + stagger_sec
+                while time.time() < end:
+                    time.sleep(min(0.25, max(0.0, end - time.time())))
+            print(
+                f"[pool] stagger done — spawning W{next_wid} now",
+                flush=True,
+            )
+        elif i + 1 < n_workers and stagger_sec <= 0:
+            print(
+                f"[pool] STAGGER 0s — spawning next worker immediately",
+                flush=True,
+            )
 
     if args.dry_run:
         print("[pool] dry-run done")

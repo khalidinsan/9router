@@ -16,9 +16,36 @@ const PROVIDER_OPTIONS = [
 ];
 
 const DISPLAY_OPTIONS = [
-  { value: "offscreen", label: "Offscreen (recommended on Mac)" },
-  { value: "headed", label: "Headed (visible window)" },
-  { value: "headless", label: "Headless (may fail Turnstile)" },
+  { value: "offscreen", label: "Offscreen — Mac work-friendly (park window)" },
+  { value: "headless", label: "Headless — Linux/VPS flash default (no window)" },
+  { value: "virtual", label: "Virtual — Camoufox headed on Xvfb (Linux)" },
+  { value: "headed", label: "Headed — visible window (debug Turnstile)" },
+];
+
+const ENGINE_OPTIONS = [
+  { value: "camoufox", label: "Camoufox (flash default, anti-detect)" },
+  { value: "chromium", label: "Chromium / Playwright (fallback)" },
+];
+
+const PROXY_MODE_OPTIONS = [
+  { value: "per_account", label: "Per account — rotate 1 proxy per account" },
+  { value: "per_worker", label: "Per worker — sticky proxy for whole worker" },
+];
+
+const INJECT_POLICY_OPTIONS = [
+  { value: "usable", label: "Usable only — chat probe must pass (recommended)" },
+  { value: "jwt_clean", label: "JWT clean — hard-reject bot_flag (legacy)" },
+  { value: "all", label: "All farmed — skip chat usable gate (debug)" },
+];
+
+const OAUTH_MODE_OPTIONS = [
+  { value: "pkce", label: "PKCE browser (referrer=grok-build, flash path)" },
+  { value: "device", label: "Device code only (legacy SSO convert)" },
+];
+
+const EMAIL_STYLE_OPTIONS = [
+  { value: "human", label: "Humanized local-part (recommended)" },
+  { value: "random", label: "Random alphanumeric" },
 ];
 
 const LEVEL_COLORS = {
@@ -41,16 +68,28 @@ const PHASE_COLORS = {
   settle: "bg-yellow-500/15 text-yellow-200 ring-yellow-500/30",
   sso: "bg-lime-500/15 text-lime-300 ring-lime-500/30",
   convert: "bg-teal-500/15 text-teal-300 ring-teal-500/30",
+  probe: "bg-cyan-500/15 text-cyan-300 ring-cyan-500/30",
+  smoke: "bg-cyan-500/15 text-cyan-300 ring-cyan-500/30",
   push: "bg-emerald-500/15 text-emerald-300 ring-emerald-500/30",
   created: "bg-emerald-500/20 text-emerald-300 ring-emerald-500/40",
   ok: "bg-emerald-500/20 text-emerald-300 ring-emerald-500/40",
+  result: "bg-white/10 text-white ring-white/20",
   done: "bg-emerald-500/20 text-emerald-300 ring-emerald-500/40",
   fail: "bg-red-500/20 text-red-300 ring-red-500/40",
   import: "bg-emerald-500/15 text-emerald-300 ring-emerald-500/30",
   setup: "bg-violet-500/15 text-violet-300 ring-violet-500/30",
   farm: "bg-zinc-500/10 text-zinc-300 ring-zinc-500/20",
   score: "bg-zinc-500/10 text-zinc-400 ring-zinc-500/20",
+  proxy: "bg-purple-500/15 text-purple-300 ring-purple-500/30",
 };
+
+/** Parse proxy textarea → non-empty lines (one proxy per line). */
+function parseProxyLines(text) {
+  return String(text || "")
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter((l) => l && !l.startsWith("#"));
+}
 
 function phaseClass(step) {
   const k = String(step || "farm").toLowerCase();
@@ -99,33 +138,112 @@ function computeRateEta(ok, fail, total, elapsedSec) {
   };
 }
 
-/** Derive live worker cards from structured farm logs. */
+/** Pull ok/fail from SCORE/RESULT message body if progress fields missing. */
+function talliesFromMessage(msg) {
+  if (!msg) return null;
+  let m = String(msg).match(/success[=:](\d+)/i);
+  let mf = String(msg).match(/failed[=:](\d+)/i);
+  if (m && mf) return { ok: Number(m[1]), fail: Number(mf[1]) };
+  m = String(msg).match(/✓(\d+)\s*\/\s*✗(\d+)/);
+  if (m) return { ok: Number(m[1]), fail: Number(m[2]) };
+  m = String(msg).match(/✓(\d+)\s*✗(\d+)/);
+  if (m) return { ok: Number(m[1]), fail: Number(m[2]) };
+  return null;
+}
+
+/**
+ * Extract worker id from a farm log entry.
+ *
+ * Tag form: [W1 2 · #2 · ✓1 ✗0]
+ *   W1 = worker process id
+ *   2  = local account index on that worker  ← NOT a worker id
+ *
+ * Never treat account index / global # as worker. Only accept 1..maxWorkers.
+ */
+function extractWorkerId(log, maxWorkers = 99) {
+  const maxW = Math.max(1, Number(maxWorkers) || 1);
+  const candidates = [];
+
+  const push = (raw) => {
+    if (raw == null || raw === "") return;
+    let s = String(raw).trim().replace(/^W/i, "");
+    // Only pure integer worker ids (reject "1 2", "2·#2", etc.)
+    if (!/^\d+$/.test(s)) return;
+    const n = Number(s);
+    if (!Number.isFinite(n) || n < 1 || n > maxW) return;
+    candidates.push(String(n));
+  };
+
+  // Prefer structured fields from backend parseFarmLogLine
+  push(log?.worker);
+  push(log?.progress?.worker);
+
+  // Recover from full raw slog line only: must be "[W<digits>" then space/·/]
+  // so "[W1 2 · #2]" → worker 1 (not 2)
+  const msg = String(log?.message || "");
+  const m = msg.match(/\[W(\d+)(?:\s|[·\]])/);
+  if (m) push(m[1]);
+
+  return candidates[0] || null;
+}
+
+function emptyWorkerSlot(id) {
+  return {
+    id: String(id),
+    phase: "pending",
+    message: "waiting to spawn…",
+    email: "",
+    localCur: 0,
+    localShare: 0,
+    ok: 0,
+    fail: 0,
+    globalIdx: null,
+    level: "info",
+    seen: 0,
+    active: false,
+  };
+}
+
+/**
+ * Live worker board.
+ *
+ * Slots are capped by Concurrent (form). We only CREATE a card when that
+ * worker actually appears in logs (or pool SPAWN line) — never invent W2
+ * just because concurrent=2 while still staggering.
+ */
 function deriveWorkerBoard(logs, totalAccounts, concurrent) {
+  const wanted = Math.max(1, Math.floor(Number(concurrent) || 1));
   const map = new Map();
+
   let globalOk = 0;
   let globalFail = 0;
   let lastGlobalTotal = Number(totalAccounts) || 0;
 
+  // Pool spawn lines: "[pool] SPAWN worker W2/2" (no structured worker field)
+  const spawnRe = /SPAWN\s+worker\s+W(\d+)/i;
+
   for (const log of logs) {
-    const p = log.progress;
-    const wid = log.worker || p?.worker;
+    let wid = extractWorkerId(log, wanted);
+    if (!wid && log.message) {
+      const sm = String(log.message).match(spawnRe);
+      if (sm) {
+        const n = Number(sm[1]);
+        if (n >= 1 && n <= wanted) wid = String(n);
+      }
+    }
     if (!wid) continue;
+
     if (!map.has(wid)) {
-      map.set(wid, {
-        id: wid,
-        phase: "—",
-        message: "",
-        email: "",
-        localCur: 0,
-        localShare: 0,
-        ok: 0,
-        fail: 0,
-        globalIdx: null,
-        level: "info",
-      });
+      map.set(wid, emptyWorkerSlot(wid));
     }
     const w = map.get(wid);
-    if (log.phase || log.step) w.phase = String(log.phase || log.step).toUpperCase();
+    const p = log.progress;
+    w.seen = (w.seen || 0) + 1;
+    w.active = true;
+    if (log.phase || log.step) {
+      const ph = String(log.phase || log.step).toUpperCase();
+      if (ph && ph !== "PENDING") w.phase = ph;
+    }
     if (log.message) w.message = String(log.message).slice(0, 100);
     if (log.email) w.email = log.email;
     if (log.level) w.level = log.level;
@@ -137,36 +255,59 @@ function deriveWorkerBoard(logs, totalAccounts, concurrent) {
       if (p.globalIdx != null) w.globalIdx = p.globalIdx;
       if (p.globalTotal != null) lastGlobalTotal = p.globalTotal;
     }
+    const t = talliesFromMessage(log.message);
+    if (t) {
+      w.ok = t.ok;
+      w.fail = t.fail;
+    }
   }
 
-  const workers = Array.from(map.values()).sort(
-    (a, b) => Number(a.id) - Number(b.id) || String(a.id).localeCompare(String(b.id))
-  );
+  // Always show at least W1 once any farm log exists (so empty board isn't blank mid-run)
+  if (map.size === 0 && logs.some((l) => extractWorkerId(l, wanted) || /\[W\d/i.test(l.message || ""))) {
+    map.set("1", emptyWorkerSlot(1));
+  }
+
+  const workers = Array.from(map.values())
+    .filter((w) => Number(w.id) >= 1 && Number(w.id) <= wanted)
+    .sort((a, b) => Number(a.id) - Number(b.id));
+
   for (const w of workers) {
-    globalOk += Number(w.ok) || 0;
-    globalFail += Number(w.fail) || 0;
+    if (w.active || w.ok > 0 || w.fail > 0) {
+      globalOk += Number(w.ok) || 0;
+      globalFail += Number(w.fail) || 0;
+    }
   }
 
-  // Prefer import/results counts when higher (saved to DB)
   return {
     workers,
     globalOk,
     globalFail,
     globalTotal: lastGlobalTotal || Number(totalAccounts) || 0,
-    concurrent: Number(concurrent) || workers.length || 1,
+    concurrent: wanted,
   };
 }
 
 export default function AddAccountPage() {
   const [provider, setProvider] = useState("antigravity");
   const [accountsInput, setAccountsInput] = useState("");
+  /** Non-Grok: single proxy URL. Grok Register uses proxiesText instead. */
   const [proxy, setProxy] = useState("");
   const [headless, setHeadless] = useState(true);
-  // Grok CLI register options
+  // Grok CLI register options (flash-aligned — all driven from this web form)
   const [count, setCount] = useState(1);
   const [concurrent, setConcurrent] = useState(1);
-  const [display, setDisplay] = useState("offscreen");
+  // Default headless (flash Linux); Mac users get offscreen after mount / saved settings
+  const [display, setDisplay] = useState("headless");
   const [stagger, setStagger] = useState(15);
+  const [browserEngine, setBrowserEngine] = useState("camoufox");
+  const [proxiesText, setProxiesText] = useState("");
+  const [proxyMode, setProxyMode] = useState("per_account");
+  const [proxyCheck, setProxyCheck] = useState(true);
+  const [injectPolicy, setInjectPolicy] = useState("usable");
+  const [oauthMode, setOauthMode] = useState("pkce");
+  const [emailStyle, setEmailStyle] = useState("human");
+  const [settleSec, setSettleSec] = useState(12);
+  const [showAdvanced, setShowAdvanced] = useState(false);
   // Email / IMAP (shown on this page — no hunting config files)
   const [emailDomain, setEmailDomain] = useState("");
   const [imapUser, setImapUser] = useState("");
@@ -255,6 +396,21 @@ export default function AddAccountPage() {
       if (s.grokRegisterImapHost) setImapHost(s.grokRegisterImapHost || "imap.gmail.com");
       if (s.grokRegisterImapPort) setImapPort(s.grokRegisterImapPort || 993);
       setHasSavedImapPass(Boolean(s.hasGrokRegisterImapPass));
+      // Farm options (non-secret) last used on this install
+      if (s.grokRegisterDisplay) setDisplay(s.grokRegisterDisplay);
+      if (s.grokRegisterBrowserEngine) setBrowserEngine(s.grokRegisterBrowserEngine);
+      if (s.grokRegisterProxyMode) setProxyMode(s.grokRegisterProxyMode);
+      if (typeof s.grokRegisterProxyCheck === "boolean") setProxyCheck(s.grokRegisterProxyCheck);
+      if (s.grokRegisterInjectPolicy) setInjectPolicy(s.grokRegisterInjectPolicy);
+      if (s.grokRegisterOauthMode) setOauthMode(s.grokRegisterOauthMode);
+      if (s.grokRegisterEmailStyle) setEmailStyle(s.grokRegisterEmailStyle);
+      if (s.grokRegisterSettleSec != null) setSettleSec(Number(s.grokRegisterSettleSec) || 12);
+      if (s.grokRegisterConcurrent != null) setConcurrent(Number(s.grokRegisterConcurrent) || 1);
+      if (s.grokRegisterStagger != null) setStagger(Number(s.grokRegisterStagger) || 15);
+      // Proxies: multi-line text (never require proxy.txt)
+      if (typeof s.grokRegisterProxiesText === "string") {
+        setProxiesText(s.grokRegisterProxiesText);
+      }
     } catch {
       /* ignore */
     }
@@ -276,6 +432,18 @@ export default function AddAccountPage() {
         grokRegisterImapUser: imapUser.trim(),
         grokRegisterImapHost: (imapHost || "imap.gmail.com").trim(),
         grokRegisterImapPort: Number(imapPort) || 993,
+        // also persist farm prefs so next open remembers
+        grokRegisterDisplay: display,
+        grokRegisterBrowserEngine: browserEngine,
+        grokRegisterProxyMode: proxyMode,
+        grokRegisterProxyCheck: proxyCheck,
+        grokRegisterInjectPolicy: injectPolicy,
+        grokRegisterOauthMode: oauthMode,
+        grokRegisterEmailStyle: emailStyle,
+        grokRegisterSettleSec: Number(settleSec) || 12,
+        grokRegisterConcurrent: Math.max(1, Number(concurrent) || 1),
+        grokRegisterStagger: Math.max(0, Number(stagger) || 0),
+        grokRegisterProxiesText: proxiesText,
       };
       if (imapPass.trim()) {
         body.grokRegisterImapPass = imapPass.trim();
@@ -289,7 +457,7 @@ export default function AddAccountPage() {
       if (!res.ok) throw new Error(data.error || "Failed to save");
       setHasSavedImapPass(Boolean(data.hasGrokRegisterImapPass));
       setImapPass(""); // clear field after save (secret not re-shown)
-      setEmailSaveMsg("Email / IMAP settings saved.");
+      setEmailSaveMsg("Settings saved (email + farm prefs).");
       await refreshGrokStatus();
     } catch (e) {
       setError(e.message);
@@ -305,7 +473,26 @@ export default function AddAccountPage() {
   useEffect(() => {
     if (isGrokRegister) {
       refreshGrokStatus();
-      loadEmailFromSettings();
+      loadEmailFromSettings().then(() => {
+        // If no saved display pref, pick platform default (Mac offscreen)
+        // loadEmailFromSettings may have set display from settings — only apply if still headless default
+      });
+      // Platform default only when settings didn't set display (checked after load)
+      (async () => {
+        try {
+          const res = await fetch("/api/settings", { cache: "no-store" });
+          if (!res.ok) return;
+          const s = await res.json();
+          if (!s.grokRegisterDisplay) {
+            const isMac =
+              typeof navigator !== "undefined" &&
+              /Mac|iPhone|iPad/i.test(navigator.platform || navigator.userAgent || "");
+            if (isMac) setDisplay("offscreen");
+          }
+        } catch {
+          /* ignore */
+        }
+      })();
     }
   }, [isGrokRegister, refreshGrokStatus, loadEmailFromSettings]);
 
@@ -337,11 +524,24 @@ export default function AddAccountPage() {
   }, []);
 
   const workerBoard = isGrokRegister
-    ? deriveWorkerBoard(logs, count, concurrent)
+    ? deriveWorkerBoard(logs, count, Math.max(1, Number(concurrent) || 1))
     : null;
+  // Semantics (standalone farm_tui):
+  //   success = pipeline PASS (✓)
+  //   failed  = pipeline FAIL (✗) — never invent total-success
+  //   saved   = actually imported to 9router
+  //   done    = success + failed
   const savedOk = results.filter((r) => r.success).length;
-  const progressOk = Math.max(workerBoard?.globalOk || 0, savedOk, summary?.success || 0);
-  const progressFail = Math.max(workerBoard?.globalFail || 0, summary?.failed || 0);
+  const progressOk = Math.max(
+    workerBoard?.globalOk || 0,
+    summary?.success || 0,
+    savedOk,
+  );
+  // failed: prefer worker tally / summary — do NOT invent from total-success
+  const progressFail = Math.max(
+    workerBoard?.globalFail || 0,
+    summary?.failed || 0,
+  );
   const progressTotal = Number(count) > 0
     ? Number(count)
     : Number(count) === 0
@@ -356,6 +556,8 @@ export default function AddAccountPage() {
     : progressTotal > 0
       ? Math.min(100, Math.round((progressDone / progressTotal) * 100))
       : 0;
+  // Worker count = configured concurrent (not ghost workers from log parse)
+  const workerCount = Math.max(1, Number(concurrent) || 1);
 
   const elapsedSec = runStartedAt
     ? Math.max(0, (nowTick - runStartedAt) / 1000)
@@ -367,17 +569,24 @@ export default function AddAccountPage() {
     elapsedSec
   );
 
-  const filteredLogs =
-    !isGrokRegister || logFilter === "all"
-      ? logs
-      : logs.filter(
-          (l) =>
-            String(l.worker || l.progress?.worker || "") === String(logFilter).replace(/^W/i, "") ||
-            String(l.worker || "") === logFilter ||
-            !l.worker
-        );
+  const filteredLogs = (() => {
+    if (!isGrokRegister || logFilter === "all") return logs;
+    const want = String(logFilter).replace(/^W/i, "");
+    const maxW = Math.max(1, Number(concurrent) || 1);
+    return logs.filter((l) => {
+      const wid = extractWorkerId(l, maxW);
+      if (wid) return wid === want;
+      // No worker tag → only keep pool/setup/system lines (not unparsed farm noise)
+      const step = String(l.step || l.phase || "").toLowerCase();
+      return ["pool", "setup", "start", "stop", "done", "sys", "queue"].includes(step);
+    });
+  })();
 
-  const workerIds = workerBoard?.workers?.map((w) => w.id) || [];
+  // Filter chips: always 1..concurrent from form (not invented from logs)
+  const workerIds = Array.from(
+    { length: Math.max(1, Number(concurrent) || 1) },
+    (_, i) => String(i + 1),
+  );
 
   const handleForceStop = async () => {
     if (!activeRunId || stopping) return;
@@ -560,13 +769,24 @@ export default function AddAccountPage() {
 
     try {
       if (isGrokRegister) {
-        // Ensure latest form values are saved before run (so settings + env match)
+        // Persist form so next open / env match (email + farm options + proxies)
         if (emailDomain.trim() && imapUser.trim() && (imapPass.trim() || hasSavedImapPass)) {
           const saveBody = {
             grokRegisterEmailDomain: emailDomain.trim(),
             grokRegisterImapUser: imapUser.trim(),
             grokRegisterImapHost: (imapHost || "imap.gmail.com").trim(),
             grokRegisterImapPort: Number(imapPort) || 993,
+            grokRegisterDisplay: display,
+            grokRegisterBrowserEngine: browserEngine,
+            grokRegisterProxyMode: proxyMode,
+            grokRegisterProxyCheck: proxyCheck,
+            grokRegisterInjectPolicy: injectPolicy,
+            grokRegisterOauthMode: oauthMode,
+            grokRegisterEmailStyle: emailStyle,
+            grokRegisterSettleSec: Number(settleSec) || 12,
+            grokRegisterConcurrent: Math.max(1, Number(concurrent) || 1),
+            grokRegisterStagger: Math.max(0, Number(stagger) || 0),
+            grokRegisterProxiesText: proxiesText,
           };
           if (imapPass.trim()) saveBody.grokRegisterImapPass = imapPass.trim();
           await fetch("/api/settings", {
@@ -581,6 +801,7 @@ export default function AddAccountPage() {
         }
       }
 
+      const proxyLines = parseProxyLines(proxiesText);
       const body = isGrokRegister
         ? {
             provider: "grok-cli",
@@ -593,7 +814,16 @@ export default function AddAccountPage() {
             display,
             stagger: Math.max(0, Number(stagger) || 0),
             headless: display === "headless",
-            proxy: proxy.trim() || null,
+            // multi-line proxies from UI (not proxy.txt)
+            proxies: proxyLines,
+            proxy: proxyLines[0] || null,
+            proxyMode,
+            proxyCheck,
+            browserEngine,
+            injectPolicy,
+            oauthMode,
+            emailStyle,
+            settleSec: Math.max(0, Number(settleSec) || 0),
             email: {
               domain: emailDomain.trim(),
               imapUser: imapUser.trim(),
@@ -838,13 +1068,13 @@ export default function AddAccountPage() {
                   hint="How many to create. Use 0 for unlimited (stop manually)."
                 />
                 <Input
-                  label="Concurrent"
+                  label="Concurrent workers"
                   type="number"
                   min={1}
                   max={10}
                   value={concurrent}
                   onChange={(e) => setConcurrent(e.target.value)}
-                  hint="Parallel browsers (e.g. 100 / 3 → 34+33+33)."
+                  hint="How many browser PROCESSES (W1, W2…). 1 = only W1. Account #2 on W1 is NOT a second worker."
                 />
               </div>
 
@@ -860,18 +1090,172 @@ export default function AddAccountPage() {
                     selectClassName="w-full"
                   />
                   <p className="text-xs text-text-muted">
-                    Uses a dedicated Chromium for Testing — not your daily Google Chrome.
+                    Flash default: Mac = offscreen · Linux/VPS = headless. Not your daily browser.
                   </p>
                 </div>
+                <div className="flex flex-col gap-2">
+                  <label className="text-sm font-medium text-text-main">
+                    Browser engine
+                  </label>
+                  <Select
+                    value={browserEngine}
+                    onChange={(e) => setBrowserEngine(e.target.value)}
+                    options={ENGINE_OPTIONS}
+                    selectClassName="w-full"
+                  />
+                  <p className="text-xs text-text-muted">
+                    Camoufox is anti-detect Firefox (recommended). Chromium is fallback.
+                  </p>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <Input
-                  label="Stagger (seconds)"
+                  label="Stagger between workers (sec)"
                   type="number"
                   min={0}
                   max={120}
                   value={stagger}
                   onChange={(e) => setStagger(e.target.value)}
-                  hint="Delay between starting each worker."
+                  hint={
+                    Number(concurrent) <= 1
+                      ? "Only used when Concurrent ≥ 2 (delay W2 after W1). Concurrent=1 → no stagger."
+                      : "Seconds to wait after spawning W1 before starting W2 (process spawn delay)."
+                  }
                 />
+                <Input
+                  label="Post-signup settle (seconds)"
+                  type="number"
+                  min={0}
+                  max={120}
+                  value={settleSec}
+                  onChange={(e) => setSettleSec(e.target.value)}
+                  hint="Idle before OAuth (bot hygiene). Flash turbo ~8–12s."
+                />
+              </div>
+
+              {/* Proxies — multi-line textarea (NOT proxy.txt) */}
+              <div className="flex flex-col gap-2 rounded-lg border border-border-subtle bg-bg px-3 py-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <div className="text-sm font-medium text-text-main">
+                      Proxies (optional)
+                    </div>
+                    <p className="text-xs text-text-muted mt-0.5">
+                      One proxy per line. Paste Webshare / residential list here — no{" "}
+                      <code className="text-text-main">proxy.txt</code> file.
+                    </p>
+                  </div>
+                  <span className="text-xs text-text-muted tabular-nums">
+                    {parseProxyLines(proxiesText).length} proxy
+                    {parseProxyLines(proxiesText).length === 1 ? "" : "ies"}
+                  </span>
+                </div>
+                <textarea
+                  value={proxiesText}
+                  onChange={(e) => setProxiesText(e.target.value)}
+                  placeholder={
+                    "http://user:pass@host:port\nhost:port:user:pass\nsocks5://user:pass@host:port"
+                  }
+                  className="w-full h-32 px-3 py-2.5 text-sm text-text-main bg-surface-2 rounded-[10px] border border-transparent placeholder-text-muted/70 focus:outline-none focus:ring-2 focus:ring-brand-500/30 focus:border-brand-500/40 transition-all duration-150 ease-out font-mono resize-y"
+                  spellCheck={false}
+                />
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div className="flex flex-col gap-1.5">
+                    <label className="text-xs font-medium text-text-main">Proxy mode</label>
+                    <Select
+                      value={proxyMode}
+                      onChange={(e) => setProxyMode(e.target.value)}
+                      options={PROXY_MODE_OPTIONS}
+                      selectClassName="w-full"
+                    />
+                  </div>
+                  <label className="flex items-center gap-2.5 cursor-pointer select-none sm:mt-6">
+                    <input
+                      type="checkbox"
+                      checked={proxyCheck}
+                      onChange={(e) => setProxyCheck(e.target.checked)}
+                      className="size-4 rounded border-border bg-surface-2 text-brand-500 focus:ring-brand-500/30"
+                    />
+                    <span className="text-sm text-text-main">
+                      Health-check proxies before farm (drop slow ones)
+                    </span>
+                  </label>
+                </div>
+              </div>
+
+              {/* Pipeline / inject */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div className="flex flex-col gap-2">
+                  <label className="text-sm font-medium text-text-main">
+                    Inject policy
+                  </label>
+                  <Select
+                    value={injectPolicy}
+                    onChange={(e) => setInjectPolicy(e.target.value)}
+                    options={INJECT_POLICY_OPTIONS}
+                    selectClassName="w-full"
+                  />
+                  <p className="text-xs text-text-muted">
+                    Usable = chat probe must pass (403 DENIED never enters 9router).
+                  </p>
+                </div>
+                <div className="flex flex-col gap-2">
+                  <label className="text-sm font-medium text-text-main">
+                    OAuth mode
+                  </label>
+                  <Select
+                    value={oauthMode}
+                    onChange={(e) => setOauthMode(e.target.value)}
+                    options={OAUTH_MODE_OPTIONS}
+                    selectClassName="w-full"
+                  />
+                  <p className="text-xs text-text-muted">
+                    PKCE is the flash path (same browser session as signup).
+                  </p>
+                </div>
+              </div>
+
+              {/* Advanced */}
+              <div className="rounded-lg border border-border-subtle">
+                <button
+                  type="button"
+                  className="flex w-full items-center justify-between px-3 py-2.5 text-sm font-medium text-text-main hover:bg-surface-2/50 rounded-lg"
+                  onClick={() => setShowAdvanced((v) => !v)}
+                >
+                  <span>Advanced options</span>
+                  <span className="material-symbols-outlined text-[18px] text-text-muted">
+                    {showAdvanced ? "expand_less" : "expand_more"}
+                  </span>
+                </button>
+                {showAdvanced && (
+                  <div className="border-t border-border-subtle px-3 py-3 grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div className="flex flex-col gap-2">
+                      <label className="text-sm font-medium text-text-main">
+                        Email local-part style
+                      </label>
+                      <Select
+                        value={emailStyle}
+                        onChange={(e) => setEmailStyle(e.target.value)}
+                        options={EMAIL_STYLE_OPTIONS}
+                        selectClassName="w-full"
+                      />
+                      <p className="text-xs text-text-muted">
+                        Humanized aliases look less bot-like on catch-all domains.
+                      </p>
+                    </div>
+                    <div className="flex flex-col gap-2 justify-center text-xs text-text-muted">
+                      <p>
+                        Pipeline: signup → settle →{" "}
+                        <span className="text-text-main">PKCE</span> →{" "}
+                        <span className="text-text-main">chat probe</span> → push only if usable.
+                      </p>
+                      <p>
+                        Engine / display / proxies are applied for this run only (also saved when you Save / Run).
+                      </p>
+                    </div>
+                  </div>
+                )}
               </div>
             </>
           ) : (
@@ -895,17 +1279,16 @@ export default function AddAccountPage() {
             </div>
           )}
 
-          <Input
-            label="Proxy (optional)"
-            placeholder="http://user:pass@proxy:8080"
-            value={proxy}
-            onChange={(e) => setProxy(e.target.value)}
-            hint={
-              isGrokRegister
-                ? "Passed to every farm worker."
-                : "Used for all browser automation contexts in this run."
-            }
-          />
+          {/* Non-Grok single proxy (login automations) */}
+          {!isGrokRegister && (
+            <Input
+              label="Proxy (optional)"
+              placeholder="http://user:pass@proxy:8080"
+              value={proxy}
+              onChange={(e) => setProxy(e.target.value)}
+              hint="Used for all browser automation contexts in this run."
+            />
+          )}
 
           {!isGrokRegister && (
             <label className="flex items-center gap-2.5 cursor-pointer select-none">
@@ -996,8 +1379,14 @@ export default function AddAccountPage() {
                   <span className="text-text-muted">
                     workers{" "}
                     <strong className="text-text-main">
-                      {workerBoard?.workers?.length || concurrent}
+                      {workerCount}
                     </strong>
+                    {workerBoard?.workers?.length > 0 &&
+                      workerBoard.workers.length !== workerCount && (
+                        <span className="text-[10px] text-text-muted ml-1">
+                          (active {workerBoard.workers.length})
+                        </span>
+                      )}
                   </span>
                   {running && (
                     <span className="text-sky-400 animate-pulse text-xs self-center">
@@ -1062,7 +1451,7 @@ export default function AddAccountPage() {
               </div>
             </div>
 
-            {/* Worker cards */}
+            {/* Worker cards — fixed slots = Concurrent form value */}
             {workerBoard?.workers?.length > 0 && (
               <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-2">
                 {workerBoard.workers.map((w) => (
@@ -1079,12 +1468,21 @@ export default function AddAccountPage() {
                     className={`text-left rounded-xl border px-3 py-2.5 transition-colors ${
                       logFilter === String(w.id) || logFilter === `W${w.id}`
                         ? "border-brand-500/50 bg-brand-500/10"
-                        : "border-border-subtle bg-bg hover:border-border"
+                        : w.active
+                          ? "border-border-subtle bg-bg hover:border-border"
+                          : "border-border-subtle/60 bg-bg/40 opacity-70 hover:border-border"
                     }`}
                   >
                     <div className="flex items-center justify-between gap-2 mb-1">
                       <span className="text-sm font-semibold text-text-main">
-                        W{w.id}
+                        Worker W{w.id}
+                        <span className="ml-1.5 text-[11px] font-normal text-text-muted">
+                          {w.localCur
+                            ? `· account ${w.localCur}${w.localShare ? `/${w.localShare}` : ""}`
+                            : w.active
+                              ? ""
+                              : "· idle"}
+                        </span>
                       </span>
                       <span
                         className={`text-[10px] font-medium uppercase tracking-wide px-1.5 py-0.5 rounded ring-1 ${phaseClass(
@@ -1175,7 +1573,11 @@ export default function AddAccountPage() {
               <div className="space-y-0.5">
                 {filteredLogs.map((log, i) => {
                   const step = log.phase || log.step || "farm";
-                  const wid = log.worker || log.progress?.worker;
+                  // Same strict extract as board (never show account index as W#)
+                  const wid = extractWorkerId(
+                    log,
+                    Math.max(1, Number(concurrent) || 1),
+                  );
                   return (
                     <div
                       key={i}
@@ -1272,34 +1674,42 @@ export default function AddAccountPage() {
         <Card title="Summary" icon="summarize">
           <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
             <div className="rounded-lg border border-border-subtle bg-bg px-3 py-2">
-              <div className="text-[11px] text-text-muted uppercase">Total</div>
+              <div className="text-[11px] text-text-muted uppercase">Done</div>
               <div className="text-xl font-semibold tabular-nums text-text-main">
-                {summary.total}
+                {summary.done != null
+                  ? summary.done
+                  : Number(summary.success || 0) + Number(summary.failed || 0)}
+                <span className="text-sm font-normal text-text-muted">
+                  {Number(summary.total) > 0 ? ` / ${summary.total}` : " / ∞"}
+                </span>
               </div>
             </div>
             <div className="rounded-lg border border-emerald-500/20 bg-emerald-500/5 px-3 py-2">
               <div className="text-[11px] text-emerald-600/80 uppercase">Success</div>
               <div className="text-xl font-semibold tabular-nums text-emerald-500">
-                {summary.success}
+                {summary.success ?? 0}
               </div>
+              <div className="text-[10px] text-text-muted">pipeline PASS</div>
             </div>
             <div className="rounded-lg border border-red-500/20 bg-red-500/5 px-3 py-2">
               <div className="text-[11px] text-red-500/80 uppercase">Failed</div>
               <div className="text-xl font-semibold tabular-nums text-red-500">
-                {summary.failed}
+                {summary.failed ?? 0}
               </div>
+              <div className="text-[10px] text-text-muted">pipeline FAIL</div>
             </div>
             <div className="rounded-lg border border-border-subtle bg-bg px-3 py-2">
               <div className="text-[11px] text-text-muted uppercase">Saved</div>
               <div className="text-xl font-semibold tabular-nums text-text-main">
-                {savedOk}
+                {summary.saved != null ? summary.saved : savedOk}
               </div>
+              <div className="text-[10px] text-text-muted">in 9router</div>
             </div>
             <div className="rounded-lg border border-sky-500/20 bg-sky-500/5 px-3 py-2">
               <div className="text-[11px] text-sky-600/80 uppercase">Acc / min</div>
               <div className="text-xl font-semibold tabular-nums text-sky-400">
-                {elapsedSec > 0 && progressOk > 0
-                  ? `~${((progressOk / elapsedSec) * 60).toFixed(1)}`
+                {elapsedSec > 0 && progressDone > 0
+                  ? `~${((progressDone / elapsedSec) * 60).toFixed(1)}`
                   : "—"}
               </div>
             </div>
@@ -1312,6 +1722,10 @@ export default function AddAccountPage() {
               </div>
             </div>
           </div>
+          <p className="mt-2 text-[11px] text-text-muted">
+            done = success + failed · success = PASS · failed = FAIL · saved = imported to providers
+            {summary.concurrent != null ? ` · workers ${summary.concurrent}` : ""}
+          </p>
           {(summary.stopped || summary.status === "stopped") && (
             <p className="mt-2 text-xs text-amber-600 dark:text-amber-400">
               Run was force-stopped. Partial results above were already saved.

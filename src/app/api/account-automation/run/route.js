@@ -59,10 +59,18 @@ function attachRunHandlers(runId) {
             : "done";
         current.status = st;
         current.endedAt = new Date().toISOString();
+        const savedFromResults = (current.results || []).filter((r) => r.success).length;
         current.summary = {
           total: summary?.total ?? 0,
-          success: summary?.success ?? 0,
+          // success = pipeline PASS (or imported); never invent from total-failed
+          success: summary?.success ?? savedFromResults,
+          // failed = pipeline FAIL only — default 0, never total-success
           failed: summary?.failed ?? 0,
+          saved: summary?.saved ?? savedFromResults,
+          done:
+            summary?.done ??
+            (Number(summary?.success || 0) + Number(summary?.failed || 0)),
+          concurrent: summary?.concurrent ?? current.concurrent ?? 1,
           errors: summary?.errors || [],
           stopped: Boolean(summary?.stopped),
           status: st,
@@ -135,8 +143,16 @@ async function spawnGrokRegister(runId, options) {
       concurrent: options.concurrent,
       headless: options.headless,
       proxy: options.proxy,
+      proxies: options.proxies || null,
+      proxyMode: options.proxyMode || "per_account",
+      proxyCheck: options.proxyCheck !== false,
       display: options.display,
       stagger: options.stagger,
+      browserEngine: options.browserEngine || "camoufox",
+      injectPolicy: options.injectPolicy || "usable",
+      oauthMode: options.oauthMode || "pkce",
+      emailStyle: options.emailStyle || "human",
+      settleSec: options.settleSec,
       autoSetup: options.autoSetup !== false,
       email: options.email || null,
       registerAbort: (fn) => {
@@ -195,11 +211,19 @@ export async function POST(request) {
       accounts = [],
       headless = true,
       proxy = null,
-      // grok-cli register options
+      // grok-cli register options (from Add Account web form)
       count = 1,
       concurrent = 1,
       display = null,
       stagger = 15,
+      proxies = null,
+      proxyMode = "per_account",
+      proxyCheck = true,
+      browserEngine = "camoufox",
+      injectPolicy = "usable",
+      oauthMode = "pkce",
+      emailStyle = "human",
+      settleSec = 12,
       email: emailFromBody = null,
     } = body;
 
@@ -219,6 +243,29 @@ export async function POST(request) {
       }
       if (conc > 10) {
         return NextResponse.json({ error: "concurrent max is 10" }, { status: 400 });
+      }
+
+      // Normalize proxies: array from UI textarea, or single proxy string, or multi-line string
+      let proxyList = [];
+      if (Array.isArray(proxies)) {
+        proxyList = proxies.map((p) => String(p || "").trim()).filter(Boolean);
+      } else if (typeof proxies === "string" && proxies.trim()) {
+        proxyList = proxies
+          .split(/\r?\n/)
+          .map((l) => l.trim())
+          .filter((l) => l && !l.startsWith("#"));
+      }
+      if (proxyList.length === 0 && proxy && String(proxy).trim()) {
+        // legacy single field / first line
+        const one = String(proxy).trim();
+        if (one.includes("\n")) {
+          proxyList = one
+            .split(/\r?\n/)
+            .map((l) => l.trim())
+            .filter((l) => l && !l.startsWith("#"));
+        } else {
+          proxyList = [one];
+        }
       }
 
       const runId = randomUUID();
@@ -255,13 +302,27 @@ export async function POST(request) {
         }
       }
 
+      // Stagger: seconds between spawning worker PROCESSES (W1 then wait then W2).
+      // Default 15 when concurrent>1 so W2 never stampede with W1.
+      let staggerSec = Number(stagger);
+      if (!Number.isFinite(staggerSec) || staggerSec < 0) staggerSec = 15;
+      if (conc <= 1) staggerSec = 0;
+
       spawnGrokRegister(runId, {
         count: total,
         concurrent: conc,
         headless: Boolean(headless),
-        proxy: proxy || null,
+        proxy: proxyList[0] || null,
+        proxies: proxyList,
+        proxyMode: String(proxyMode || "per_account"),
+        proxyCheck: proxyCheck !== false && proxyCheck !== "false",
         display: display || null,
-        stagger: Number(stagger) || 15,
+        stagger: staggerSec,
+        browserEngine: String(browserEngine || "camoufox"),
+        injectPolicy: String(injectPolicy || "usable"),
+        oauthMode: String(oauthMode || "pkce"),
+        emailStyle: String(emailStyle || "human"),
+        settleSec: Number(settleSec) || 12,
         email: emailCfg,
       });
 
@@ -270,7 +331,11 @@ export async function POST(request) {
         status: "running",
         total,
         concurrent: conc,
+        stagger: staggerSec,
         mode: "register",
+        proxies: proxyList.length,
+        browserEngine: String(browserEngine || "camoufox"),
+        display: display || null,
       });
     }
 

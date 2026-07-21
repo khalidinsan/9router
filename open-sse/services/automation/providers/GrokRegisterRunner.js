@@ -196,11 +196,23 @@ export async function getGrokRegisterStatus() {
   let browserOk = false;
   if (hasVenv) {
     try {
+      // Flash default: Camoufox OR Playwright Chromium (either is enough to farm)
       const r = spawnSync(
         py,
         [
           "-c",
-          "import glob, os; home=os.path.expanduser('~'); roots=[os.path.join(home,'Library/Caches/ms-playwright'),os.path.join(home,'.cache/ms-playwright')]; print(any(glob.glob(os.path.join(r,'chromium-*')) for r in roots if os.path.isdir(r)))",
+          [
+            "import glob, os",
+            "home=os.path.expanduser('~')",
+            "ok=False",
+            "for r in [os.path.join(home,'.cache','camoufox'), os.path.join(home,'Library','Caches','camoufox')]:",
+            "  if os.path.isdir(r) and any(True for _ in glob.iglob(os.path.join(r,'**'), recursive=True)):",
+            "    ok=True; break",
+            "if not ok:",
+            "  roots=[os.path.join(home,'Library/Caches/ms-playwright'),os.path.join(home,'.cache/ms-playwright')]",
+            "  ok=any(glob.glob(os.path.join(r,'chromium-*')) for r in roots if os.path.isdir(r))",
+            "print('true' if ok else 'false')",
+          ].join("\n"),
         ],
         { encoding: "utf8", timeout: 15000 },
       );
@@ -213,10 +225,17 @@ export async function getGrokRegisterStatus() {
   let depsOk = false;
   if (hasVenv) {
     try {
-      const r = spawnSync(py, ["-c", "import DrissionPage; import playwright; print('ok')"], {
-        encoding: "utf8",
-        timeout: 15000,
-      });
+      const r = spawnSync(
+        py,
+        [
+          "-c",
+          "import DrissionPage, playwright, requests; import camoufox; print('ok')",
+        ],
+        {
+          encoding: "utf8",
+          timeout: 20000,
+        },
+      );
       depsOk = r.status === 0 && (r.stdout || "").includes("ok");
     } catch {
       depsOk = false;
@@ -233,7 +252,7 @@ export async function getGrokRegisterStatus() {
     );
   } else if (needsSetup) {
     instructions.push(
-      "Click “Setup environment” once. Installs a private Python toolkit + Chromium (not your daily Chrome).",
+      "Click “Setup environment” once. Installs Python toolkit + Camoufox/Chromium (not your daily browser).",
     );
   }
   if (!configOk) {
@@ -360,14 +379,34 @@ export async function setupGrokRegister({ onLog = () => {} } = {}) {
 const IMPORT_MARKER = "@@GROK_CLI_IMPORT@@";
 
 /**
- * Structured slog from farm.py, e.g.:
- * 14:24:01 [W1 1/40 · #1/200 · remW 40 · ✓0 ✗0] EMAIL          alias=...
+ * Structured slog from farm.py — MUST match unlimited + finite tags:
+ *   Finite:     14:24:01 [W1 1/40 · #1/200 · remW 40 · ✓0 ✗0] EMAIL  ...
+ *   Unlimited:  15:48:54 [W2 2 · #2 · ✓2 ✗0] RESULT  PASS ✓ ...
+ *   Legacy ∞:   13:45:31 [W1 #1 · ✓1 ✗0] OK  ...
+ *   Boot:       13:44:28 [W1 · ✓0 ✗0] BOOT  ...
  */
 const SLOG_RE =
-  /^(?<ts>\d{2}:\d{2}:\d{2})\s+\[W(?<wid>[^\s·\]]+)(?:\s+(?<cur>\d+)\/(?<share>\d+))?(?:\s*·\s*#(?<gidx>\d+)\/(?<gtotal>\d+))?(?:\s*·\s*remW\s+(?<remw>\d+))?(?:\s*·\s*✓(?<ok>\d+)\s*✗(?<fail>\d+))?\]\s+(?<phase>\S+)\s+(?<msg>.*)$/;
+  /^(?<ts>\d{2}:\d{2}:\d{2})\s+\[W(?<wid>[^\s·\]]+)(?:\s+(?:(?<cur>\d+)(?:\/(?<share>\d+))?|#(?<cur_legacy>\d+)))?(?:\s*·\s*#(?<gidx>\d+)(?:\/(?<gtotal>\d+))?)?(?:\s*·\s*remW\s+(?<remw>\d+))?(?:\s*·\s*✓(?<ok>\d+)\s*✗(?<fail>\d+))?\]\s+(?<phase>\S+)\s+(?<msg>.*)$/;
+
+// Loose fallback when tag form drifts — still recover W# / phase / ✓✗ from body
+const SLOG_LOOSE_RE =
+  /^(?<ts>\d{2}:\d{2}:\d{2})\s+\[W(?<wid>[^\s·\]]+)[^\]]*\]\s+(?<phase>\S+)\s+(?<msg>.*)$/;
+
+function extractOkFailFromText(text) {
+  if (!text) return { ok: null, fail: null };
+  let m = text.match(/success[=:](\d+)/i);
+  let mf = text.match(/failed[=:](\d+)/i);
+  if (m && mf) return { ok: Number(m[1]), fail: Number(mf[1]) };
+  m = text.match(/✓(\d+)\s*\/\s*✗(\d+)/);
+  if (m) return { ok: Number(m[1]), fail: Number(m[2]) };
+  m = text.match(/✓(\d+)\s*✗(\d+)/);
+  if (m) return { ok: Number(m[1]), fail: Number(m[2]) };
+  return { ok: null, fail: null };
+}
 
 function parseFarmLogLine(line) {
   // In-process import payload from push_9router_grok_cli.py
+  // Marker may be alone or appear after a slog prefix — always extract first.
   if (line.includes(IMPORT_MARKER)) {
     const start = line.indexOf(IMPORT_MARKER) + IMPORT_MARKER.length;
     const end = line.indexOf(IMPORT_MARKER, start);
@@ -376,22 +415,72 @@ function parseFarmLogLine(line) {
         const payload = JSON.parse(line.slice(start, end));
         return { type: "import", payload };
       } catch {
-        return { type: "log" };
+        // fall through to slog parse if marker corrupt
       }
     }
   }
 
-  const slog = line.match(SLOG_RE);
-  if (slog?.groups) {
-    const g = slog.groups;
+  let slog = line.match(SLOG_RE);
+  let g = slog?.groups || null;
+  if (!g) {
+    const loose = line.match(SLOG_LOOSE_RE);
+    if (loose?.groups) {
+      g = { ...loose.groups };
+      // recover cur / ok / fail from full line when strict groups missing
+      const mcur = line.match(
+        /\[W[^\s·\]]+(?:\s+(?<cur>\d+)(?:\/\d+)?|\s+#(?<cur_legacy>\d+))/
+      );
+      if (mcur?.groups) {
+        g.cur = mcur.groups.cur || null;
+        g.cur_legacy = mcur.groups.cur_legacy || null;
+      }
+      const tallies = extractOkFailFromText(line);
+      if (tallies.ok != null) g.ok = String(tallies.ok);
+      if (tallies.fail != null) g.fail = String(tallies.fail);
+    }
+  }
+
+  if (g) {
     const phase = (g.phase || "RUN").trim().toUpperCase();
     const msg = (g.msg || "").trim();
     const emailMatch = msg.match(/(?:alias|email)=([^\s]+)/i);
+    const cur = g.cur || g.cur_legacy || null;
+    // Prefer tag ✓/✗; fallback body success=N failed=N (SCORE/RESULT)
+    let ok = g.ok != null && g.ok !== "" ? Number(g.ok) : null;
+    let fail = g.fail != null && g.fail !== "" ? Number(g.fail) : null;
+    if (ok == null || fail == null || Number.isNaN(ok) || Number.isNaN(fail)) {
+      const tallies = extractOkFailFromText(msg) || extractOkFailFromText(line);
+      if (ok == null && tallies.ok != null) ok = tallies.ok;
+      if (fail == null && tallies.fail != null) fail = tallies.fail;
+    }
+
     let level = "info";
-    if (phase === "FAIL" || phase === "STOP" || /error|failed/i.test(msg)) level = "error";
-    else if (phase === "OK" || phase === "CREATED" || phase === "DONE" || phase === "PUSH")
+    const msgU = msg.toUpperCase();
+    // PASS first — SCORE/RESULT embed "failed=0" which must NOT go red
+    if (
+      phase === "OK" ||
+      phase === "CREATED" ||
+      phase === "DONE" ||
+      phase === "PUSH" ||
+      (phase === "RESULT" && msgU.includes("PASS"))
+    ) {
       level = "success";
-    else if (phase === "SUBMIT" || /warn|still on form|retry/i.test(msg)) level = "warn";
+    } else if (
+      phase === "FAIL" ||
+      phase === "STOP" ||
+      (phase === "RESULT" && (msgU.includes("FAIL") || msg.includes("✗")))
+    ) {
+      level = "error";
+    } else if (/\berror\b/i.test(msg) && !/→\s*success/i.test(msg)) {
+      level = "error";
+    } else if (
+      /\bfailed\b(?!\s*[=:]\s*\d)/i.test(msg) &&
+      !["SCORE", "RESULT", "OK", "DONE"].includes(phase)
+    ) {
+      level = "error";
+    } else if (phase === "SUBMIT" || /warn|still on form|retry/i.test(msg)) {
+      level = "warn";
+    }
 
     return {
       type: "slog",
@@ -401,13 +490,13 @@ function parseFarmLogLine(line) {
       email: emailMatch ? emailMatch[1] : null,
       level,
       progress: {
-        localCur: g.cur ? Number(g.cur) : null,
+        localCur: cur ? Number(cur) : null,
         localShare: g.share ? Number(g.share) : null,
         globalIdx: g.gidx ? Number(g.gidx) : null,
         globalTotal: g.gtotal ? Number(g.gtotal) : null,
         remW: g.remw ? Number(g.remw) : null,
-        ok: g.ok != null ? Number(g.ok) : null,
-        fail: g.fail != null ? Number(g.fail) : null,
+        ok: ok != null && !Number.isNaN(ok) ? ok : null,
+        fail: fail != null && !Number.isNaN(fail) ? fail : null,
       },
     };
   }
@@ -439,16 +528,29 @@ export function decodeJwtPayload(token) {
 }
 
 /**
- * xAI stamps bot_flag_source on Build/CLI OAuth access tokens for accounts
- * they treat as automated. Those almost always 403 on chat — skip import.
- * Override: GROK_IMPORT_ALLOW_BOT_FLAG=1
+ * xAI stamps bot_flag_source on Build/CLI OAuth access tokens.
+ * Flash policy (default): soft flag — chat usable probe is the real gate.
+ * Only hard-reject when:
+ *   GROK_JWT_REJECT_BOT_FLAG=1  or  GROK_INJECT_POLICY=jwt_clean
+ * Force import anyway: GROK_IMPORT_ALLOW_BOT_FLAG=1
  */
 export function isBotFlaggedAccessToken(accessToken) {
-  if (process.env.GROK_IMPORT_ALLOW_BOT_FLAG === "1") return false;
+  if (
+    process.env.GROK_IMPORT_ALLOW_BOT_FLAG === "1" ||
+    String(process.env.GROK_IMPORT_ALLOW_BOT_FLAG || "").toLowerCase() === "true"
+  ) {
+    return false;
+  }
+  // Soft by default (matches farm inject_policy=usable)
+  const hard =
+    process.env.GROK_JWT_REJECT_BOT_FLAG === "1" ||
+    String(process.env.GROK_JWT_REJECT_BOT_FLAG || "").toLowerCase() === "true" ||
+    String(process.env.GROK_INJECT_POLICY || "").toLowerCase() === "jwt_clean";
+  if (!hard) return false;
+
   const claims = decodeJwtPayload(accessToken);
   if (!claims) return false;
   const flag = claims.bot_flag_source;
-  // present and truthy / non-zero → flagged
   if (flag === undefined || flag === null || flag === false || flag === 0 || flag === "0") {
     return false;
   }
@@ -656,14 +758,53 @@ export function killProcessTree(child, { graceMs = 2500 } = {}) {
   }
 }
 
+/**
+ * Normalize proxy list from UI / API:
+ *  - string[]  → as-is
+ *  - multi-line string → split lines
+ *  - single URL string → [url]
+ *  - null/empty → []
+ */
+function normalizeProxyList(proxies, proxy) {
+  let list = [];
+  if (Array.isArray(proxies)) {
+    list = proxies.map((p) => String(p || "").trim()).filter(Boolean);
+  } else if (typeof proxies === "string" && proxies.trim()) {
+    list = proxies
+      .split(/\r?\n/)
+      .map((l) => l.trim())
+      .filter((l) => l && !l.startsWith("#"));
+  }
+  if (list.length === 0 && proxy && String(proxy).trim()) {
+    const one = String(proxy).trim();
+    if (one.includes("\n")) {
+      list = one
+        .split(/\r?\n/)
+        .map((l) => l.trim())
+        .filter((l) => l && !l.startsWith("#"));
+    } else {
+      list = [one];
+    }
+  }
+  return list;
+}
+
 export async function runGrokRegister(opts = {}) {
   const {
     count = 1,
     concurrent = 1,
     headless = false,
     proxy = null,
+    proxies = null,
+    proxyMode = "per_account",
+    proxyCheck = true,
     display: displayOpt = null,
     stagger = 15,
+    browserEngine = "camoufox",
+    injectPolicy = "usable",
+    oauthMode = "pkce",
+    emailStyle = "human",
+    settleSec = 12,
     autoSetup = true,
     onLog = () => {},
     onResult = () => {},
@@ -735,9 +876,36 @@ export async function runGrokRegister(opts = {}) {
   const root = status.root;
   const python = status.venvPython;
   const poolScript = status.poolScript;
+  // Flash-aligned defaults: Mac offscreen · Linux/Win headless · forced headless if UI asks
   let display = displayOpt;
   if (!display) {
-    display = headless ? "headless" : process.platform === "darwin" ? "offscreen" : "headed";
+    if (headless) {
+      display = "headless";
+    } else if (process.platform === "darwin") {
+      display = "offscreen";
+    } else {
+      display = "headless"; // flash Linux/VPS default (was "headed")
+    }
+  }
+
+  // Proxies from web UI textarea (one per line) — never require proxy.txt
+  const proxyList = normalizeProxyList(proxies, proxy);
+  const mode = String(proxyMode || "per_account").toLowerCase();
+  const engine = String(browserEngine || "camoufox").toLowerCase();
+  const inject = String(injectPolicy || "usable").toLowerCase();
+  const oauth = String(oauthMode || "pkce").toLowerCase();
+  const style = String(emailStyle || "human").toLowerCase();
+  const settle = Math.max(0, Number(settleSec) || 0);
+  const doProxyCheck = proxyCheck !== false && proxyCheck !== "false";
+
+  // Concurrent / stagger: UI is source of truth (never fall back to config.json defaults)
+  const concN = Math.max(1, Math.floor(Number(concurrent) || 1));
+  // Default stagger 15s when concurrent>1 so W2 does not stampede with W1
+  let staggerN = Number(stagger);
+  if (!Number.isFinite(staggerN) || staggerN < 0) staggerN = 15;
+  if (concN <= 1) {
+    // Single worker: stagger is irrelevant (only W1)
+    staggerN = 0;
   }
 
   const args = [
@@ -745,38 +913,85 @@ export async function runGrokRegister(opts = {}) {
     "--count",
     String(Math.max(0, Number(count) || 0)),
     "--concurrent",
-    String(Math.max(1, Number(concurrent) || 1)),
+    String(concN),
     "--display",
     display,
     "--stagger",
-    String(Math.max(0, Number(stagger) || 0)),
+    String(staggerN),
+    "--proxy-mode",
+    mode === "per_worker" ? "per_worker" : "per_account",
   ];
-  if (proxy && String(proxy).trim()) {
-    args.push("--proxy", String(proxy).trim());
+  // Pass each proxy as --proxy (pool.py load_proxy_list) — UI source of truth
+  for (const p of proxyList) {
+    args.push("--proxy", p);
+  }
+  if (proxyList.length > 0) {
+    if (doProxyCheck) {
+      args.push("--proxy-check");
+    } else {
+      args.push("--no-proxy-check");
+    }
   }
 
   const totalAccounts = Math.max(0, Number(count) || 0);
   onLog({
     level: "info",
     step: "start",
-    message: `Starting farm: ${totalAccounts > 0 ? totalAccounts : "∞ unlimited"} accounts, concurrent ${concurrent}, display=${display}`,
+    message:
+      `Starting farm: ${totalAccounts > 0 ? totalAccounts : "∞ unlimited"} accounts · ` +
+      `workers=${concN} · stagger=${staggerN}s · display=${display} · engine=${engine}`,
   });
+  if (concN === 1) {
+    onLog({
+      level: "info",
+      step: "start",
+      message:
+        "concurrent=1 → only worker W1 will spawn. " +
+        "Log tag [W1 2 · #2] means account #2 on W1 (not a second worker).",
+    });
+  } else {
+    onLog({
+      level: "info",
+      step: "start",
+      message:
+        `Will spawn W1 now, then wait ${staggerN}s before W2…W${concN} ` +
+        `(stagger is between worker PROCESSES, not between accounts).`,
+    });
+  }
   onLog({
     level: "info",
     step: "start",
     message: `IMAP ${emailCfg.imapUser} @ ${emailCfg.imapHost} domain=${emailCfg.domain}`,
   });
+  onLog({
+    level: "info",
+    step: "start",
+    message:
+      `proxies=${proxyList.length} mode=${mode} check=${doProxyCheck ? "on" : "off"} · ` +
+      `oauth=${oauth} inject=${inject} settle=${settle}s email_style=${style}`,
+  });
 
   // Always snapshot DB before farm mutations / force-stop risk
   backupDbBeforeFarm(onLog);
 
+  // Semantics (same as standalone farm_tui):
+  //   success = pipeline PASS (and/or imported)
+  //   failed  = pipeline FAIL (account attempt ended fail)
+  //   saved   = actually written to 9router (tracked via onResult / summary.saved)
+  //   done    = success + failed
+  // Never invent failed = total - success (that made 1-pass runs show Failed=1).
   const summary = {
     total: Math.max(0, Number(count) || 0),
     success: 0,
     failed: 0,
+    saved: 0,
+    done: 0,
     errors: [],
+    concurrent: concN,
   };
-  const created = new Set();
+  const created = new Set(); // emails imported/saved
+  const passEmails = new Set(); // pipeline PASS
+  const failEmails = new Set(); // pipeline FAIL
   let forcedStop = false;
 
   await new Promise((resolve, reject) => {
@@ -788,7 +1003,28 @@ export async function runGrokRegister(opts = {}) {
       env: {
         ...process.env,
         PYTHONUNBUFFERED: "1",
+        PYTHONUTF8: "1",
         NINEROUTER_IMPORT_MODE: "direct",
+        // Browser (from web form)
+        GROK_BROWSER_ENGINE: engine || "camoufox",
+        GROK_DISPLAY: display,
+        GROK_HEADLESS:
+          display === "headless"
+            ? "true"
+            : display === "virtual"
+              ? "virtual"
+              : "false",
+        // Proxy pool from UI textarea (also passed as --proxy CLI; env is belt-and-suspenders)
+        GROK_PROXY_MODE: mode === "per_worker" ? "per_worker" : "per_account",
+        ...(proxyList.length > 0
+          ? { GROK_PROXIES: proxyList.join("\n") }
+          : {}),
+        // Pipeline (flash) — farm.py reads these over config.json
+        GROK_OAUTH_MODE: oauth || "pkce",
+        GROK_OAUTH_REFERRER: "grok-build",
+        GROK_INJECT_POLICY: inject || "usable",
+        GROK_POST_SIGNUP_SETTLE_S: String(settle),
+        EMAIL_LOCAL_STYLE: style || "human",
         // Email/IMAP from Add Account UI (overrides farm config.json)
         EMAIL_DOMAIN: String(emailCfg.domain || ""),
         IMAP_USER: String(emailCfg.imapUser || ""),
@@ -829,13 +1065,16 @@ export async function runGrokRegister(opts = {}) {
                 const email = conn.email || parsed.payload.email || "grok-cli";
                 if (!created.has(email)) {
                   created.add(email);
-                  summary.success += 1;
+                  summary.saved = created.size;
                 }
+                // Pipeline pass + saved
+                passEmails.add(email);
                 onLog({
                   level: "success",
                   step: "import",
                   message: `Saved grok-cli connection in-process id=${conn.id} email=${email}`,
                   email,
+                  worker: null,
                 });
                 onResult({
                   email,
@@ -846,18 +1085,22 @@ export async function runGrokRegister(opts = {}) {
                 });
               } catch (e) {
                 const isBot = e?.code === "BOT_FLAGGED" || /bot_flag_source/i.test(e?.message || "");
+                const em = e?.email || parsed.payload?.email || null;
                 onLog({
                   level: isBot ? "warn" : "error",
                   step: isBot ? "skip" : "import",
                   message: isBot
                     ? `Skipped bot-flagged account (not imported): ${e.message}`
                     : `In-process import failed: ${e.message}`,
-                  email: e?.email || parsed.payload?.email || null,
+                  email: em,
                 });
                 if (isBot) {
                   summary.skipped = (summary.skipped || 0) + 1;
+                  // usable policy already blocked at farm; this is double-gate — count as fail only if hard reject
+                  if (em) failEmails.add(em);
                 } else {
                   summary.errors.push(e.message);
+                  if (em) failEmails.add(em);
                 }
               }
             })
@@ -888,12 +1131,33 @@ export async function runGrokRegister(opts = {}) {
             fail: p.fail,
           },
         });
-        if (
-          (parsed.phase === "CREATED" || parsed.phase === "OK" || parsed.phase === "DONE") &&
-          parsed.email &&
-          !created.has(parsed.email)
-        ) {
-          created.add(parsed.email);
+        // Track pipeline PASS/FAIL (not the same as 9router import/saved)
+        // IMPORTANT: do NOT match bare /FAIL/i on body — RESULT PASS embeds "failed=0"
+        const msg = parsed.message || "";
+        const isResultPass =
+          parsed.phase === "RESULT" && /\bPASS\b/i.test(msg) && !/\bFAIL\s*✗/i.test(msg);
+        const isResultFail =
+          (parsed.phase === "RESULT" && (/\bFAIL\s*✗/i.test(msg) || /^FAIL\b/i.test(msg.trim()))) ||
+          // progress_end_account FAIL line only (not mid-pipeline "PROBE FAILED:")
+          (parsed.phase === "FAIL" && /→\s*failed\+1|FAILED after/i.test(msg));
+
+        if ((parsed.phase === "OK" || parsed.phase === "DONE" || isResultPass) && parsed.email) {
+          passEmails.add(parsed.email);
+        }
+        if (isResultFail) {
+          const key = parsed.email || `fail#${failEmails.size + 1}`;
+          failEmails.add(key);
+        }
+
+        // Live worker tallies: last ✓/✗ per worker (sum at close)
+        if (!summary._workerTally) summary._workerTally = {};
+        if (parsed.worker && (p.ok != null || p.fail != null)) {
+          const wid = String(parsed.worker);
+          const prev = summary._workerTally[wid] || { ok: 0, fail: 0 };
+          summary._workerTally[wid] = {
+            ok: p.ok != null ? Number(p.ok) : prev.ok,
+            fail: p.fail != null ? Number(p.fail) : prev.fail,
+          };
         }
         return;
       }
@@ -933,10 +1197,22 @@ export async function runGrokRegister(opts = {}) {
 
     child.on("close", (code) => {
       importChain.finally(() => {
-        if (summary.total > 0) {
-          const missing = Math.max(0, summary.total - summary.success);
-          if (missing > 0) summary.failed = missing;
+        // Prefer worker tallies sum when present (multi-worker ✓/✗)
+        let tallyOk = 0;
+        let tallyFail = 0;
+        if (summary._workerTally && typeof summary._workerTally === "object") {
+          for (const t of Object.values(summary._workerTally)) {
+            tallyOk += Number(t.ok) || 0;
+            tallyFail += Number(t.fail) || 0;
+          }
         }
+        // Final semantics (standalone farm_tui style)
+        summary.saved = created.size;
+        summary.success = Math.max(passEmails.size, created.size, tallyOk);
+        summary.failed = Math.max(failEmails.size, tallyFail);
+        summary.done = summary.success + summary.failed;
+        delete summary._workerTally;
+
         if (forcedStop) {
           summary.stopped = true;
           summary.errors = summary.errors || [];
@@ -944,17 +1220,20 @@ export async function runGrokRegister(opts = {}) {
           onLog({
             level: "warn",
             step: "stop",
-            message: `Farm force-stopped; saved≈${summary.success} before stop`,
+            message:
+              `Farm force-stopped; done=${summary.done} success=${summary.success} ` +
+              `failed=${summary.failed} saved=${summary.saved}`,
           });
         } else {
           onLog({
             level: code === 0 ? "success" : "warn",
             step: "done",
-            message: `Farm exited code ${code}; saved≈${summary.success} (direct DB, no HTTP)`,
+            message:
+              `Farm exited code ${code}; done=${summary.done} success=${summary.success} ` +
+              `failed=${summary.failed} saved=${summary.saved} workers=${summary.concurrent}`,
           });
         }
         // Always resolve with summary so SSE gets a clean `done` (not failed/error).
-        // Zero registrations is a soft result, not a transport failure.
         onDone(summary);
         resolve(summary);
       });
