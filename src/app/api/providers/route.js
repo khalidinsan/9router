@@ -162,6 +162,22 @@ export async function POST(request) {
             ? "active"
             : "inactive";
 
+      // Farm OFF inject: merge PSD flags so re-probe sees quotaExhausted / permissionDenied
+      const bodyPsd =
+        body.providerSpecificData && typeof body.providerSpecificData === "object"
+          ? body.providerSpecificData
+          : {};
+      const errorCode =
+        typeof body.errorCode === "number"
+          ? body.errorCode
+          : typeof body.errorCode === "string" && body.errorCode.trim()
+            ? Number(body.errorCode)
+            : undefined;
+      const lastErrorType =
+        typeof body.lastErrorType === "string" && body.lastErrorType.trim()
+          ? body.lastErrorType.trim()
+          : undefined;
+
       const connection = await createProviderConnection({
         provider: "grok-cli",
         authType: "oauth",
@@ -179,6 +195,11 @@ export async function POST(request) {
           typeof body.lastError === "string" && body.lastError.trim()
             ? body.lastError.trim().slice(0, 500)
             : undefined,
+        ...(errorCode !== undefined && !Number.isNaN(errorCode) ? { errorCode } : {}),
+        ...(lastErrorType ? { lastErrorType } : {}),
+        ...(!isActive
+          ? { lastErrorAt: new Date().toISOString() }
+          : {}),
         providerSpecificData: {
           authMethod: "device_code",
           idToken: idToken || null,
@@ -186,6 +207,13 @@ export async function POST(request) {
           userId: userId || null,
           hasGrokCodeAccess: body.hasGrokCodeAccess ?? null,
           subscriptionTier: body.subscriptionTier ?? null,
+          // re-probe eligibility flags from farm (402/403)
+          ...(bodyPsd.quotaExhausted === true ? { quotaExhausted: true } : {}),
+          ...(bodyPsd.permissionDenied === true ? { permissionDenied: true } : {}),
+          ...(bodyPsd.farmInjectOff === true ? { farmInjectOff: true } : {}),
+          ...(bodyPsd.farmProbeStatus != null
+            ? { farmProbeStatus: bodyPsd.farmProbeStatus }
+            : {}),
         },
       });
 
