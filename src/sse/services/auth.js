@@ -2,7 +2,6 @@ import {
   getProviderConnections,
   validateApiKey,
   updateProviderConnection,
-  deleteProviderConnection,
   getSettings,
   getProxyPools,
 } from "@/lib/localDb";
@@ -16,6 +15,7 @@ import {
   isGrokCliChatPermissionDenied,
   isGrokCliFreeOrCreditExhausted,
   buildGrokCliQuotaExhaustedUpdate,
+  buildGrokCliPermissionDeniedUpdate,
 } from "open-sse/services/accountFallback.js";
 import { MAX_RATE_LIMIT_COOLDOWN_MS } from "open-sse/config/errorConfig.js";
 import { resolveProviderId, FREE_PROVIDERS } from "@/shared/constants/providers.js";
@@ -61,6 +61,8 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
     ? excludeConnectionIds
     : (excludeConnectionIds ? new Set([excludeConnectionIds]) : new Set());
   const preferredConnectionId = options?.preferredConnectionId || null;
+  // Internal re-probe of disabled grok-cli accounts (dashboard / maintenance)
+  const allowInactivePin = options?.allowInactivePin === true;
   // Acquire mutex to prevent race conditions
   const currentMutex = selectionMutex;
   let resolveMutex;
@@ -192,21 +194,62 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
     let connection;
     // Pin to preferred connection if specified — hard-fail when unavailable
     // (used by per-account model test via x-connection-id)
+    // IMPORTANT: when pin is set, NEVER return another account (caller must not fallback).
     if (preferredConnectionId) {
+      if (excludeSet.has(preferredConnectionId)) {
+        return {
+          pinFailed: true,
+          error: "Pinned connection was excluded",
+          preferredConnectionId,
+        };
+      }
+
       connection = availableConnections.find((c) => c.id === preferredConnectionId);
+
+      // Re-probe disabled / hard-skipped accounts (quota 402, chat 403, etc.)
+      if (!connection && allowInactivePin) {
+        const allForPin = await getProviderConnections({ provider: providerId });
+        const pinned = allForPin.find((c) => c.id === preferredConnectionId);
+        if (
+          pinned &&
+          (pinned.accessToken || pinned.refreshToken) &&
+          pinned.providerSpecificData?.reauthRequired !== true &&
+          pinned.testStatus !== "reauth_required"
+        ) {
+          connection = pinned;
+          log.info(
+            "AUTH",
+            `${provider} | re-probe pin ${connection.id?.slice(0, 8)} ` +
+              `(${connection.email || connection.name || "unnamed"}) ` +
+              `status=${connection.testStatus || "?"} active=${connection.isActive !== false}`
+          );
+        }
+      }
+
       if (connection) {
-        log.info("AUTH", `${provider} | pinned to ${connection.id?.slice(0, 8)} (${connection.name || connection.email || "unnamed"})`);
+        // Prefer email in logs — name is often a generic given/family from JWT
+        const label = connection.email || connection.name || connection.displayName || "unnamed";
+        log.info(
+          "AUTH",
+          `${provider} | pinned ${connection.id?.slice(0, 8)} (${label})`
+        );
       } else {
-        const exists = connections.find((c) => c.id === preferredConnectionId);
-        const reason = !exists
-          ? "Pinned connection not found"
-          : exists.isActive === false
-            ? "Pinned connection is disabled"
-            : isModelLockActive(exists, model)
-              ? "Pinned connection is model-locked"
-              : excludeSet.has(preferredConnectionId)
-                ? "Pinned connection was excluded"
-                : "Pinned connection unavailable";
+        const allLookup = allowInactivePin
+          ? await getProviderConnections({ provider: providerId })
+          : connections;
+        const exists =
+          allLookup.find((c) => c.id === preferredConnectionId) ||
+          connections.find((c) => c.id === preferredConnectionId);
+        let reason = "Pinned connection unavailable";
+        if (!exists) reason = "Pinned connection not found";
+        else if (exists.isActive === false && !allowInactivePin)
+          reason = "Pinned connection is disabled";
+        else if (isModelLockActive(exists, model) && !allowInactivePin)
+          reason = "Pinned connection is model-locked";
+        else if (exists.providerSpecificData?.reauthRequired || exists.testStatus === "reauth_required")
+          reason = "Pinned connection needs reauth";
+        else if (!exists.accessToken && !exists.refreshToken)
+          reason = "Pinned connection has no tokens";
         log.warn("AUTH", `${provider} | pin failed: ${reason} (${preferredConnectionId.slice(0, 8)})`);
         return {
           pinFailed: true,
@@ -279,7 +322,12 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
       expiresIn: connection.expiresIn,
       lastRefreshAt: connection.lastRefreshAt,
       projectId: connection.projectId,
-      connectionName: connection.displayName || connection.name || connection.email || connection.id,
+      // Prefer email for logs/UI identity (JWT name is often recycled given/family)
+      connectionName:
+        connection.email ||
+        connection.displayName ||
+        connection.name ||
+        connection.id,
       copilotToken: connection.providerSpecificData?.copilotToken,
       providerSpecificData: {
         ...(connection.providerSpecificData || {}),
@@ -318,32 +366,34 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
   const backoffLevel = conn?.backoffLevel || 0;
   const connName = conn?.displayName || conn?.name || conn?.email || connectionId.slice(0, 8);
 
-  // grok-cli: 403 permission-denied on chat → delete account (permanent xAI gate)
+  // grok-cli: 403 permission-denied on chat → disable only (never auto-delete)
   if (isGrokCliChatPermissionDenied(provider, status, errorText)) {
+    const reason =
+      typeof errorText === "string" ? errorText.slice(0, 200) : "permission-denied";
     try {
-      await deleteProviderConnection(connectionId);
+      await updateProviderConnection(connectionId, {
+        ...buildGrokCliPermissionDeniedUpdate(),
+        lastError: reason,
+        providerSpecificData: {
+          ...(conn?.providerSpecificData || {}),
+          permissionDenied: true,
+          lastPermissionDeniedAt: new Date().toISOString(),
+        },
+      });
       log.warn(
         "AUTH",
-        `${connName} DELETED (grok-cli 403 permission-denied / chat endpoint denied)`
+        `${connName} DISABLED (grok-cli 403 permission-denied / chat endpoint denied)`
       );
       console.error(
-        `❌ grok-cli [403]: chat permission-denied — deleted connection ${connName}`
+        `❌ grok-cli [403]: chat permission-denied — disabled ${connName}`
       );
     } catch (e) {
-      log.warn("AUTH", `${connName} delete failed: ${e.message}`);
-      // Fall through to lock if delete fails
-      await updateProviderConnection(connectionId, {
-        isActive: false,
-        testStatus: "permission_denied",
-        lastError: typeof errorText === "string" ? errorText.slice(0, 200) : "permission-denied",
-        errorCode: 403,
-        lastErrorAt: new Date().toISOString(),
-      });
+      log.warn("AUTH", `${connName} disable failed: ${e.message}`);
     }
-    return { shouldFallback: true, cooldownMs: 0, deleted: true };
+    return { shouldFallback: true, cooldownMs: 0, disabled: true };
   }
 
-  // grok-cli: free promo / credit exhausted → disable (keep row for audit)
+  // grok-cli: free promo / credit exhausted (402) → disable (keep row for audit)
   if (isGrokCliFreeOrCreditExhausted(provider, status, errorText)) {
     const reason =
       typeof errorText === "string" ? errorText.slice(0, 200) : "quota exhausted";

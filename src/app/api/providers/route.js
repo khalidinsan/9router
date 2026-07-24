@@ -150,6 +150,18 @@ export async function POST(request) {
         displayName ||
         "Grok CLI";
 
+      // Farm may import 402/403 tokens as isActive=false (off) — keep row for re-probe
+      const isActive =
+        body.isActive === false || body.isActive === "false" || body.isActive === 0
+          ? false
+          : true;
+      const testStatus =
+        typeof body.testStatus === "string" && body.testStatus.trim()
+          ? body.testStatus.trim()
+          : isActive
+            ? "active"
+            : "inactive";
+
       const connection = await createProviderConnection({
         provider: "grok-cli",
         authType: "oauth",
@@ -161,7 +173,12 @@ export async function POST(request) {
         expiresAt,
         expiresIn: typeof body.expiresIn === "number" ? body.expiresIn : undefined,
         scope,
-        testStatus: "active",
+        isActive,
+        testStatus,
+        lastError:
+          typeof body.lastError === "string" && body.lastError.trim()
+            ? body.lastError.trim().slice(0, 500)
+            : undefined,
         providerSpecificData: {
           authMethod: "device_code",
           idToken: idToken || null,

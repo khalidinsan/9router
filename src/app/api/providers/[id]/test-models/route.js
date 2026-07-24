@@ -81,7 +81,14 @@ export async function POST(request, { params }) {
     }
 
     const concurrency = Math.max(1, Math.min(5, Number(body.concurrency) || 3));
-    const pin = { connectionId: id };
+    // Disabled / hard-fail rows (quota 402, chat 403) still need pin for re-test
+    const allowInactive =
+      connection.isActive === false ||
+      ["quota_exhausted", "permission_denied", "unavailable"].includes(
+        String(connection.testStatus || "")
+      ) ||
+      body.allowInactive === true;
+    const pin = { connectionId: id, allowInactive };
 
     // Warm first model (token refresh) then batch the rest
     const [first, ...rest] = models;
@@ -109,7 +116,7 @@ export async function POST(request, { params }) {
             `${alias}/${model.id}`,
             model.kind || "llm",
             baseUrl,
-            pin
+            pin // same pin + allowInactive as warm request
           );
           return {
             modelId: model.id,

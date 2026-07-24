@@ -78,6 +78,16 @@ export default function ProviderDetailPage() {
   const [oneByOneResults, setOneByOneResults] = useState({});
   const [oneByOneSummary, setOneByOneSummary] = useState(null);
   const stopOneByOneRef = useRef(false);
+  // grok-cli only: re-probe auto-disabled (402/403/quota) → auto-enable on success
+  const [reprobeDisabledRunning, setReprobeDisabledRunning] = useState(false);
+  const [reprobeDisabledStopping, setReprobeDisabledStopping] = useState(false);
+  const [reprobeDisabledSummary, setReprobeDisabledSummary] = useState(null);
+  const [reprobeDisabledCandidates, setReprobeDisabledCandidates] = useState(null);
+  const [showReprobeModal, setShowReprobeModal] = useState(false);
+  const [reprobeModelId, setReprobeModelId] = useState("");
+  const [reprobeResults, setReprobeResults] = useState({}); // id → { state, error }
+  const [reprobeCurrentId, setReprobeCurrentId] = useState(null);
+  const stopReprobeRef = useRef(false);
   const [importingQoderModels, setImportingQoderModels] = useState(false);
   // Per-account model test: open panel + results keyed by connectionId
   const [accountModelTestOpenId, setAccountModelTestOpenId] = useState(null);
@@ -973,6 +983,227 @@ export default function ProviderDetailPage() {
     return out;
   })();
 
+  const isGrokCliProvider = providerId === "grok-cli" || providerId === "gcli";
+
+  const fetchReprobeCandidates = useCallback(async () => {
+    if (!isGrokCliProvider) return null;
+    try {
+      const res = await fetch("/api/providers/grok-cli/reprobe-disabled");
+      if (!res.ok) return null;
+      const data = await res.json();
+      setReprobeDisabledCandidates(
+        typeof data.candidates === "number" ? data.candidates : null
+      );
+      return data;
+    } catch {
+      return null;
+    }
+  }, [isGrokCliProvider]);
+
+  useEffect(() => {
+    if (isGrokCliProvider) fetchReprobeCandidates();
+  }, [isGrokCliProvider, fetchReprobeCandidates, connections.length]);
+
+  // Default probe model when catalog loads
+  useEffect(() => {
+    if (!isGrokCliProvider || reprobeModelId) return;
+    const first =
+      accountTestModels?.[0]?.id ||
+      models?.[0]?.id ||
+      "grok-build";
+    setReprobeModelId(first);
+  }, [isGrokCliProvider, accountTestModels, models, reprobeModelId]);
+
+  const openReprobeModal = async () => {
+    if (!isGrokCliProvider || reprobeDisabledRunning || oneByOneRunning) return;
+    setReprobeDisabledSummary(null);
+    const data = await fetchReprobeCandidates();
+    if (data && data.candidates === 0) {
+      setReprobeDisabledSummary({
+        error: "No auto-disabled accounts to re-probe (quota/403 only — manual off is skipped).",
+      });
+      return;
+    }
+    if (!reprobeModelId) {
+      const first = accountTestModels?.[0]?.id || models?.[0]?.id || "grok-build";
+      setReprobeModelId(first);
+    }
+    setShowReprobeModal(true);
+  };
+
+  const handleStopReprobeDisabled = () => {
+    if (!reprobeDisabledRunning) return;
+    stopReprobeRef.current = true;
+    setReprobeDisabledStopping(true);
+  };
+
+  /**
+   * One-by-one re-probe with chosen model — same UX as Test Connection One-by-One.
+   */
+  const handleStartReprobeDisabled = async () => {
+    if (!isGrokCliProvider || reprobeDisabledRunning) return;
+    const modelId = String(reprobeModelId || "").trim();
+    if (!modelId) {
+      setReprobeDisabledSummary({ error: "Pick a model first" });
+      return;
+    }
+
+    setShowReprobeModal(false);
+    setReprobeDisabledRunning(true);
+    setReprobeDisabledStopping(false);
+    stopReprobeRef.current = false;
+    setReprobeDisabledSummary(null);
+    setReprobeCurrentId(null);
+
+    let candidates = [];
+    try {
+      const listRes = await fetch("/api/providers/grok-cli/reprobe-disabled");
+      const listData = await listRes.json().catch(() => ({}));
+      candidates = Array.isArray(listData.sample) ? listData.sample : [];
+      setReprobeDisabledCandidates(
+        typeof listData.candidates === "number" ? listData.candidates : candidates.length
+      );
+    } catch {
+      setReprobeDisabledSummary({ error: "Failed to load candidates" });
+      setReprobeDisabledRunning(false);
+      return;
+    }
+
+    if (candidates.length === 0) {
+      setReprobeDisabledSummary({
+        error: "No candidates",
+        probed: 0,
+        enabled: 0,
+        modelId,
+      });
+      setReprobeDisabledRunning(false);
+      return;
+    }
+
+    const queued = Object.fromEntries(
+      candidates.map((c) => [c.id, { state: "queued", error: null }])
+    );
+    setReprobeResults(queued);
+
+    let passed = 0;
+    let failed = 0;
+    let completed = 0;
+
+    try {
+      for (let i = 0; i < candidates.length; i += 1) {
+        if (stopReprobeRef.current) {
+          setReprobeDisabledSummary({
+            total: candidates.length,
+            completed,
+            enabled: passed,
+            failed,
+            stopped: true,
+            modelId,
+            probed: completed,
+          });
+          break;
+        }
+
+        const cand = candidates[i];
+        setReprobeCurrentId(cand.id);
+        const label = cand.email || cand.name || cand.id;
+        setReprobeResults((prev) => ({
+          ...prev,
+          [cand.id]: { state: "testing", error: null, label },
+        }));
+
+        try {
+          const res = await fetch("/api/providers/grok-cli/reprobe-disabled", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              connectionId: cand.id,
+              modelId,
+              force: true,
+            }),
+          });
+          const data = await res.json().catch(() => ({}));
+          const ok = res.ok && data.enabled === true;
+
+          if (ok) {
+            passed += 1;
+            setReprobeResults((prev) => ({
+              ...prev,
+              [cand.id]: { state: "success", error: null, label },
+            }));
+            // Reflect enable immediately in list
+            setConnections((prev) =>
+              prev.map((c) =>
+                c.id === cand.id
+                  ? {
+                      ...c,
+                      isActive: true,
+                      testStatus: "active",
+                      lastError: null,
+                    }
+                  : c
+              )
+            );
+          } else {
+            failed += 1;
+            setReprobeResults((prev) => ({
+              ...prev,
+              [cand.id]: {
+                state: "failed",
+                error: data.error || data.message || `HTTP ${res.status}`,
+                label,
+              },
+            }));
+          }
+        } catch (error) {
+          failed += 1;
+          setReprobeResults((prev) => ({
+            ...prev,
+            [cand.id]: {
+              state: "failed",
+              error: error.message || "Network error",
+              label,
+            },
+          }));
+        }
+
+        completed = i + 1;
+        setReprobeDisabledSummary({
+          total: candidates.length,
+          completed,
+          enabled: passed,
+          failed,
+          stopped: false,
+          modelId,
+          probed: completed,
+        });
+
+        if (i < candidates.length - 1) {
+          await sleep(ONE_BY_ONE_DELAY_MS);
+        }
+      }
+
+      if (!stopReprobeRef.current) {
+        setReprobeDisabledSummary({
+          total: candidates.length,
+          completed,
+          enabled: passed,
+          failed,
+          stopped: false,
+          modelId,
+          probed: completed,
+        });
+      }
+      await fetchConnections();
+      await fetchReprobeCandidates();
+    } finally {
+      setReprobeCurrentId(null);
+      setReprobeDisabledRunning(false);
+      setReprobeDisabledStopping(false);
+      stopReprobeRef.current = false;
+    }
+  };
+
   const refreshConnectionsQuiet = useCallback(async () => {
     try {
       const res = await fetch("/api/providers", { cache: "no-store" });
@@ -1012,7 +1243,7 @@ export default function ProviderDetailPage() {
           },
         },
       }));
-      // 403/402 may have deleted/disabled the connection
+      // 403/402 may have disabled the connection (auto-delete is off for grok-cli)
       if (data.status === 403 || data.status === 402 || /deleted|disabled|permission/i.test(data.error || "")) {
         await refreshConnectionsQuiet();
       }
@@ -1148,7 +1379,11 @@ export default function ProviderDetailPage() {
                   setShowEditModal(true);
                 }}
                 onDelete={() => handleDelete(conn.id)}
-                oneByOneStatus={oneByOneResults[conn.id] || null}
+                oneByOneStatus={
+                  reprobeResults[conn.id] ||
+                  oneByOneResults[conn.id] ||
+                  null
+                }
               />
             </div>
           </div>
@@ -1157,6 +1392,66 @@ export default function ProviderDetailPage() {
   );
 
   const activePools = proxyPools.filter((p) => p.isActive === true);
+
+  const reprobeModelModal = isGrokCliProvider ? (
+    <Modal
+      isOpen={showReprobeModal}
+      onClose={() => !reprobeDisabledRunning && setShowReprobeModal(false)}
+      title="Reprobe disabled accounts"
+    >
+      <div className="flex flex-col gap-4">
+        <p className="text-sm text-text-muted">
+          Auto-disabled accounts (402 quota / 403 chat) will be tested{" "}
+          <strong>one-by-one</strong> with the model you pick. Success → turn
+          back on. Manual disable is skipped.
+        </p>
+        {reprobeDisabledCandidates != null && (
+          <p className="text-xs text-text-muted">
+            Candidates: <strong>{reprobeDisabledCandidates}</strong>
+          </p>
+        )}
+        <div className="flex flex-col gap-1.5">
+          <label className="text-xs font-medium text-text-muted">Probe model</label>
+          <select
+            value={reprobeModelId}
+            onChange={(e) => setReprobeModelId(e.target.value)}
+            className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm focus:border-primary focus:outline-none"
+          >
+            {(accountTestModels.length > 0
+              ? accountTestModels
+              : [{ id: "grok-build", name: "Grok Build" }]
+            ).map((m) => (
+              <option key={m.id} value={m.id}>
+                {m.name || m.id}
+                {m.name && m.name !== m.id ? ` (${m.id})` : ""}
+              </option>
+            ))}
+          </select>
+          <p className="text-[11px] text-text-muted">
+            Must pick a model — no default blind fire.
+          </p>
+        </div>
+        <div className="flex gap-2">
+          <Button
+            fullWidth
+            icon="restart_alt"
+            onClick={handleStartReprobeDisabled}
+            disabled={!reprobeModelId || reprobeDisabledRunning}
+          >
+            Start re-probe
+          </Button>
+          <Button
+            fullWidth
+            variant="ghost"
+            onClick={() => setShowReprobeModal(false)}
+            disabled={reprobeDisabledRunning}
+          >
+            Cancel
+          </Button>
+        </div>
+      </div>
+    </Modal>
+  ) : null;
 
   const bulkActionModal = (
     <Modal
@@ -1608,7 +1903,7 @@ export default function ProviderDetailPage() {
                     variant="secondary"
                     icon="sync"
                     onClick={handleRunOneByOneTest}
-                    disabled={oneByOneRunning}
+                    disabled={oneByOneRunning || reprobeDisabledRunning}
                   >
                     {oneByOneRunning ? "Testing Connection One-by-One..." : "Test Connection One-by-One"}
                   </Button>
@@ -1622,6 +1917,36 @@ export default function ProviderDetailPage() {
                     >
                       {oneByOneStopping ? "Stopping..." : "Stop"}
                     </Button>
+                  )}
+                  {/* grok-cli: re-test auto-disabled (402/403/quota) → pick model → one-by-one progress */}
+                  {isGrokCliProvider && (
+                    <>
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        icon={reprobeDisabledRunning ? "progress_activity" : "restart_alt"}
+                        onClick={openReprobeModal}
+                        disabled={reprobeDisabledRunning || oneByOneRunning}
+                        title="Pick a model, then re-test auto-disabled accounts one-by-one. Success → auto enable."
+                      >
+                        {reprobeDisabledRunning
+                          ? "Reprobing disabled…"
+                          : reprobeDisabledCandidates != null
+                            ? `Reprobe disabled (${reprobeDisabledCandidates})`
+                            : "Reprobe disabled"}
+                      </Button>
+                      {reprobeDisabledRunning && (
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          icon="stop"
+                          onClick={handleStopReprobeDisabled}
+                          disabled={reprobeDisabledStopping}
+                        >
+                          {reprobeDisabledStopping ? "Stopping…" : "Stop"}
+                        </Button>
+                      )}
+                    </>
                   )}
                 </>
               )}
@@ -1713,6 +2038,44 @@ export default function ProviderDetailPage() {
                       <span>Running: {connections.find((conn) => conn.id === oneByOneCurrentConnectionId)?.name || oneByOneCurrentConnectionId}</span>
                     )}
                   </div>
+                </div>
+              )}
+              {/* grok-cli re-probe progress (same shape as one-by-one) */}
+              {isGrokCliProvider && reprobeDisabledSummary && !reprobeDisabledSummary.error && (
+                <div className="mb-4 rounded-lg border border-black/10 bg-black/[0.02] px-3 py-2 text-xs text-text-muted dark:border-white/10 dark:bg-white/[0.03]">
+                  <div className="mb-1 font-medium text-text-main">
+                    Reprobe disabled
+                    {reprobeDisabledSummary.modelId
+                      ? ` · model ${reprobeDisabledSummary.modelId}`
+                      : ""}
+                  </div>
+                  <div className="flex flex-wrap items-center gap-3">
+                    <span>Total: {reprobeDisabledSummary.total ?? reprobeDisabledSummary.probed ?? 0}</span>
+                    <span>Completed: {reprobeDisabledSummary.completed ?? reprobeDisabledSummary.probed ?? 0}</span>
+                    <span className="text-emerald-600 dark:text-emerald-400">
+                      Re-enabled: {reprobeDisabledSummary.enabled ?? 0}
+                    </span>
+                    <span className="text-red-500">
+                      Still down: {reprobeDisabledSummary.failed ?? 0}
+                    </span>
+                    {reprobeDisabledSummary.stopped && (
+                      <span className="text-amber-600 dark:text-amber-400">Stopped</span>
+                    )}
+                    {reprobeDisabledRunning && reprobeCurrentId && (
+                      <span>
+                        Running:{" "}
+                        {reprobeResults[reprobeCurrentId]?.label ||
+                          connections.find((c) => c.id === reprobeCurrentId)?.email ||
+                          connections.find((c) => c.id === reprobeCurrentId)?.name ||
+                          reprobeCurrentId.slice(0, 8)}
+                      </span>
+                    )}
+                  </div>
+                </div>
+              )}
+              {isGrokCliProvider && reprobeDisabledSummary?.error && (
+                <div className="mb-4 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-600 dark:text-red-400">
+                  {reprobeDisabledSummary.error}
                 </div>
               )}
               {connections.length > 0 && (
@@ -1841,6 +2204,7 @@ export default function ProviderDetailPage() {
       </Card>
 
       {bulkActionModal}
+      {reprobeModelModal}
 
       {/* Modals */}
       {providerId === "kiro" ? (

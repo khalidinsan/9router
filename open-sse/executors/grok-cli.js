@@ -413,7 +413,7 @@ export class GrokCliExecutor extends BaseExecutor {
         /* fall through */
       }
     }
-    // 403 permission-denied on chat → markAccountUnavailable auto-deletes connection
+    // 403 permission-denied on chat → markAccountUnavailable disables connection (no delete)
     if (response.status === 403 && bodyText) {
       try {
         const json = JSON.parse(bodyText);

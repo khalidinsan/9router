@@ -41,7 +41,7 @@ function isGrokCliProvider(provider) {
 }
 
 /**
- * Grok CLI: xAI permanently denies chat (bot-flag / free gate).
+ * Grok CLI: xAI denies chat (bot-flag / free gate / permission-denied).
  * @param {string} provider
  * @param {number} status
  * @param {string|object} errorText
@@ -82,6 +82,7 @@ export function isGrokCliFreeOrCreditExhausted(provider, status, errorText) {
 
 /**
  * Payload to deactivate a grok-cli connection that hit free/credit exhaustion.
+ * isActive=false only — never auto-delete the connection row.
  */
 export function buildGrokCliQuotaExhaustedUpdate(now = new Date()) {
   return {
@@ -92,6 +93,36 @@ export function buildGrokCliQuotaExhaustedUpdate(now = new Date()) {
     lastError: "Grok free/credit quota exhausted",
     lastErrorAt: now.toISOString(),
     quotaExhaustedAt: now.toISOString(),
+  };
+}
+
+/**
+ * Payload to deactivate a grok-cli connection on 403 chat permission-denied.
+ * isActive=false only — never auto-delete (row stays for reauth / audit).
+ */
+export function buildGrokCliPermissionDeniedUpdate(now = new Date()) {
+  return {
+    isActive: false,
+    testStatus: "permission_denied",
+    lastErrorType: "permission_denied",
+    errorCode: 403,
+    lastError: "Grok chat permission-denied",
+    lastErrorAt: now.toISOString(),
+  };
+}
+
+/**
+ * Payload after a successful re-probe of a disabled grok-cli account
+ * (free quota reset / 402–403 recovered).
+ */
+export function buildGrokCliReprobeEnabledUpdate(now = new Date()) {
+  return {
+    isActive: true,
+    testStatus: "active",
+    lastErrorType: null,
+    errorCode: null,
+    lastError: null,
+    lastErrorAt: null,
   };
 }
 

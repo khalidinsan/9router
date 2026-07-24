@@ -28,12 +28,16 @@ const g = (global.__grokCliMaintenance ??= {
   interval: null,
   running: false,
   lastTickAt: 0,
+  lastReprobeAt: 0,
 });
 
 const TICK_MS = 5 * 60 * 1000; // 5 minutes
 const BILLING_REFRESH_MS = 30 * 60 * 1000; // re-probe billing at most every 30m per account
 const MAX_REFRESH_PER_TICK = 8;
 const MAX_BILLING_PER_TICK = 5;
+/** How often to re-test auto-disabled accounts (402/403) for free-quota recovery */
+const REPROBE_DISABLED_EVERY_MS = 60 * 60 * 1000; // 1 hour
+const MAX_REPROBE_PER_TICK = 5;
 
 function decodeJwtPayload(token) {
   try {
@@ -225,6 +229,8 @@ export async function runGrokCliMaintenanceTick() {
       if (r.ok) billed += 1;
     }
 
+    // Background auto re-probe is OFF — use dashboard "Reprobe disabled" (pick model + one-by-one).
+    // Uncomment later if needed; concurrent auto-probe + live traffic caused pin/fallback chaos.
     if (refreshed || billed) {
       console.log(
         `[GrokMaint] tick: refreshed=${refreshed} billingSnapshots=${billed} pool=${stillActive.length}`

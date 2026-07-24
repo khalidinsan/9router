@@ -37,7 +37,7 @@ function createSilentWavFile() {
   return new Blob([buffer], { type: "audio/wav" });
 }
 
-async function getInternalHeaders(connectionId = null) {
+async function getInternalHeaders(connectionId = null, { allowInactive = false } = {}) {
   let apiKey = null;
   try {
     const keys = await getApiKeys();
@@ -48,6 +48,8 @@ async function getInternalHeaders(connectionId = null) {
   if (apiKey) headers["Authorization"] = `Bearer ${apiKey}`;
   headers["x-9r-cli-token"] = await getConsistentMachineId(CLI_TOKEN_SALT);
   if (connectionId) headers["x-connection-id"] = String(connectionId);
+  // Re-probe disabled grok-cli (402/403) accounts without enabling them first
+  if (allowInactive) headers["x-9r-allow-inactive"] = "1";
   return headers;
 }
 
@@ -56,7 +58,7 @@ async function getInternalHeaders(connectionId = null) {
  * @param {string} model - e.g. "gcli/grok-4.5" or "grok-cli/grok-4.5"
  * @param {string} kind - llm | embedding | image | stt
  * @param {string} [baseUrl]
- * @param {{ connectionId?: string }} [options] - pin probe to a specific account
+ * @param {{ connectionId?: string, allowInactive?: boolean }} [options] - pin probe to a specific account
  */
 export async function pingModelByKind(
   model,
@@ -65,7 +67,8 @@ export async function pingModelByKind(
   options = {},
 ) {
   const connectionId = options?.connectionId || null;
-  const headers = await getInternalHeaders(connectionId);
+  const allowInactive = options?.allowInactive === true;
+  const headers = await getInternalHeaders(connectionId, { allowInactive });
   const start = Date.now();
   const pin = connectionId ? { connectionId } : {};
 

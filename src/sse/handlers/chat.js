@@ -191,6 +191,10 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
   const userAgent = request?.headers?.get("user-agent") || "";
   // Pin to a specific connection (per-account model test / media-style pin)
   const preferredConnectionId = request.headers.get("x-connection-id") || null;
+  // Allow probing disabled accounts (re-probe quota/403 — not public clients)
+  const allowInactivePin =
+    request.headers.get("x-9r-allow-inactive") === "1" ||
+    request.headers.get("x-9r-allow-inactive") === "true";
 
   // Try with available accounts (fallback on errors)
   const excludeConnectionIds = new Set();
@@ -200,6 +204,7 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
   while (true) {
     const credentials = await getProviderCredentials(provider, excludeConnectionIds, model, {
       preferredConnectionId,
+      allowInactivePin: allowInactivePin && !!preferredConnectionId,
     });
 
     // Explicit pin failed (connection missing / disabled / locked)
@@ -286,6 +291,29 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
     });
 
     if (result.success) return result.response;
+
+    // ── Pinned request (per-account model test / re-probe disabled) ──
+    // Never rotate to another account. One pin = one attempt = one result.
+    if (preferredConnectionId) {
+      // Re-probe of already-disabled accounts: do NOT mark unavailable again
+      // (that spams DISABLE logs and can race-flip a just-enabled row).
+      if (!allowInactivePin) {
+        await markAccountUnavailable(
+          credentials.connectionId,
+          result.status,
+          result.error,
+          provider,
+          model,
+          result.resetsAtMs
+        );
+      } else {
+        log.warn(
+          "AUTH",
+          `re-probe fail ${credentials.connectionName || preferredConnectionId.slice(0, 8)} [${result.status}] (no fallback, no re-disable)`
+        );
+      }
+      return result.response;
+    }
 
     // Mark account unavailable (auto-calculates cooldown with exponential backoff, or precise resetsAtMs)
     const { shouldFallback } = await markAccountUnavailable(credentials.connectionId, result.status, result.error, provider, model, result.resetsAtMs);
