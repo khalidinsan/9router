@@ -12,6 +12,7 @@ import blackForestLabs from "./blackForestLabs.js";
 import runwayml from "./runwayml.js";
 import cloudflareAi from "./cloudflareAi.js";
 import antigravity from "./antigravity.js";
+import grokCli from "./grokCli.js";
 
 const ADAPTERS = {
   openai: createOpenAIAdapter("openai"),
@@ -32,6 +33,11 @@ const ADAPTERS = {
   "black-forest-labs": blackForestLabs,
   runwayml,
   "cloudflare-ai": cloudflareAi,
+  // Free Grok CLI OAuth path (cli-chat-proxy + tools.image_generation)
+  "grok-cli": grokCli,
+  gcli: grokCli,
+  "grok-build": grokCli,
+  gb: grokCli,
 };
 
 export function getImageAdapter(provider) {

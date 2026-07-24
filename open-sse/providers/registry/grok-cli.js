@@ -103,7 +103,32 @@ export default {
     { id: "grok-4.20-multi-agent", name: "Grok 4.20 Multi-Agent" },
     { id: "grok-3", name: "Grok 3" },
     { id: "grok-code-fast-1", name: "Grok Code Fast" },
+
+    // ── Free image via Responses + tools.image_generation (NOT api.x.ai/images) ──
+    // Official POST api.x.ai/v1/images/generations returns 403 with CLI free tokens.
+    {
+      id: "grok-4.5-image",
+      name: "Grok 4.5 Image (CLI free)",
+      kind: "image",
+      upstreamModelId: "grok-4.5",
+      params: ["n", "size", "quality", "response_format"],
+    },
+    {
+      id: "grok-image",
+      name: "Grok Image (CLI free)",
+      kind: "image",
+      upstreamModelId: "grok-4.5",
+      params: ["n", "size", "quality", "response_format"],
+    },
   ],
+  // llm + image (image uses cli-chat-proxy Responses tool, not api.x.ai images API)
+  serviceKinds: ["llm", "image"],
+  imageConfig: {
+    // Adapter overrides URL; documented for media dashboard / docs
+    baseUrl: `${GROK_CLI_BASE_URL}/responses`,
+    bodyFields: ["model", "prompt", "n", "size", "quality", "response_format"],
+    note: "Free path: tools.image_generation on /v1/responses (CLI OAuth). api.x.ai/images → 403 on free tokens.",
+  },
   features: {
     usage: true,
   },
