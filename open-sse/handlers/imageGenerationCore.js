@@ -85,9 +85,17 @@ export async function handleImageGenerationCore({
         }),
       };
     } catch (error) {
-      const errMsg = formatProviderError(error, provider, model, HTTP_STATUS.BAD_GATEWAY);
-      log?.debug?.("IMAGE", `Executor error: ${errMsg}`);
-      return createErrorResult(HTTP_STATUS.BAD_GATEWAY, errMsg);
+      // Preserve adapter-mapped HTTP status (e.g. grokCli GrokCliImageError.status)
+      const mapped =
+        Number(error?.status) ||
+        Number(error?.statusCode) ||
+        (Number.isFinite(Number(error?.code)) ? Number(error.code) : 0) ||
+        0;
+      const status =
+        mapped >= 400 && mapped < 600 ? mapped : HTTP_STATUS.BAD_GATEWAY;
+      const errMsg = formatProviderError(error, provider, model, status);
+      log?.debug?.("IMAGE", `Executor error status=${status}: ${errMsg}`);
+      return createErrorResult(status, errMsg);
     }
   }
 

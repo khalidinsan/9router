@@ -6,11 +6,22 @@ import { UPDATER_CONFIG } from "@/shared/constants/config";
 const STORAGE_KEY = "9router.cliToolEndpointPresets";
 const CUSTOM_VALUE = "__custom__";
 const SAVE_VALUE = "__save__";
+const FALLBACK_LOCAL_ORIGIN = `http://127.0.0.1:${UPDATER_CONFIG.appPort}`;
 
 const ensureV1 = (url) => {
   const trimmed = (url || "").replace(/\/+$/, "");
   if (!trimmed) return "";
   return /\/v1$/.test(trimmed) ? trimmed : `${trimmed}/v1`;
+};
+
+/** Prefer 127.0.0.1 for CLI tools; keep the real host:port the dashboard is on. */
+const normalizeLocalOrigin = (origin) =>
+  (origin || "").replace("://localhost", "://127.0.0.1");
+
+/** Match dashboard/endpoint "current" — use browser origin, not hardcoded appPort. */
+const resolveLocalOrigin = () => {
+  if (typeof window === "undefined") return FALLBACK_LOCAL_ORIGIN;
+  return normalizeLocalOrigin(window.location.origin) || FALLBACK_LOCAL_ORIGIN;
 };
 
 const readSavedPresets = () => {
@@ -29,11 +40,11 @@ const writeSavedPresets = (presets) => {
   window.localStorage.setItem(STORAGE_KEY, JSON.stringify(presets));
 };
 
-const buildOptions = ({ requiresExternalUrl, tunnelEnabled, tunnelPublicUrl, tailscaleEnabled, tailscaleUrl, cloudEnabled, cloudUrl, savedPresets, withV1 }) => {
+const buildOptions = ({ requiresExternalUrl, localOrigin, tunnelEnabled, tunnelPublicUrl, tailscaleEnabled, tailscaleUrl, cloudEnabled, cloudUrl, savedPresets, withV1 }) => {
   const opts = [];
   const wrap = (url) => (withV1 ? ensureV1(url) : (url || "").replace(/\/+$/, ""));
-  if (!requiresExternalUrl) {
-    const localUrl = wrap(`http://127.0.0.1:${UPDATER_CONFIG.appPort}`);
+  if (!requiresExternalUrl && localOrigin) {
+    const localUrl = wrap(localOrigin);
     opts.push({ value: "local", label: localUrl, url: localUrl });
   }
   if (tunnelEnabled && tunnelPublicUrl) {
@@ -68,22 +79,39 @@ export default function BaseUrlSelect({
   withV1 = true,
 }) {
   const [savedPresets, setSavedPresets] = useState([]);
+  // null until client mount so we don't flash the wrong hardcoded port (e.g. 20128 vs 20127)
+  const [localOrigin, setLocalOrigin] = useState(null);
   const [mode, setMode] = useState("");
   const [customInput, setCustomInput] = useState("");
   const initializedRef = useRef(false);
 
   useEffect(() => {
     setSavedPresets(readSavedPresets());
+    setLocalOrigin(resolveLocalOrigin());
   }, []);
 
   const options = useMemo(
-    () => buildOptions({ requiresExternalUrl, tunnelEnabled, tunnelPublicUrl, tailscaleEnabled, tailscaleUrl, cloudEnabled, cloudUrl, savedPresets, withV1 }),
-    [requiresExternalUrl, tunnelEnabled, tunnelPublicUrl, tailscaleEnabled, tailscaleUrl, cloudEnabled, cloudUrl, savedPresets, withV1]
+    () => buildOptions({
+      requiresExternalUrl,
+      // Only include local once client origin is known — avoids wrong hardcoded port in the UI
+      localOrigin: requiresExternalUrl ? null : localOrigin,
+      tunnelEnabled,
+      tunnelPublicUrl,
+      tailscaleEnabled,
+      tailscaleUrl,
+      cloudEnabled,
+      cloudUrl,
+      savedPresets,
+      withV1,
+    }),
+    [requiresExternalUrl, localOrigin, tunnelEnabled, tunnelPublicUrl, tailscaleEnabled, tailscaleUrl, cloudEnabled, cloudUrl, savedPresets, withV1]
   );
 
-  // Always default to first option (127.0.0.1) on mount, ignore persisted value
+  // Default to first option once we know the real local origin (matches dashboard/endpoint current)
   useEffect(() => {
     if (initializedRef.current) return;
+    // Wait for client origin so we don't lock in the SSR fallback port
+    if (!requiresExternalUrl && localOrigin == null) return;
     if (options.length === 0) return;
     initializedRef.current = true;
     const first = options.find((o) => o.value !== CUSTOM_VALUE);
@@ -93,7 +121,7 @@ export default function BaseUrlSelect({
     } else {
       setMode(CUSTOM_VALUE);
     }
-  }, [options, onChange]);
+  }, [options, onChange, localOrigin, requiresExternalUrl]);
 
   const handleSelect = (e) => {
     const next = e.target.value;

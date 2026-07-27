@@ -5,6 +5,7 @@ import {
   updateProviderConnection,
   deleteProviderConnection,
 } from "@/models";
+import { buildGrokCliManualEnableUpdate } from "open-sse/services/grokCliSafety.js";
 
 function normalizeProxyConfig(body = {}) {
   const hasAnyProxyField =
@@ -116,12 +117,29 @@ export async function PUT(request, { params }) {
       return NextResponse.json({ error: proxyPoolResult.error }, { status: 400 });
     }
 
+    if (
+      existing.provider === "grok-cli" &&
+      isActive === true &&
+      (existing.providerSpecificData?.reauthRequired === true || existing.testStatus === "reauth_required")
+    ) {
+      return NextResponse.json(
+        { error: "This Grok CLI connection requires re-authorization before it can be enabled" },
+        { status: 409 }
+      );
+    }
+
     const updateData = {};
     if (name !== undefined) updateData.name = name;
     if (priority !== undefined) updateData.priority = priority;
     if (globalPriority !== undefined) updateData.globalPriority = globalPriority;
     if (defaultModel !== undefined) updateData.defaultModel = defaultModel;
-    if (isActive !== undefined) updateData.isActive = isActive;
+    if (isActive !== undefined) {
+      if (existing.provider === "grok-cli" && isActive === true) {
+        Object.assign(updateData, buildGrokCliManualEnableUpdate(existing));
+      } else {
+        updateData.isActive = isActive;
+      }
+    }
     if (apiKey && existing.authType === "apikey") updateData.apiKey = apiKey;
     if (testStatus !== undefined) updateData.testStatus = testStatus;
     if (lastError !== undefined) updateData.lastError = lastError;
@@ -153,6 +171,15 @@ export async function PUT(request, { params }) {
           updateData.providerSpecificData.proxyPoolId = proxyPoolResult.proxyPoolId;
         }
       }
+    }
+
+    // Canonical activation wins over stale caller-supplied status/error fields.
+    if (existing.provider === "grok-cli" && isActive === true) {
+      const enableUpdate = buildGrokCliManualEnableUpdate({
+        ...existing,
+        providerSpecificData: updateData.providerSpecificData || existing.providerSpecificData,
+      });
+      Object.assign(updateData, enableUpdate);
     }
 
     const updated = await updateProviderConnection(id, updateData);

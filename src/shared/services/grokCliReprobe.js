@@ -2,7 +2,7 @@
  * Re-probe disabled grok-cli accounts (402 quota / 403 permission-denied).
  *
  * Free Grok Build quota rolls ~24h; 402/403 often recover later.
- * Strategy: chat-ping a probe model with x-9r-allow-inactive pin.
+ * Strategy: isolated direct Responses API probe for exactly one connection.
  * On success → isActive=true + clear hard-fail flags.
  *
  * Manual disable (isActive=false + testStatus still active) is NEVER re-probed.
@@ -15,12 +15,14 @@ import {
 import { buildGrokCliReprobeEnabledUpdate } from "open-sse/services/accountFallback.js";
 import { GROK_CLI_MODEL } from "open-sse/config/grokCli.js";
 import { getDefaultModel, PROVIDER_ID_TO_ALIAS } from "open-sse/config/providerModels.js";
-import { UPDATER_CONFIG } from "@/shared/constants/config";
-import { pingModelByKind } from "@/app/api/models/test/ping";
 import {
-  shouldRefreshCredentials,
-  refreshProviderCredentials,
-} from "open-sse/services/oauthCredentialManager.js";
+  GROK_CLI_PROBE_REFRESHED_CREDENTIALS,
+  probeGrokCliConnection,
+} from "@/shared/services/grokCliProbe";
+import {
+  buildGrokCliConfirmedQuotaUpdate,
+  buildGrokCliManualEnableUpdate,
+} from "open-sse/services/grokCliSafety.js";
 
 /** Statuses that were auto-disabled and may recover */
 export const GROK_CLI_REPROBE_STATUSES = new Set([
@@ -82,51 +84,26 @@ function tooSoon(conn, now = Date.now()) {
  */
 export async function reprobeOneGrokCliConnection(conn, options = {}) {
   const modelId = options.modelId || probeModelId();
-  const alias = PROVIDER_ID_TO_ALIAS["grok-cli"] || "gcli";
-  const fullModel = `${alias}/${modelId}`;
-  const baseUrl =
-    options.baseUrl ||
-    `http://127.0.0.1:${process.env.PORT || UPDATER_CONFIG.appPort}`;
   const email = conn.email || conn.name || conn.id;
   const psd = conn.providerSpecificData || {};
   const nowIso = new Date().toISOString();
 
-  let working = conn;
-
-  // Best-effort token refresh if near expiry
-  try {
-    if (conn.refreshToken && shouldRefreshCredentials("grok-cli", conn)) {
-      const log = {
-        info: (t, m) => console.log(`[GrokReprobe][${t}] ${m}`),
-        warn: (t, m) => console.warn(`[GrokReprobe][${t}] ${m}`),
-        error: (t, m) => console.error(`[GrokReprobe][${t}] ${m}`),
-      };
-      const refreshed = await refreshProviderCredentials("grok-cli", conn, log);
-      if (refreshed?.accessToken) {
-        working = { ...conn, ...refreshed };
-        await updateProviderConnection(conn.id, {
-          ...refreshed,
-          providerSpecificData: {
-            ...psd,
-            ...(refreshed.providerSpecificData || {}),
-            reauthRequired: false,
-          },
-        });
-      }
-    }
-  } catch (e) {
-    console.warn(`[GrokReprobe] refresh skip ${email}: ${e.message}`);
+  // Direct, isolated upstream probe: exactly this connection, no local account
+  // selector, no fallback, and no account mutation inside the probe itself.
+  const result = await probeGrokCliConnection(conn, modelId);
+  const refreshedCredentials = result[GROK_CLI_PROBE_REFRESHED_CREDENTIALS];
+  if (refreshedCredentials) {
+    await updateProviderConnection(conn.id, {
+      ...refreshedCredentials,
+      providerSpecificData: {
+        ...psd,
+        ...(refreshedCredentials.providerSpecificData || {}),
+        reauthRequired: false,
+      },
+    });
   }
 
-  // Same path as dashboard "Test models on this account" (pinned chat completions).
-  // allowInactive: pin works while isActive=false / quota_exhausted.
-  // Chat handler must NOT fallback or markAccountUnavailable on this path.
-  const result = await pingModelByKind(fullModel, "llm", baseUrl, {
-    connectionId: conn.id,
-    allowInactive: true,
-  });
-
-  // Re-read row (ping path may have updated tokens / lastError via other handlers)
+  // Re-read row after a possible isolated refresh.
   const latest =
     (await getProviderConnections({ provider: "grok-cli" })).find(
       (c) => c.id === conn.id
@@ -134,12 +111,12 @@ export async function reprobeOneGrokCliConnection(conn, options = {}) {
   const freshPsd = latest.providerSpecificData || psd;
 
   if (result.ok) {
+    const enabledUpdate = buildGrokCliManualEnableUpdate(latest);
     await updateProviderConnection(conn.id, {
       ...buildGrokCliReprobeEnabledUpdate(),
+      ...enabledUpdate,
       providerSpecificData: {
-        ...freshPsd,
-        quotaExhausted: false,
-        permissionDenied: false,
+        ...enabledUpdate.providerSpecificData,
         lastReprobeAt: nowIso,
         lastReprobeOkAt: nowIso,
         lastReprobeOk: true,
@@ -162,16 +139,31 @@ export async function reprobeOneGrokCliConnection(conn, options = {}) {
     };
   }
 
-  // Stay disabled — only stamp reprobe metadata (do not flip isActive / spam DISABLE)
+  const quotaUpdate = Number(result.status) === 402
+    ? buildGrokCliConfirmedQuotaUpdate(latest, new Date(), {
+        tokenFingerprint: result.tokenFingerprint,
+        modelId,
+      })
+    : {
+        providerSpecificData: {
+          ...freshPsd,
+          quotaConfirmationCount: 0,
+          quotaConfirmationAt: null,
+          quotaConfirmationTokenFingerprint: null,
+          quotaConfirmationModel: null,
+        },
+      };
   await updateProviderConnection(conn.id, {
-    // keep isActive / testStatus as-is (already disabled)
+    ...quotaUpdate,
     providerSpecificData: {
       ...freshPsd,
+      ...(quotaUpdate.providerSpecificData || {}),
       lastReprobeAt: nowIso,
       lastReprobeOk: false,
       lastReprobeError: String(result.error || "probe failed").slice(0, 240),
       lastReprobeModel: modelId,
       lastReprobeLatencyMs: result.latencyMs ?? null,
+      lastReprobeTokenFingerprint: result.tokenFingerprint || null,
     },
     lastError: String(result.error || "reprobe failed").slice(0, 200),
     lastErrorAt: nowIso,

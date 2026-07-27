@@ -186,6 +186,38 @@ export function getQuotaCooldown(backoffLevel = 0) {
 }
 
 /**
+ * Whether a text rule matches the lowercased error body.
+ * @param {{ text?: string, requireAll?: string[] }} rule
+ * @param {string} lowerError
+ */
+function textRuleMatches(rule, lowerError) {
+  if (!rule.text || !lowerError || !lowerError.includes(rule.text)) return false;
+  // Optional extra substrings that must all be present (narrows broad primary text)
+  if (Array.isArray(rule.requireAll) && rule.requireAll.length > 0) {
+    return rule.requireAll.every((part) => lowerError.includes(String(part).toLowerCase()));
+  }
+  return true;
+}
+
+/**
+ * Resolve a matched ERROR_RULES entry into fallback/cooldown result.
+ * @param {object} rule
+ * @param {number} backoffLevel
+ */
+function resolveRuleResult(rule, backoffLevel = 0) {
+  // Client/request faults (context overflow, bad payload): fail closed to the
+  // client once — rotating accounts would only re-send the same oversized body.
+  if (rule.shouldFallback === false) {
+    return { shouldFallback: false, cooldownMs: 0 };
+  }
+  if (rule.backoff) {
+    const newLevel = Math.min(backoffLevel + 1, BACKOFF_CONFIG.maxLevel);
+    return { shouldFallback: true, cooldownMs: getQuotaCooldown(newLevel), newBackoffLevel: newLevel };
+  }
+  return { shouldFallback: true, cooldownMs: rule.cooldownMs ?? TRANSIENT_COOLDOWN_MS };
+}
+
+/**
  * Check if error should trigger account fallback (switch to next account)
  * Config-driven: matches ERROR_RULES top-to-bottom (text rules first, then status)
  * @param {number} status - HTTP status code
@@ -200,26 +232,40 @@ export function checkFallbackError(status, errorText, backoffLevel = 0) {
 
   for (const rule of ERROR_RULES) {
     // Text-based rule: match substring in error message
-    if (rule.text && lowerError && lowerError.includes(rule.text)) {
-      if (rule.backoff) {
-        const newLevel = Math.min(backoffLevel + 1, BACKOFF_CONFIG.maxLevel);
-        return { shouldFallback: true, cooldownMs: getQuotaCooldown(newLevel), newBackoffLevel: newLevel };
-      }
-      return { shouldFallback: true, cooldownMs: rule.cooldownMs };
+    if (rule.text && textRuleMatches(rule, lowerError)) {
+      return resolveRuleResult(rule, backoffLevel);
     }
 
     // Status-based rule: match HTTP status code
     if (rule.status && rule.status === status) {
-      if (rule.backoff) {
-        const newLevel = Math.min(backoffLevel + 1, BACKOFF_CONFIG.maxLevel);
-        return { shouldFallback: true, cooldownMs: getQuotaCooldown(newLevel), newBackoffLevel: newLevel };
-      }
-      return { shouldFallback: true, cooldownMs: rule.cooldownMs };
+      return resolveRuleResult(rule, backoffLevel);
     }
   }
 
   // Default: transient cooldown for any unmatched error
   return { shouldFallback: true, cooldownMs: TRANSIENT_COOLDOWN_MS };
+}
+
+/**
+ * True when upstream rejected the request for prompt/context size (not an account fault).
+ * Used by handlers that want an explicit log without re-parsing ERROR_RULES.
+ */
+export function isContextLengthError(status, errorText) {
+  const code = Number(status);
+  if (code && code !== 400 && code !== 413) return false;
+  const lower = errorText
+    ? (typeof errorText === "string" ? errorText : JSON.stringify(errorText)).toLowerCase()
+    : "";
+  if (!lower) return false;
+  return (
+    lower.includes("maximum prompt length") ||
+    lower.includes("prompt length is") ||
+    lower.includes("context_length_exceeded") ||
+    lower.includes("context length exceeded") ||
+    lower.includes("maximum context length") ||
+    lower.includes("prompt is too long") ||
+    (lower.includes("request contains") && lower.includes("tokens") && lower.includes("maximum"))
+  );
 }
 
 /**

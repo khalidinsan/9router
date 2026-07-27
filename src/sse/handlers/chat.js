@@ -7,6 +7,11 @@ import {
   extractApiKey,
   isValidApiKey,
 } from "../services/auth.js";
+import { isContextLengthError } from "open-sse/services/accountFallback.js";
+import {
+  checkGrokCli402Circuit,
+  GROK_CLI_MAX_FALLBACK_ACCOUNTS,
+} from "open-sse/services/grokCliSafety.js";
 import { cacheClaudeHeaders } from "open-sse/utils/claudeHeaderCache.js";
 import { getSettings } from "@/lib/localDb";
 import { getModelInfo, getComboModels } from "../services/model.js";
@@ -22,6 +27,7 @@ import { detectFormatByEndpoint } from "open-sse/translator/formats.js";
 import * as log from "../utils/logger.js";
 import { updateProviderCredentials, checkAndRefreshToken } from "../services/tokenRefresh.js";
 import { getProjectIdForConnection } from "open-sse/services/projectId.js";
+import { getConsistentMachineId } from "@/shared/utils/machineId";
 
 /**
  * Handle chat completion request
@@ -192,9 +198,15 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
   // Pin to a specific connection (per-account model test / media-style pin)
   const preferredConnectionId = request.headers.get("x-connection-id") || null;
   // Allow probing disabled accounts (re-probe quota/403 — not public clients)
-  const allowInactivePin =
+  const requestedInactivePin =
     request.headers.get("x-9r-allow-inactive") === "1" ||
     request.headers.get("x-9r-allow-inactive") === "true";
+  const internalCliToken = requestedInactivePin
+    ? await getConsistentMachineId("9r-cli-auth")
+    : null;
+  const allowInactivePin =
+    requestedInactivePin &&
+    request.headers.get("x-9r-cli-token") === internalCliToken;
 
   // Try with available accounts (fallback on errors)
   const excludeConnectionIds = new Set();
@@ -202,6 +214,27 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
   let lastStatus = null;
 
   while (true) {
+    const isGrokCli = provider === "grok-cli" || provider === "gcli";
+    if (isGrokCli) {
+      const circuit = checkGrokCli402Circuit();
+      if (circuit.isOpen) {
+        log.warn("AUTH", `grok-cli 402 circuit open until ${circuit.openUntil}; stopping request`);
+        return unavailableResponse(
+          HTTP_STATUS.SERVICE_UNAVAILABLE,
+          `[${provider}/${model}] Grok CLI upstream quota circuit is temporarily open`,
+          circuit.openUntil,
+          "shared 402 protection"
+        );
+      }
+      if (!preferredConnectionId && excludeConnectionIds.size >= GROK_CLI_MAX_FALLBACK_ACCOUNTS) {
+        log.warn("AUTH", `grok-cli fallback cap reached (${GROK_CLI_MAX_FALLBACK_ACCOUNTS})`);
+        return errorResponse(
+          lastStatus || HTTP_STATUS.SERVICE_UNAVAILABLE,
+          lastError || `Grok CLI fallback stopped after ${GROK_CLI_MAX_FALLBACK_ACCOUNTS} accounts`
+        );
+      }
+    }
+
     const credentials = await getProviderCredentials(provider, excludeConnectionIds, model, {
       preferredConnectionId,
       allowInactivePin: allowInactivePin && !!preferredConnectionId,
@@ -316,6 +349,8 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
     }
 
     // Mark account unavailable (auto-calculates cooldown with exponential backoff, or precise resetsAtMs)
+    // Context/prompt-too-long (and other shouldFallback:false rules) skip lock + rotate —
+    // the same oversized body would fail on every account.
     const { shouldFallback } = await markAccountUnavailable(credentials.connectionId, result.status, result.error, provider, model, result.resetsAtMs);
 
     if (shouldFallback) {
@@ -324,6 +359,13 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
       lastError = result.error;
       lastStatus = result.status;
       continue;
+    }
+
+    if (isContextLengthError(result.status, result.error)) {
+      log.warn(
+        "CHAT",
+        `Context/prompt too large — returning 400 without rotating accounts · ACC:${credentials.connectionName} · ${String(result.error || "").slice(0, 160)}`
+      );
     }
 
     return result.response;

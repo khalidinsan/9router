@@ -14,9 +14,13 @@ import {
   getEarliestModelLockUntil,
   isGrokCliChatPermissionDenied,
   isGrokCliFreeOrCreditExhausted,
-  buildGrokCliQuotaExhaustedUpdate,
   buildGrokCliPermissionDeniedUpdate,
 } from "open-sse/services/accountFallback.js";
+import {
+  buildGrokCliSuspectedQuotaUpdate,
+  isGrokCliHardBlocked,
+  recordGrokCli402,
+} from "open-sse/services/grokCliSafety.js";
 import { MAX_RATE_LIMIT_COOLDOWN_MS } from "open-sse/config/errorConfig.js";
 import { resolveProviderId, FREE_PROVIDERS } from "@/shared/constants/providers.js";
 import * as log from "../utils/logger.js";
@@ -32,6 +36,7 @@ function scoreGrokCliConnection(conn) {
   // Do NOT penalize botFlagged — JWT flag is informational; use until chat 403 / quota error
   if (psd.reauthRequired === true) score -= 800;
   if (psd.quotaExhausted === true || conn?.testStatus === "quota_exhausted") score -= 900;
+  if (conn?.testStatus === "suspected_quota") score -= 300;
   if (psd.freeProfile === true) score += 50;
   // More free remaining % is better (unknown → neutral)
   const rem = Number(psd.freeRemainingPct);
@@ -101,7 +106,7 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
       };
     }
 
-    const connections = await getProviderConnections({ provider: providerId, isActive: true });
+    let connections = await getProviderConnections({ provider: providerId });
     log.debug("AUTH", `${provider} | total connections: ${connections.length}, excludeIds: ${excludeSet.size > 0 ? [...excludeSet].join(",") : "none"}, model: ${model || "any"}`);
 
     if (connections.length === 0) {
@@ -109,25 +114,23 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
       return null;
     }
 
-    // Filter out model-locked, excluded, and grok-cli rows that already failed hard.
+    const isGrokCli = providerId === "grok-cli" || providerId === "gcli";
+    const useAllForReprobe = allowInactivePin && isGrokCli;
+    if (!useAllForReprobe) {
+      connections = connections.filter(c => c.isActive !== false);
+    }
+
+    // Filter out model-locked, excluded, and (non-reprobe) grok-cli rows that already failed hard.
     // botFlagged / JWT bot_flag: IGNORE completely — pick like any other active
     // account; only drop after real request errors (403 chat, quota, reauth).
-    const isGrokCli = providerId === "grok-cli" || providerId === "gcli";
     let skippedHard = 0;
     const availableConnections = connections.filter((c) => {
       if (excludeSet.has(c.id)) return false;
       if (isModelLockActive(c, model)) return false;
       const psd = c.providerSpecificData || {};
-      if (isGrokCli) {
-        if (
-          psd.reauthRequired === true ||
-          c.testStatus === "quota_exhausted" ||
-          c.testStatus === "permission_denied" ||
-          c.testStatus === "reauth_required"
-        ) {
-          skippedHard += 1;
-          return false;
-        }
+      if (isGrokCli && !useAllForReprobe && isGrokCliHardBlocked(c)) {
+        skippedHard += 1;
+        return false;
       }
       return true;
     });
@@ -393,27 +396,38 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
     return { shouldFallback: true, cooldownMs: 0, disabled: true };
   }
 
-  // grok-cli: free promo / credit exhausted (402) → disable (keep row for audit)
+  // Grok CLI 402 may be a shared/transient upstream gate. Never permanently
+  // disable from normal traffic. Mark this account as suspected and let an
+  // isolated direct probe confirm it; the circuit breaker stops pool sweeps.
   if (isGrokCliFreeOrCreditExhausted(provider, status, errorText)) {
     const reason =
-      typeof errorText === "string" ? errorText.slice(0, 200) : "quota exhausted";
+      typeof errorText === "string" ? errorText.slice(0, 200) : "quota suspected";
+    const circuit = recordGrokCli402(connectionId, errorText);
+    const suspectedUpdate = buildGrokCliSuspectedQuotaUpdate(conn);
     try {
       await updateProviderConnection(connectionId, {
-        ...buildGrokCliQuotaExhaustedUpdate(),
+        ...suspectedUpdate,
         lastError: reason,
         providerSpecificData: {
-          ...(conn?.providerSpecificData || {}),
-          quotaExhausted: true,
-          freeRemainingPct: 0,
+          ...suspectedUpdate.providerSpecificData,
           lastQuotaCheckAt: new Date().toISOString(),
         },
       });
-      log.warn("AUTH", `${connName} DISABLED (grok-cli free/credit exhausted)`);
-      console.error(`❌ grok-cli [${status}]: quota exhausted — disabled ${connName}`);
+      log.warn(
+        "AUTH",
+        `${connName} suspected grok-cli quota [402]` +
+          (circuit.isOpen ? `; provider circuit open until ${circuit.openUntil}` : "")
+      );
     } catch (e) {
-      log.warn("AUTH", `${connName} disable failed: ${e.message}`);
+      log.warn("AUTH", `${connName} suspected-quota update failed: ${e.message}`);
     }
-    return { shouldFallback: true, cooldownMs: 0, disabled: true };
+    return {
+      shouldFallback: !circuit.isOpen,
+      cooldownMs: 0,
+      suspectedQuota: true,
+      circuitOpen: circuit.isOpen,
+      circuitOpenUntil: circuit.openUntil,
+    };
   }
 
   // Provider-specific precise cooldown (e.g. codex usage_limit_reached resets_at) overrides backoff

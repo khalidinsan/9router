@@ -15,6 +15,7 @@ import {
 import { MEMORY_CONFIG } from "../config/runtimeConfig.js";
 import { resolveSessionId } from "../utils/sessionManager.js";
 import { getConsistentMachineId } from "../shared/machineId.js";
+import { curlFetch } from "../utils/curlFetch.js";
 
 // Server-generated item id prefixes that /responses cannot resolve when store=false
 const SERVER_ID_PATTERN = /^(rs|fc|resp|msg)_/;
@@ -348,6 +349,10 @@ export class GrokCliExecutor extends BaseExecutor {
 
   buildUrl() {
     return this.config.baseUrl;
+  }
+
+  fetch(url, options, proxyOptions) {
+    return curlFetch(url, options, proxyOptions);
   }
 
   async refreshCredentials(credentials, log, proxyOptions = null) {

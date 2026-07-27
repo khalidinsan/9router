@@ -50,13 +50,25 @@ const COOLDOWN = {
 /**
  * Unified error classification rules.
  * Checked top-to-bottom: text rules first (by order), then status rules.
- * Each rule: { text?, status?, cooldownMs?, backoff? }
+ * Each rule: { text?, status?, cooldownMs?, backoff?, shouldFallback? }
  *   - text: substring match (case-insensitive) on error message
  *   - status: HTTP status code match
- *   - cooldownMs: fixed cooldown duration
+ *   - cooldownMs: fixed cooldown duration (ignored when shouldFallback is false)
  *   - backoff: true = use exponential backoff (rate limit)
+ *   - shouldFallback: false = client/request error — do NOT rotate accounts or model-lock
+ *     (default true when omitted)
  */
 export const ERROR_RULES = [
+  // --- Client/request errors: never rotate accounts (payload is identical on every account) ---
+  // Grok CLI / cli-chat-proxy: "This model's maximum prompt length is 500000 but the request contains N tokens."
+  { text: "maximum prompt length",    shouldFallback: false, cooldownMs: 0 },
+  { text: "prompt length is",         shouldFallback: false, cooldownMs: 0 },
+  { text: "context_length_exceeded",  shouldFallback: false, cooldownMs: 0 },
+  { text: "context length exceeded",  shouldFallback: false, cooldownMs: 0 },
+  { text: "maximum context length",   shouldFallback: false, cooldownMs: 0 },
+  { text: "prompt is too long",       shouldFallback: false, cooldownMs: 0 },
+  { text: "request contains", shouldFallback: false, cooldownMs: 0, requireAll: ["tokens", "maximum"] },
+
   // --- Text-based rules (checked first, order = priority) ---
   { text: "no credentials",           cooldownMs: COOLDOWN.long },
   { text: "request not allowed",      cooldownMs: COOLDOWN.short },

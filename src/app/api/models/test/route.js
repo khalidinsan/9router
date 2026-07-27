@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { getProviderConnectionById, updateProviderConnection } from "@/lib/localDb";
 import { pingModelByKind } from "./ping";
 
 // POST /api/models/test - Ping a single model via internal completions or embeddings
@@ -6,10 +7,35 @@ import { pingModelByKind } from "./ping";
 export async function POST(request) {
   try {
     const body = await request.json();
-    const { model, kind, connectionId } = body || {};
+    const { model, kind, connectionId, allowInactive } = body || {};
     if (!model) return NextResponse.json({ error: "Model required" }, { status: 400 });
+    const [modelProvider, ...modelParts] = String(model).split("/");
+    if (connectionId && ["gcli", "grok-cli", "grok-build", "gb"].includes(modelProvider)) {
+      const connection = await getProviderConnectionById(String(connectionId));
+      if (!connection || connection.provider !== "grok-cli") {
+        return NextResponse.json({ ok: false, error: "Grok CLI connection not found" }, { status: 404 });
+      }
+      const {
+        GROK_CLI_PROBE_REFRESHED_CREDENTIALS,
+        probeGrokCliConnection,
+      } = await import("@/shared/services/grokCliProbe");
+      const result = await probeGrokCliConnection(connection, modelParts.join("/"));
+      const refreshedCredentials = result[GROK_CLI_PROBE_REFRESHED_CREDENTIALS];
+      if (refreshedCredentials) {
+        await updateProviderConnection(connection.id, {
+          ...refreshedCredentials,
+          providerSpecificData: {
+            ...(connection.providerSpecificData || {}),
+            ...(refreshedCredentials.providerSpecificData || {}),
+            reauthRequired: false,
+          },
+        });
+      }
+      return NextResponse.json({ ...result, connectionId: String(connectionId), isolated: true });
+    }
     const result = await pingModelByKind(model, kind || "llm", undefined, {
       connectionId: connectionId || null,
+      allowInactive: allowInactive === true,
     });
     return NextResponse.json(result);
   } catch (err) {

@@ -170,29 +170,22 @@ async function billingSnapshotOne(conn) {
       freeTokenLimit: GROK_CLI_FREE_TOKEN_LIMIT,
     };
 
-    // Soft-disable if free bar shows fully exhausted
-    const exhausted =
+    // The free bar is a local rolling estimate, not authoritative upstream quota.
+    // Never disable an account from billing metadata alone; only an isolated
+    // inference probe may confirm quota exhaustion.
+    const estimatedExhausted =
       freeRemainingPct != null && freeRemainingPct <= 0 && freeQuota;
 
     const updates = {
       providerSpecificData: {
         ...nextPsd,
-        quotaExhausted: exhausted ? true : psd.quotaExhausted || false,
+        estimatedQuotaExhausted: !!estimatedExhausted,
+        lastEstimatedQuotaAt: estimatedExhausted ? new Date().toISOString() : null,
       },
     };
-    if (exhausted && conn.isActive !== false) {
-      updates.isActive = false;
-      updates.testStatus = "quota_exhausted";
-      updates.lastError = "Free tokens exhausted (billing snapshot)";
-      updates.lastErrorAt = new Date().toISOString();
-      updates.errorCode = 402;
-      console.warn(
-        `[GrokMaint] ${conn.email || conn.name} DISABLED (free tokens 0% from billing snapshot)`
-      );
-    }
 
     await updateProviderConnection(conn.id, updates);
-    return { ok: true, exhausted: !!exhausted };
+    return { ok: true, exhausted: false, estimatedExhausted: !!estimatedExhausted };
   } catch (e) {
     console.warn(
       `[GrokMaint] billing snapshot failed ${conn.email || conn.id}: ${e.message}`
