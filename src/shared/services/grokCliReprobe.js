@@ -12,7 +12,10 @@ import {
   getProviderConnections,
   updateProviderConnection,
 } from "@/lib/localDb";
-import { buildGrokCliReprobeEnabledUpdate } from "open-sse/services/accountFallback.js";
+import {
+  buildGrokCliPermissionDeniedUpdate,
+  buildGrokCliReprobeEnabledUpdate,
+} from "open-sse/services/accountFallback.js";
 import { GROK_CLI_MODEL } from "open-sse/config/grokCli.js";
 import { getDefaultModel, PROVIDER_ID_TO_ALIAS } from "open-sse/config/providerModels.js";
 import {
@@ -20,7 +23,7 @@ import {
   probeGrokCliConnection,
 } from "@/shared/services/grokCliProbe";
 import {
-  buildGrokCliConfirmedQuotaUpdate,
+  buildGrokCliAuthoritativeQuotaExhaustedUpdate,
   buildGrokCliManualEnableUpdate,
 } from "open-sse/services/grokCliSafety.js";
 
@@ -139,34 +142,57 @@ export async function reprobeOneGrokCliConnection(conn, options = {}) {
     };
   }
 
-  const quotaUpdate = Number(result.status) === 402
-    ? buildGrokCliConfirmedQuotaUpdate(latest, new Date(), {
-        tokenFingerprint: result.tokenFingerprint,
-        modelId,
-      })
-    : {
-        providerSpecificData: {
-          ...freshPsd,
-          quotaConfirmationCount: 0,
-          quotaConfirmationAt: null,
-          quotaConfirmationTokenFingerprint: null,
-          quotaConfirmationModel: null,
-        },
-      };
+  const status = Number(result.status) || 0;
+  const probeError = String(result.error || "probe failed").slice(0, 240);
+  let canonicalUpdate = {};
+
+  if (status === 429 || status === 402) {
+    canonicalUpdate = buildGrokCliAuthoritativeQuotaExhaustedUpdate(
+      latest,
+      status,
+      result.error,
+      new Date(nowIso)
+    );
+  } else if (status === 403) {
+    canonicalUpdate = {
+      ...buildGrokCliPermissionDeniedUpdate(new Date(nowIso)),
+      lastError: probeError,
+      providerSpecificData: {
+        ...freshPsd,
+        permissionDenied: true,
+        permissionDeniedAt: nowIso,
+      },
+    };
+  } else if (status === 401) {
+    canonicalUpdate = {
+      isActive: false,
+      testStatus: "reauth_required",
+      lastErrorType: "auth_error",
+      errorCode: 401,
+      lastError: probeError,
+      lastErrorAt: nowIso,
+      providerSpecificData: {
+        ...freshPsd,
+        reauthRequired: true,
+      },
+    };
+  }
+
+  // Timeout/network/5xx only update probe diagnostics. They must not erase or
+  // replace the canonical disabled reason that made this row a candidate.
   await updateProviderConnection(conn.id, {
-    ...quotaUpdate,
+    ...canonicalUpdate,
     providerSpecificData: {
       ...freshPsd,
-      ...(quotaUpdate.providerSpecificData || {}),
+      ...(canonicalUpdate.providerSpecificData || {}),
       lastReprobeAt: nowIso,
       lastReprobeOk: false,
-      lastReprobeError: String(result.error || "probe failed").slice(0, 240),
+      lastReprobeError: probeError,
+      lastReprobeStatus: status || null,
       lastReprobeModel: modelId,
       lastReprobeLatencyMs: result.latencyMs ?? null,
       lastReprobeTokenFingerprint: result.tokenFingerprint || null,
     },
-    lastError: String(result.error || "reprobe failed").slice(0, 200),
-    lastErrorAt: nowIso,
   });
   console.warn(
     `[GrokReprobe] still down ${email} id=${conn.id.slice(0, 8)}: ${String(result.error || "").slice(0, 120)}`

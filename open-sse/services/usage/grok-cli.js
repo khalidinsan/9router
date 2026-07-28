@@ -24,9 +24,9 @@
  * }
  *
  * Free Build accounts: billing does NOT expose the rolling free token pool.
- * grok2api estimates ~1_000_000 tokens / rolling 24h from local usage audits
- * (confirmed by free-usage-exhausted: "tokens (actual/limit): N/1000000").
- * Free tokens = observedTokens (local 24h) / 1_000_000 estimated.
+ * xAI currently reports 500_000 tokens / rolling 24h for free accounts.
+ * The limit is learned per account from free-usage-exhausted actual/limit errors
+ * when available, because upstream may change it again without notice.
  * Do NOT show a fake depleted "On-demand 1/1" bar for free accounts.
  */
 
@@ -43,9 +43,10 @@ const BILLING_URL = USAGE.url || "https://cli-chat-proxy.grok.com/v1/billing?for
 const USER_URL = USAGE.userUrl || "https://cli-chat-proxy.grok.com/v1/user?include=subscription";
 
 /** Free Build rolling window (matches grok2api estimatedFreeTokenLimit + freeUsageWindow). */
-export const GROK_CLI_FREE_TOKEN_LIMIT = 1_000_000;
+export const GROK_CLI_FREE_TOKEN_LIMIT = 500_000;
 export const GROK_CLI_FREE_WINDOW_MS = 24 * 60 * 60 * 1000;
-const FREE_TOKEN_QUOTA_NAME = "Free tokens (est. 24h)";
+const FREE_TOKEN_QUOTA_NAME = "Local usage (rolling 24h)";
+const UPSTREAM_FREE_TOKEN_SNAPSHOT_NAME = "Upstream quota snapshot";
 
 /** Unwrap protobuf-json `{ val: n }` or plain numbers/strings. */
 function unwrapVal(value, fallback = 0) {
@@ -175,9 +176,9 @@ function hasPaidBillingSignals(config, root) {
   );
 }
 
-function freeTokenQuota(observedTokens) {
+function freeTokenQuota(observedTokens, tokenLimit = GROK_CLI_FREE_TOKEN_LIMIT) {
   const used = Math.max(0, Math.floor(toFiniteNumber(observedTokens, 0)));
-  const total = GROK_CLI_FREE_TOKEN_LIMIT;
+  const total = Math.max(1, Math.floor(toFiniteNumber(tokenLimit, GROK_CLI_FREE_TOKEN_LIMIT)));
   const remaining = Math.max(0, total - used);
   return {
     used,
@@ -259,12 +260,19 @@ function makeQuota({ used, total, resetAt, unlimited = false }) {
  *
  * @param {object|null} billing
  * @param {object|null} user
- * @param {{ observedTokens?: number }} [options]
+ * @param {{ observedTokens?: number, freeTokenLimit?: number, freeTokensActual?: number }} [options]
  *   observedTokens — tokens used through this connection in the free rolling window
  *   (typically last 24h from local usageHistory). Used only for Free estimate bars.
  */
 export function parseGrokCliBilling(billing, user = null, options = {}) {
   const observedTokens = Math.max(0, Math.floor(toFiniteNumber(options?.observedTokens, 0)));
+  const freeTokenLimit = Math.max(
+    1,
+    Math.floor(toFiniteNumber(options?.freeTokenLimit, GROK_CLI_FREE_TOKEN_LIMIT)),
+  );
+  const upstreamFreeTokensActual = Number.isFinite(Number(options?.freeTokensActual))
+    ? Math.max(0, Math.floor(Number(options.freeTokensActual)))
+    : null;
   const root = billing && typeof billing === "object" ? billing : {};
   const config =
     root.config && typeof root.config === "object" && !Array.isArray(root.config)
@@ -443,9 +451,9 @@ export function parseGrokCliBilling(billing, user = null, options = {}) {
     }
   }
 
-  // ── Free Build rolling token estimate (grok2api-style) ──────────────────
-  // Billing API does not return free token used/limit. When there is no paid
-  // allotment and no paid tier, surface local 24h observed tokens vs ~1M.
+  // ── Free Build token sources ────────────────────────────────────────────
+  // Billing API does not expose the free pool. Keep the local rolling audit
+  // and the last authoritative error snapshot as explicitly separate rows.
   const freeProfile =
     freePlan ||
     (!paidPlan &&
@@ -455,7 +463,14 @@ export function parseGrokCliBilling(billing, user = null, options = {}) {
       Object.keys(quotas).length === 0);
 
   if (freeProfile && Object.keys(quotas).length === 0) {
-    quotas[FREE_TOKEN_QUOTA_NAME] = freeTokenQuota(observedTokens);
+    quotas[FREE_TOKEN_QUOTA_NAME] = freeTokenQuota(observedTokens, freeTokenLimit);
+    if (upstreamFreeTokensActual != null) {
+      quotas[UPSTREAM_FREE_TOKEN_SNAPSHOT_NAME] = {
+        ...freeTokenQuota(upstreamFreeTokensActual, freeTokenLimit),
+        estimated: false,
+        snapshot: true,
+      };
+    }
   }
 
   // Exhausted when every finite quota bar is at 0% remaining
@@ -530,7 +545,13 @@ export async function getGrokCliUsage(
       user = await userRes.json().catch(() => null);
     }
 
-    const parsed = parseGrokCliBilling(billing, user, { observedTokens });
+    const parsed = parseGrokCliBilling(billing, user, {
+      observedTokens,
+      freeTokenLimit:
+        options?.freeTokenLimit ?? providerSpecificData?.freeTokenLimit,
+      freeTokensActual:
+        options?.freeTokensActual ?? providerSpecificData?.freeTokensActual,
+    });
 
     if (!parsed.quotas || Object.keys(parsed.quotas).length === 0) {
       return {

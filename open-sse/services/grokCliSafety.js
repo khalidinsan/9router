@@ -1,6 +1,9 @@
 // Pure, process-local safety policy for Grok CLI account fallback.
 
+import { parseGrokCliFreeUsageTokens } from "./accountFallback.js";
+
 export const GROK_CLI_MAX_ACCOUNT_ATTEMPTS = 3;
+export const GROK_CLI_MAX_EXHAUSTED_ACCOUNT_SKIPS = 20;
 // Backward-compatible export for callers/tests written before the invariant was named precisely.
 export const GROK_CLI_MAX_FALLBACK_ACCOUNTS = GROK_CLI_MAX_ACCOUNT_ATTEMPTS;
 export const GROK_CLI_402_CIRCUIT_THRESHOLD = 3;
@@ -35,14 +38,14 @@ export function normalizeGrokCli402Signature(error) {
   try {
     const parsed = typeof error === "string" ? JSON.parse(error) : error;
     const code = String(parsed?.code || parsed?.error?.code || "").toLowerCase();
-    if (code.includes("free-usage-exhausted")) return "free-usage-exhausted";
+    if (code.includes("free-usage-exhausted")) return "";
     if (code.includes("spending-limit")) return "spending-limit";
   } catch {
     // Fall through to text classification.
   }
   const lower = raw.toLowerCase();
   if (lower.includes("free-usage-exhausted") || lower.includes("free usage exhausted")) {
-    return "free-usage-exhausted";
+    return "";
   }
   if (
     lower.includes("personal-team-blocked:spending-limit") ||
@@ -115,10 +118,27 @@ function cleanProviderData(conn, extra = {}) {
     quotaConfirmationAt: null,
     quotaConfirmationTokenFingerprint: null,
     quotaConfirmationModel: null,
+    freeTokensActual: null,
     permissionDenied: false,
     permissionDeniedAt: null,
     ...extra,
     reauthRequired: current.reauthRequired,
+  };
+}
+
+export function buildGrokCliSuccessUpdate(conn, now = new Date()) {
+  return {
+    testStatus: "active",
+    lastErrorType: null,
+    errorCode: null,
+    lastError: null,
+    lastErrorAt: null,
+    providerSpecificData: {
+      ...(conn?.providerSpecificData || {}),
+      quotaSuspectedAt: null,
+      quotaObservationCount: 0,
+      lastSuccessAt: now.toISOString(),
+    },
   };
 }
 
@@ -148,6 +168,32 @@ export function buildGrokCliSuspectedQuotaUpdate(conn, now = new Date()) {
       quotaSuspectedAt: now.toISOString(),
       quotaObservationCount: count + 1,
       quotaConfirmationCount: Number(conn?.providerSpecificData?.quotaConfirmationCount) || 0,
+    },
+  };
+}
+
+export function buildGrokCliAuthoritativeQuotaExhaustedUpdate(conn, status = 429, error = null, now = new Date()) {
+  const tokens = parseGrokCliFreeUsageTokens(error);
+  return {
+    isActive: false,
+    testStatus: "quota_exhausted",
+    lastErrorType: "quota_exhausted",
+    errorCode: Number(status) || 429,
+    lastError: error ? textOf(error).slice(0, 240) : "Grok free usage exhausted",
+    lastErrorAt: now.toISOString(),
+    quotaExhaustedAt: now.toISOString(),
+    providerSpecificData: {
+      ...(conn?.providerSpecificData || {}),
+      quotaExhausted: true,
+      quotaExhaustedAt: now.toISOString(),
+      quotaErrorCode: "subscription:free-usage-exhausted",
+      ...(tokens.actual != null ? { freeTokensActual: tokens.actual } : {}),
+      ...(tokens.limit != null ? { freeTokenLimit: tokens.limit } : {}),
+      lastQuotaCheckAt: now.toISOString(),
+      quotaConfirmationCount: 0,
+      quotaConfirmationAt: null,
+      quotaConfirmationTokenFingerprint: null,
+      quotaConfirmationModel: null,
     },
   };
 }

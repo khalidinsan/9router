@@ -13,10 +13,12 @@ import {
   buildModelLockUpdate,
   getEarliestModelLockUntil,
   isGrokCliChatPermissionDenied,
+  isGrokCliAuthoritativeFreeUsageExhausted,
   isGrokCliFreeOrCreditExhausted,
   buildGrokCliPermissionDeniedUpdate,
 } from "open-sse/services/accountFallback.js";
 import {
+  buildGrokCliAuthoritativeQuotaExhaustedUpdate,
   buildGrokCliSuspectedQuotaUpdate,
   isGrokCliHardBlocked,
   recordGrokCli402,
@@ -353,8 +355,8 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
 }
 
 /**
- * Mark account+model as unavailable — locks modelLock_${model} in DB.
- * All errors (429, 401, 5xx, etc.) lock per model, not per account.
+ * Mark account/model unavailable. Grok CLI auth and permission failures hard-block
+ * the account; other transient failures use per-model locks.
  * @param {string} connectionId
  * @param {number} status - HTTP status code from upstream
  * @param {string} errorText
@@ -369,8 +371,10 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
   const backoffLevel = conn?.backoffLevel || 0;
   const connName = conn?.displayName || conn?.name || conn?.email || connectionId.slice(0, 8);
 
-  // grok-cli: 403 permission-denied on chat → disable only (never auto-delete)
-  if (isGrokCliChatPermissionDenied(provider, status, errorText)) {
+  // grok-cli: any 403 is a connection-level permission hard block. The known
+  // chat-denied wording is retained only for diagnostics, not classification.
+  if ((provider === "grok-cli" || provider === "gcli") && Number(status) === 403) {
+    const knownChatDenial = isGrokCliChatPermissionDenied(provider, status, errorText);
     const reason =
       typeof errorText === "string" ? errorText.slice(0, 200) : "permission-denied";
     try {
@@ -385,7 +389,7 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
       });
       log.warn(
         "AUTH",
-        `${connName} DISABLED (grok-cli 403 permission-denied / chat endpoint denied)`
+        `${connName} DISABLED (grok-cli 403${knownChatDenial ? " chat permission-denied" : " forbidden"})`
       );
       console.error(
         `❌ grok-cli [403]: chat permission-denied — disabled ${connName}`
@@ -396,9 +400,52 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
     return { shouldFallback: true, cooldownMs: 0, disabled: true };
   }
 
-  // Grok CLI 402 may be a shared/transient upstream gate. Never permanently
-  // disable from normal traffic. Mark this account as suspected and let an
-  // isolated direct probe confirm it; the circuit breaker stops pool sweeps.
+  // grok-cli: 401 means this credential cannot be routed again until reauth.
+  if ((provider === "grok-cli" || provider === "gcli") && Number(status) === 401) {
+    const nowIso = new Date().toISOString();
+    const reason = typeof errorText === "string" ? errorText.slice(0, 200) : "Grok CLI authentication failed";
+    await updateProviderConnection(connectionId, {
+      isActive: false,
+      testStatus: "reauth_required",
+      lastErrorType: "auth_error",
+      errorCode: 401,
+      lastError: reason,
+      lastErrorAt: nowIso,
+      providerSpecificData: {
+        ...(conn?.providerSpecificData || {}),
+        reauthRequired: true,
+        reauthRequiredAt: nowIso,
+      },
+    });
+    log.warn("AUTH", `${connName} DISABLED (grok-cli 401 reauth required)`);
+    return { shouldFallback: true, cooldownMs: 0, disabled: true };
+  }
+
+  // Explicit rolling free-pool exhaustion is account-specific and includes
+  // authoritative evidence (subscription code and/or actual/limit counters).
+  // Remove only this connection from future rotation immediately.
+  if (isGrokCliAuthoritativeFreeUsageExhausted(provider, status, errorText)) {
+    const update = buildGrokCliAuthoritativeQuotaExhaustedUpdate(conn, status, errorText);
+    try {
+      await updateProviderConnection(connectionId, update);
+      log.warn(
+        "AUTH",
+        `${connName} DISABLED (grok-cli free usage exhausted [${status}])`
+      );
+    } catch (e) {
+      log.warn("AUTH", `${connName} quota-exhausted update failed: ${e.message}`);
+    }
+    return {
+      shouldFallback: true,
+      cooldownMs: 0,
+      disabled: true,
+      authoritativeQuotaExhausted: true,
+    };
+  }
+
+  // Ambiguous spending-limit 402 may be a shared/transient upstream gate.
+  // Do not permanently disable from normal traffic; circuit-break repeated
+  // cross-account failures and require an isolated confirmation.
   if (isGrokCliFreeOrCreditExhausted(provider, status, errorText)) {
     const reason =
       typeof errorText === "string" ? errorText.slice(0, 200) : "quota suspected";
@@ -415,7 +462,7 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
       });
       log.warn(
         "AUTH",
-        `${connName} suspected grok-cli quota [402]` +
+        `${connName} suspected grok-cli quota [${status}]` +
           (circuit.isOpen ? `; provider circuit open until ${circuit.openUntil}` : "")
       );
     } catch (e) {
@@ -501,7 +548,21 @@ export async function clearAccountError(connectionId, currentConnection, model =
 
   // Only reset error state if no active locks remain
   if (remainingActiveLocks.length === 0) {
-    Object.assign(clearObj, { testStatus: "active", lastError: null, lastErrorAt: null, backoffLevel: 0 });
+    Object.assign(clearObj, {
+      testStatus: "active",
+      lastError: null,
+      lastErrorAt: null,
+      lastErrorType: null,
+      errorCode: null,
+      backoffLevel: 0,
+    });
+    if (conn.providerSpecificData?.quotaSuspectedAt || conn.lastErrorType === "suspected_quota") {
+      clearObj.providerSpecificData = {
+        ...(conn.providerSpecificData || {}),
+        quotaSuspectedAt: null,
+        quotaObservationCount: 0,
+      };
+    }
   }
 
   await updateProviderConnection(connectionId, clearObj);

@@ -1,6 +1,11 @@
 import { NextResponse } from "next/server";
 import { getProviderConnectionById, updateProviderConnection } from "@/lib/localDb";
 import { pingModelByKind } from "./ping";
+import { isGrokCliAuthoritativeFreeUsageExhausted } from "open-sse/services/accountFallback.js";
+import {
+  buildGrokCliAuthoritativeQuotaExhaustedUpdate,
+  buildGrokCliSuccessUpdate,
+} from "open-sse/services/grokCliSafety.js";
 
 // POST /api/models/test - Ping a single model via internal completions or embeddings
 // Body: { model, kind?, connectionId? }
@@ -30,6 +35,27 @@ export async function POST(request) {
             reauthRequired: false,
           },
         });
+      }
+      if (result.ok) {
+        await updateProviderConnection(
+          connection.id,
+          buildGrokCliSuccessUpdate(connection)
+        );
+      } else if (
+        isGrokCliAuthoritativeFreeUsageExhausted(
+          "grok-cli",
+          result.status,
+          result.error
+        )
+      ) {
+        await updateProviderConnection(
+          connection.id,
+          buildGrokCliAuthoritativeQuotaExhaustedUpdate(
+            connection,
+            result.status,
+            result.error
+          )
+        );
       }
       return NextResponse.json({ ...result, connectionId: String(connectionId), isolated: true });
     }

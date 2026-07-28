@@ -60,6 +60,32 @@ export function isGrokCliChatPermissionDenied(provider, status, errorText) {
  * Grok CLI free promo / token pool exhausted (or paid spending limit).
  * Prefer disable over delete so the row remains for audit/reauth.
  */
+export function parseGrokCliFreeUsageTokens(errorText) {
+  const lower = errorTextToLower(errorText);
+  const match = lower.match(/tokens\s*\(actual\/limit\)\s*:\s*([\d,]+)\s*\/\s*([\d,]+)/i);
+  if (!match) return { actual: null, limit: null };
+  const actual = Number(match[1].replace(/,/g, ""));
+  const limit = Number(match[2].replace(/,/g, ""));
+  return {
+    actual: Number.isFinite(actual) ? actual : null,
+    limit: Number.isFinite(limit) && limit > 0 ? limit : null,
+  };
+}
+
+export function isGrokCliAuthoritativeFreeUsageExhausted(provider, status, errorText) {
+  if (!isGrokCliProvider(provider)) return false;
+  const code = Number(status);
+  const lower = errorTextToLower(errorText);
+  // This response contains account-specific rolling-pool evidence. It is safe
+  // to remove only this connection from rotation immediately.
+  return (
+    code === 429 &&
+    (lower.includes("subscription:free-usage-exhausted") ||
+      lower.includes("free-usage-exhausted") ||
+      lower.includes("tokens (actual/limit)"))
+  );
+}
+
 export function isGrokCliFreeOrCreditExhausted(provider, status, errorText) {
   if (!isGrokCliProvider(provider)) return false;
   const code = Number(status);
@@ -68,7 +94,6 @@ export function isGrokCliFreeOrCreditExhausted(provider, status, errorText) {
     lower.includes("free-usage-exhausted") ||
     lower.includes("free usage exhausted") ||
     lower.includes("tokens (actual/limit)") ||
-    /tokens\s*\([^)]*\/\s*1000000\)/i.test(lower) ||
     lower.includes("personal-team-blocked:spending-limit") ||
     lower.includes("spending-limit") ||
     lower.includes("spending limit")

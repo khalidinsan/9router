@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import {
   GROK_CLI_MAX_FALLBACK_ACCOUNTS,
+  buildGrokCliAuthoritativeQuotaExhaustedUpdate,
   buildGrokCliConfirmedQuotaUpdate,
   buildGrokCliManualEnableUpdate,
   buildGrokCliSuspectedQuotaUpdate,
@@ -9,6 +10,9 @@ import {
   recordGrokCli402,
   resetGrokCliSafetyStateForTests,
 } from "../../open-sse/services/grokCliSafety.js";
+import {
+  isGrokCliAuthoritativeFreeUsageExhausted,
+} from "../../open-sse/services/accountFallback.js";
 
 describe("Grok CLI safety policy", () => {
   beforeEach(() => resetGrokCliSafetyStateForTests());
@@ -30,6 +34,37 @@ describe("Grok CLI safety policy", () => {
     expect(recordGrokCli402("a", JSON.stringify({ code: "personal-team-blocked:spending-limit" }), 1_000).isOpen).toBe(false);
     expect(recordGrokCli402("b", "You have run out of credits or need a Grok subscription", 2_000).isOpen).toBe(false);
     expect(recordGrokCli402("c", "spending limit", 3_000).isOpen).toBe(true);
+  });
+
+  it("classifies rolling free usage exhaustion as authoritative per-account state", () => {
+    const error = JSON.stringify({
+      code: "subscription:free-usage-exhausted",
+      error: "tokens (actual/limit): 834591/500000",
+    });
+    expect(isGrokCliAuthoritativeFreeUsageExhausted("grok-cli", 429, error)).toBe(true);
+    expect(isGrokCliAuthoritativeFreeUsageExhausted("grok-cli", 402, error)).toBe(false);
+    const update = buildGrokCliAuthoritativeQuotaExhaustedUpdate(
+      { providerSpecificData: {} },
+      429,
+      error,
+      new Date("2026-01-01T00:00:00Z")
+    );
+    expect(update).toMatchObject({
+      isActive: false,
+      testStatus: "quota_exhausted",
+      lastErrorType: "quota_exhausted",
+      errorCode: 429,
+    });
+    expect(update.providerSpecificData.quotaExhausted).toBe(true);
+    expect(update.providerSpecificData.freeTokensActual).toBe(834_591);
+    expect(update.providerSpecificData.freeTokenLimit).toBe(500_000);
+  });
+
+  it("never opens the shared circuit for account-specific free exhaustion", () => {
+    const error = JSON.stringify({ code: "subscription:free-usage-exhausted" });
+    recordGrokCli402("a", error, 1_000);
+    recordGrokCli402("b", error, 2_000);
+    expect(recordGrokCli402("c", error, 3_000).isOpen).toBe(false);
   });
 
   it("does not count repeated 402s from one account as distinct accounts", () => {

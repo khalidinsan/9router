@@ -12,8 +12,30 @@ async function loadSql() {
 
 export async function createSqlJsAdapter(filePath) {
   const SQLLib = await loadSql();
+
+  // Keep a bounded, byte-for-byte snapshot before sql.js can mutate an existing
+  // production database. Build databases are disposable and do not need this.
+  if (process.env.NINEROUTER_BUILD !== "1" && fs.existsSync(filePath)) {
+    const existing = fs.readFileSync(filePath);
+    const sqliteHeader = existing.subarray(0, 16).toString("binary");
+    if (existing.length > 0 && sqliteHeader === "SQLite format 3\u0000") {
+      const backupDir = `${filePath}.startup-backups`;
+      fs.mkdirSync(backupDir, { recursive: true });
+      const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+      fs.copyFileSync(filePath, `${backupDir}/data-${stamp}-${process.pid}.sqlite`, fs.constants.COPYFILE_EXCL);
+      const backups = fs.readdirSync(backupDir)
+        .filter((name) => name.endsWith(".sqlite"))
+        .sort()
+        .reverse();
+      for (const stale of backups.slice(5)) fs.unlinkSync(`${backupDir}/${stale}`);
+    }
+  }
+
   const buf = fs.existsSync(filePath) ? fs.readFileSync(filePath) : null;
   const db = new SQLLib.Database(buf);
+  let knownFileStamp = fs.existsSync(filePath)
+    ? `${fs.statSync(filePath).mtimeMs}:${fs.statSync(filePath).size}`
+    : null;
   db.exec(PRAGMA_SQL);
   // Schema is created/synced by migrate.js after adapter init
 
@@ -22,8 +44,24 @@ export async function createSqlJsAdapter(filePath) {
   const SAVE_DEBOUNCE_MS = 100;
 
   function persist() {
-    const data = db.export();
-    fs.writeFileSync(filePath, Buffer.from(data));
+    // sql.js keeps an in-memory snapshot. Refuse to overwrite a file changed by
+    // another process after this adapter opened it; last-writer-wins is data loss.
+    if (fs.existsSync(filePath)) {
+      const stat = fs.statSync(filePath);
+      const currentStamp = `${stat.mtimeMs}:${stat.size}`;
+      if (knownFileStamp !== null && currentStamp !== knownFileStamp) {
+        throw new Error(`[sqljs] database changed by another process; refusing stale overwrite: ${filePath}`);
+      }
+    } else if (knownFileStamp !== null) {
+      throw new Error(`[sqljs] database disappeared; refusing to recreate from stale memory: ${filePath}`);
+    }
+
+    const data = Buffer.from(db.export());
+    const tempPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+    fs.writeFileSync(tempPath, data, { flag: "wx", mode: 0o600 });
+    fs.renameSync(tempPath, filePath);
+    const stat = fs.statSync(filePath);
+    knownFileStamp = `${stat.mtimeMs}:${stat.size}`;
     dirty = false;
   }
 

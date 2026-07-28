@@ -10,6 +10,7 @@ import {
 import { isContextLengthError } from "open-sse/services/accountFallback.js";
 import {
   checkGrokCli402Circuit,
+  GROK_CLI_MAX_EXHAUSTED_ACCOUNT_SKIPS,
   GROK_CLI_MAX_FALLBACK_ACCOUNTS,
 } from "open-sse/services/grokCliSafety.js";
 import { cacheClaudeHeaders } from "open-sse/utils/claudeHeaderCache.js";
@@ -212,6 +213,8 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
   const excludeConnectionIds = new Set();
   let lastError = null;
   let lastStatus = null;
+  let grokCliSharedFailures = 0;
+  let grokCliExhaustedSkips = 0;
 
   while (true) {
     const isGrokCli = provider === "grok-cli" || provider === "gcli";
@@ -226,11 +229,18 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
           "shared 402 protection"
         );
       }
-      if (!preferredConnectionId && excludeConnectionIds.size >= GROK_CLI_MAX_FALLBACK_ACCOUNTS) {
-        log.warn("AUTH", `grok-cli fallback cap reached (${GROK_CLI_MAX_FALLBACK_ACCOUNTS})`);
+      if (!preferredConnectionId && grokCliSharedFailures >= GROK_CLI_MAX_FALLBACK_ACCOUNTS) {
+        log.warn("AUTH", `grok-cli shared-failure cap reached (${GROK_CLI_MAX_FALLBACK_ACCOUNTS})`);
         return errorResponse(
           lastStatus || HTTP_STATUS.SERVICE_UNAVAILABLE,
-          lastError || `Grok CLI fallback stopped after ${GROK_CLI_MAX_FALLBACK_ACCOUNTS} accounts`
+          lastError || `Grok CLI fallback stopped after ${GROK_CLI_MAX_FALLBACK_ACCOUNTS} shared failures`
+        );
+      }
+      if (!preferredConnectionId && grokCliExhaustedSkips >= GROK_CLI_MAX_EXHAUSTED_ACCOUNT_SKIPS) {
+        log.warn("AUTH", `grok-cli exhausted-account skip cap reached (${GROK_CLI_MAX_EXHAUSTED_ACCOUNT_SKIPS})`);
+        return errorResponse(
+          lastStatus || HTTP_STATUS.RATE_LIMITED,
+          lastError || `Grok CLI stopped after skipping ${GROK_CLI_MAX_EXHAUSTED_ACCOUNT_SKIPS} exhausted accounts`
         );
       }
     }
@@ -351,9 +361,21 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
     // Mark account unavailable (auto-calculates cooldown with exponential backoff, or precise resetsAtMs)
     // Context/prompt-too-long (and other shouldFallback:false rules) skip lock + rotate —
     // the same oversized body would fail on every account.
-    const { shouldFallback } = await markAccountUnavailable(credentials.connectionId, result.status, result.error, provider, model, result.resetsAtMs);
+    const fallbackState = await markAccountUnavailable(
+      credentials.connectionId,
+      result.status,
+      result.error,
+      provider,
+      model,
+      result.resetsAtMs
+    );
+    const { shouldFallback } = fallbackState;
 
     if (shouldFallback) {
+      if (isGrokCli) {
+        if (fallbackState.authoritativeQuotaExhausted) grokCliExhaustedSkips += 1;
+        else grokCliSharedFailures += 1;
+      }
       log.warn("FALLBACK", `⇄ ACC:${credentials.connectionName} UNAVAILABLE (${result.status}) → NEXT ACCOUNT`);
       excludeConnectionIds.add(credentials.connectionId);
       lastError = result.error;

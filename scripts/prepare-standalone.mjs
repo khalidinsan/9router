@@ -18,6 +18,15 @@ function copyDir(src, dest) {
   }
 }
 
+// Next.js standalone tracing does not copy browser assets automatically.
+// The standalone server resolves them relative to its own .next directory.
+const staticSrc = path.join(root, ".next", "static");
+const staticDest = path.join(standalone, ".next", "static");
+if (fs.existsSync(staticSrc)) {
+  copyDir(staticSrc, staticDest);
+  console.log("[prepare-standalone] copied .next/static/");
+}
+
 // Next.js standalone output should include public/, but copy defensively.
 const publicSrc = path.join(root, "public");
 const publicDest = path.join(standalone, "public");

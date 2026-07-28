@@ -16,6 +16,8 @@ import {
   refreshProviderCredentials,
 } from "open-sse/services/oauthCredentialManager.js";
 import { isUnrecoverableRefreshError } from "open-sse/services/tokenRefresh.js";
+import { isGrokCliAuthoritativeFreeUsageExhausted } from "open-sse/services/accountFallback.js";
+import { buildGrokCliAuthoritativeQuotaExhaustedUpdate } from "open-sse/services/grokCliSafety.js";
 import {
   getGrokCliUsage,
   GROK_CLI_FREE_TOKEN_LIMIT,
@@ -28,16 +30,12 @@ const g = (global.__grokCliMaintenance ??= {
   interval: null,
   running: false,
   lastTickAt: 0,
-  lastReprobeAt: 0,
 });
 
 const TICK_MS = 5 * 60 * 1000; // 5 minutes
-const BILLING_REFRESH_MS = 30 * 60 * 1000; // re-probe billing at most every 30m per account
+const BILLING_REFRESH_MS = 30 * 60 * 1000; // refresh billing at most every 30m per account
 const MAX_REFRESH_PER_TICK = 8;
 const MAX_BILLING_PER_TICK = 5;
-/** How often to re-test auto-disabled accounts (402/403) for free-quota recovery */
-const REPROBE_DISABLED_EVERY_MS = 60 * 60 * 1000; // 1 hour
-const MAX_REPROBE_PER_TICK = 5;
 
 function decodeJwtPayload(token) {
   try {
@@ -139,14 +137,18 @@ async function billingSnapshotOne(conn) {
       connectionNoProxy: proxyCfg.connectionNoProxy || "",
     };
 
+    const learnedFreeTokenLimit = Number(psd.freeTokenLimit) > 0
+      ? Number(psd.freeTokenLimit)
+      : GROK_CLI_FREE_TOKEN_LIMIT;
     const usage = await getGrokCliUsage(conn.accessToken, psd, proxyOptions, {
       observedTokens,
+      freeTokenLimit: learnedFreeTokenLimit,
     });
 
     const freeQuota =
-      usage?.quotas?.["Free tokens (est. 24h)"] ||
+      usage?.quotas?.["Local usage (rolling 24h)"] ||
       Object.entries(usage?.quotas || {}).find(([k]) =>
-        /free tokens/i.test(k)
+        /local usage.*24h|free tokens.*24h/i.test(k)
       )?.[1];
 
     let freeRemainingPct = null;
@@ -167,7 +169,7 @@ async function billingSnapshotOne(conn) {
       freeRemainingPct:
         freeRemainingPct != null ? Math.round(freeRemainingPct) : psd.freeRemainingPct,
       observedTokens24h: observedTokens,
-      freeTokenLimit: GROK_CLI_FREE_TOKEN_LIMIT,
+      freeTokenLimit: learnedFreeTokenLimit,
     };
 
     // The free bar is a local rolling estimate, not authoritative upstream quota.
@@ -200,7 +202,33 @@ export async function runGrokCliMaintenanceTick() {
   g.lastTickAt = Date.now();
   try {
     const connections = await getProviderConnections({ provider: "grok-cli" });
-    const active = connections.filter((c) => c.isActive !== false && c.refreshToken);
+
+    // One-time/ongoing reconciliation for rows created before authoritative
+    // 429 handling existed: their lastError proves rolling quota exhaustion,
+    // but stale canonical fields may still say active/suspected.
+    for (const conn of connections) {
+      if (
+        conn.isActive !== false &&
+        isGrokCliAuthoritativeFreeUsageExhausted(
+          "grok-cli",
+          conn.errorCode || 429,
+          conn.lastError
+        )
+      ) {
+        await updateProviderConnection(
+          conn.id,
+          buildGrokCliAuthoritativeQuotaExhaustedUpdate(
+            conn,
+            /\[429\]/.test(String(conn.lastError || "")) ? 429 : conn.errorCode || 429,
+            conn.lastError
+          )
+        );
+      }
+    }
+
+    const active = (
+      await getProviderConnections({ provider: "grok-cli" })
+    ).filter((c) => c.isActive !== false && c.refreshToken);
 
     // Refresh due tokens first
     let refreshed = 0;

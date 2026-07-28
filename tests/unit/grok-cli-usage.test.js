@@ -180,29 +180,61 @@ describe("parseGrokCliBilling", () => {
 
   it("estimates free Build tokens instead of fake On-demand 1/1", () => {
     // Free farmed accounts: billing returns cap=0 with no weekly percent.
-    // grok2api shows ~used / 1_000_000 tokens from local audits — do the same.
+    // Free accounts currently use a 500k rolling pool; local audits estimate usage.
     const parsed = parseGrokCliBilling(EXHAUSTED_BILLING, USER_PROFILE, {
       observedTokens: 988,
     });
     expect(parsed.plan).toBe("Free");
     expect(parsed.freeProfile).toBe(true);
     expect(parsed.quotas["On-demand"]).toBeUndefined();
-    expect(parsed.quotas["Free tokens (est. 24h)"]).toMatchObject({
+    expect(parsed.quotas["Local usage (rolling 24h)"]).toMatchObject({
       used: 988,
-      total: 1_000_000,
-      remainingPercentage: expect.closeTo(99.9012, 3),
+      total: 500_000,
+      remainingPercentage: expect.closeTo(99.8024, 3),
       estimated: true,
       unit: "tokens",
     });
     expect(parsed.exhausted).toBe(false);
   });
 
-  it("shows unused free account as 0 / 1_000_000 tokens", () => {
+  it("uses a learned per-account free token limit when upstream changes it", () => {
+    const parsed = parseGrokCliBilling(EXHAUSTED_BILLING, USER_PROFILE, {
+      observedTokens: 100_000,
+      freeTokenLimit: 750_000,
+    });
+    expect(parsed.quotas["Local usage (rolling 24h)"]).toMatchObject({
+      used: 100_000,
+      total: 750_000,
+      remainingPercentage: expect.closeTo(86.6667, 3),
+    });
+  });
+
+  it("shows local rolling usage and authoritative upstream snapshot separately", () => {
+    const parsed = parseGrokCliBilling(EXHAUSTED_BILLING, USER_PROFILE, {
+      observedTokens: 12_000,
+      freeTokensActual: 510_000,
+      freeTokenLimit: 500_000,
+    });
+    expect(parsed.quotas["Local usage (rolling 24h)"]).toMatchObject({
+      used: 12_000,
+      total: 500_000,
+      estimated: true,
+    });
+    expect(parsed.quotas["Upstream quota snapshot"]).toMatchObject({
+      used: 510_000,
+      total: 500_000,
+      estimated: false,
+      snapshot: true,
+      remainingPercentage: 0,
+    });
+  });
+
+  it("shows unused free account as 0 / 500_000 tokens", () => {
     const parsed = parseGrokCliBilling(EXHAUSTED_BILLING, USER_PROFILE);
     expect(parsed.plan).toBe("Free");
-    expect(parsed.quotas["Free tokens (est. 24h)"]).toMatchObject({
+    expect(parsed.quotas["Local usage (rolling 24h)"]).toMatchObject({
       used: 0,
-      total: 1_000_000,
+      total: 500_000,
       remainingPercentage: 100,
     });
     expect(parsed.exhausted).toBe(false);
@@ -212,7 +244,7 @@ describe("parseGrokCliBilling", () => {
     const parsed = parseGrokCliBilling(EXHAUSTED_BILLING, USER_PROFILE, {
       observedTokens: 1_065_387,
     });
-    expect(parsed.quotas["Free tokens (est. 24h)"].remainingPercentage).toBe(0);
+    expect(parsed.quotas["Local usage (rolling 24h)"].remainingPercentage).toBe(0);
     expect(parsed.exhausted).toBe(true);
   });
 
@@ -352,9 +384,9 @@ describe("getUsageForProvider(grok-cli)", () => {
     expect(usage.message).toBeUndefined();
     expect(usage.plan).toBe("Free");
     expect(usage.quotas["On-demand"]).toBeUndefined();
-    expect(usage.quotas["Free tokens (est. 24h)"]).toMatchObject({
+    expect(usage.quotas["Local usage (rolling 24h)"]).toMatchObject({
       used: 988,
-      total: 1_000_000,
+      total: 500_000,
     });
   });
 
