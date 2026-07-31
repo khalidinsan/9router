@@ -136,12 +136,18 @@ export const ANTIGRAVITY_HEADERS = {
   "User-Agent": `antigravity/cli/1.0.16 (aidev_client; os_type=${platform()}; arch=${arch()}; auth_method=consumer)`
 };
 
-// Cloud Code Assist API (Antigravity uses the daily environment, matching the
-// official agy CLI and avoiding SERVICE_DISABLED/CONSUMER_INVALID errors for
-// consumer-authenticated accounts).
+// Cloud Code Assist discovery/onboarding endpoints differ by client ecosystem.
+// Antigravity chat stays on the daily host in the provider registry, while
+// project discovery and onboarding use the production Cloud Code API.
 export const CLOUD_CODE_API = {
-  loadCodeAssist: "https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist",
-  onboardUser: "https://daily-cloudcode-pa.googleapis.com/v1internal:onboardUser",
+  "gemini-cli": {
+    loadCodeAssist: "https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist",
+    onboardUser: "https://cloudcode-pa.googleapis.com/v1internal:onboardUser",
+  },
+  antigravity: {
+    loadCodeAssist: "https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist",
+    onboardUser: "https://cloudcode-pa.googleapis.com/v1internal:onboardUser",
+  },
 };
 
 // The official agy CLI sends only the string ideType "ANTIGRAVITY" in both the

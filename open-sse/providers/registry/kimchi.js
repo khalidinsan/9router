@@ -12,7 +12,7 @@ export default {
       apiKeyUrl: "https://app.kimchi.dev",
     },
   },
-  category: "apikey",
+  category: "freeTier",
   authType: "apikey",
   authModes: ["apikey"],
   hasOAuth: false,

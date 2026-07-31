@@ -10,7 +10,7 @@
  *   config: {
  *     currentPeriod: { type: "USAGE_PERIOD_TYPE_WEEKLY", start, end },
  *     creditUsagePercent: 7.0,          // unified weekly allotment (SuperGrok)
- *     productUsage: [                   // per-product weekly bars
+ *     productUsage: [                   // shared-pool breakdown metadata
  *       { product: "GrokBuild", usagePercent: 7.0 },
  *       { product: "Api" }
  *     ],
@@ -37,6 +37,7 @@ import {
   GROK_CLI_USER_AGENT,
   GROK_CLI_VERSION,
 } from "../../config/grokCli.js";
+import { decodeGrokCreditsFrame } from "./grokCliQuotaFrame.js";
 
 const USAGE = U("grok-cli");
 const BILLING_URL = USAGE.url || "https://cli-chat-proxy.grok.com/v1/billing?format=credits";
@@ -47,6 +48,13 @@ export const GROK_CLI_FREE_TOKEN_LIMIT = 500_000;
 export const GROK_CLI_FREE_WINDOW_MS = 24 * 60 * 60 * 1000;
 const FREE_TOKEN_QUOTA_NAME = "Local usage (rolling 24h)";
 const UPSTREAM_FREE_TOKEN_SNAPSHOT_NAME = "Upstream quota snapshot";
+
+// SuperGrok weekly shared pool.
+const GRPC_CREDITS_URL =
+  "https://grok.com/grok_api_v2.GrokBuildBilling/GetGrokCreditsConfig";
+// Empty gRPC-web request frame (flag 0 + length 0). Without it upstream returns
+// grpc-status 13 "Missing request message." with a 0-byte body.
+const GRPC_WEB_EMPTY_REQUEST_FRAME = Buffer.from([0, 0, 0, 0, 0]);
 
 /** Unwrap protobuf-json `{ val: n }` or plain numbers/strings. */
 function unwrapVal(value, fallback = 0) {
@@ -192,30 +200,7 @@ function freeTokenQuota(observedTokens, tokenLimit = GROK_CLI_FREE_TOKEN_LIMIT) 
   };
 }
 
-function periodLabel(config) {
-  const type = config?.currentPeriod?.type;
-  if (typeof type === "string") {
-    if (/WEEKLY/i.test(type)) return "Weekly";
-    if (/MONTHLY/i.test(type)) return "Monthly";
-    if (/DAILY/i.test(type)) return "Daily";
-  }
-  return "Weekly";
-}
 
-function productLabel(product) {
-  if (typeof product !== "string" || !product.trim()) return "Usage";
-  const key = product.trim().toLowerCase().replace(/[\s_-]+/g, "");
-  const aliases = {
-    grokbuild: "Grok Build",
-    api: "API",
-    grok: "Grok",
-  };
-  if (aliases[key]) return aliases[key];
-  return product
-    .replace(/([a-z])([A-Z])/g, "$1 $2")
-    .replace(/[_-]+/g, " ")
-    .replace(/\b\w/g, (c) => c.toUpperCase());
-}
 
 /** Percent-used (0–100+) → dashboard quota row (remaining % of allotment). */
 function percentQuota(usagePercent, resetAt) {
@@ -290,7 +275,6 @@ export function parseGrokCliBilling(billing, user = null, options = {}) {
     null;
 
   const quotas = {};
-  const label = periodLabel(config);
   const tier = subscriptionTier(user, config);
   // Free/Basic tiers are not "subscription access" (paid).
   const subscriptionAccess =
@@ -314,47 +298,19 @@ export function parseGrokCliBilling(billing, user = null, options = {}) {
       ? root.productUsage
       : [];
 
-  const productPercents = productUsage
-    .map((row) => {
-      if (!row || typeof row !== "object") return null;
-      const pct = unwrapVal(row.usagePercent ?? row.percent ?? row.usedPercent, NaN);
-      if (!Number.isFinite(pct)) return null;
-      return { product: row.product, usagePercent: pct };
-    })
-    .filter(Boolean);
-
+  // creditUsagePercent is the single shared SuperGrok pool. productUsage is
+  // breakdown metadata only and must never become independent quota bars.
   if (Number.isFinite(creditUsagePercent)) {
-    // Aggregate weekly bar (matches official CLI weekly usage %)
-    quotas[label] = percentQuota(creditUsagePercent, periodEnd);
-    // Extra per-product bars only when they diverge from the aggregate
-    for (const row of productPercents) {
-      const usedPct = Math.min(100, Math.max(0, row.usagePercent));
-      if (Math.abs(usedPct - Math.min(100, Math.max(0, creditUsagePercent))) < 0.01) continue;
-      const name = productLabel(row.product);
-      if (!quotas[name]) quotas[name] = percentQuota(row.usagePercent, periodEnd);
-    }
-  } else if (productPercents.length === 1) {
-    quotas[label] = percentQuota(productPercents[0].usagePercent, periodEnd);
-  } else if (productPercents.length > 1) {
-    for (const row of productPercents) {
-      const name = productLabel(row.product);
-      if (!quotas[name]) quotas[name] = percentQuota(row.usagePercent, periodEnd);
-    }
-  }
-
-  // Unused SuperGrok: productUsage rows without usagePercent, and/or zero
-  // fields omitted entirely. Prefer Weekly@0% over a fake depleted On-demand bar.
-  // Do NOT use hasGrokCodeAccess / "Grok Code" alone — free/promo exhausted
-  // accounts often share that flag + isUnifiedBillingUser + WEEKLY period.
-  if (Object.keys(quotas).length === 0) {
+    quotas["Weekly SuperGrok"] = percentQuota(creditUsagePercent, periodEnd);
+  } else {
+    // Protobuf JSON omits zero-valued percentages. A paid SuperGrok account with
+    // weekly/product metadata but no percentage therefore means 0% used.
     const isUnified =
       config.isUnifiedBillingUser === true || root.isUnifiedBillingUser === true;
     const weeklyPeriod = /WEEKLY/i.test(String(config.currentPeriod?.type || ""));
     const isSuperGrokTier = formatPlanName(tier) === "SuperGrok";
-    const hasProductRows = productUsage.length > 0;
-
-    if (hasProductRows || (isUnified && weeklyPeriod && isSuperGrokTier)) {
-      quotas[label] = percentQuota(0, periodEnd);
+    if (isSuperGrokTier && (productUsage.length > 0 || (isUnified && weeklyPeriod))) {
+      quotas["Weekly SuperGrok"] = percentQuota(0, periodEnd);
     }
   }
 
@@ -409,6 +365,8 @@ export function parseGrokCliBilling(billing, user = null, options = {}) {
       unlimited: false,
     };
   }
+
+
 
   // Opportunistic richer credit envelopes (future / other account types)
   const creditBags = [
@@ -492,6 +450,50 @@ export function parseGrokCliBilling(billing, user = null, options = {}) {
 }
 
 /**
+ * Live SuperGrok weekly pool via gRPC-web GetGrokCreditsConfig.
+ * Fail-open: any network/auth/parse failure returns null.
+ * @returns {{ percentUsed: number, resetAt: string|null } | null}
+ */
+export async function fetchGrokCliCreditsConfig(accessToken, proxyOptions = null) {
+  if (!accessToken) return null;
+  try {
+    const res = await proxyAwareFetch(
+      GRPC_CREDITS_URL,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          "Content-Type": "application/grpc-web+proto",
+          "X-Grpc-Web": "1",
+          Accept: "application/grpc-web+proto",
+        },
+        body: GRPC_WEB_EMPTY_REQUEST_FRAME,
+      },
+      proxyOptions,
+    );
+    if (!res?.ok) return null;
+    const arrayBuffer = await res.arrayBuffer().catch(() => null);
+    if (!arrayBuffer) return null;
+    return decodeGrokCreditsFrame(Buffer.from(arrayBuffer));
+  } catch {
+    return null;
+  }
+}
+
+function quotasFromGrpcCredits(decoded) {
+  if (!decoded || !Number.isFinite(decoded.percentUsed)) return null;
+  // Round for bar display (fixed32 ratio * 100 can be 34.999… for 0.35)
+  const used = Math.round(Math.max(0, Math.min(100, decoded.percentUsed)));
+  return {
+    "Weekly SuperGrok": makeQuota({
+      used,
+      total: 100,
+      resetAt: decoded.resetAt || null,
+    }),
+  };
+}
+
+/**
  * @param {string} accessToken
  * @param {object|null} providerSpecificData
  * @param {object|null} proxyOptions
@@ -554,6 +556,16 @@ export async function getGrokCliUsage(
     });
 
     if (!parsed.quotas || Object.keys(parsed.quotas).length === 0) {
+      // Paid SuperGrok often returns cap=0 over REST but exposes the shared
+      // weekly pool on GetGrokCreditsConfig — try that before giving up.
+      const grpc = await fetchGrokCliCreditsConfig(accessToken, proxyOptions);
+      const grpcQuotas = quotasFromGrpcCredits(grpc);
+      if (grpcQuotas) {
+        return {
+          plan: parsed.plan,
+          quotas: grpcQuotas,
+        };
+      }
       return {
         plan: parsed.plan,
         message: parsed.subscriptionAccess

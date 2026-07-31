@@ -90,7 +90,7 @@ describe("PlaywrightManager", () => {
     assert.equal(browserLauncher.launch.mock.callCount(), 1);
   });
 
-  it("creates a new context with default viewport", async () => {
+  it("creates a Camoufox context without a Playwright viewport", async () => {
     const { browserLauncher, newContextMock } = makeMocks();
     const manager = new PlaywrightManager({
       browserLauncher,
@@ -101,10 +101,10 @@ describe("PlaywrightManager", () => {
 
     assert.equal(newContextMock.mock.callCount(), 1);
     assert.deepEqual(newContextMock.mock.calls[0].arguments[0], {
-      viewport: { width: 1280, height: 800 },
+      viewport: null,
     });
     assert.deepEqual(context, {
-      options: { viewport: { width: 1280, height: 800 } },
+      options: { viewport: null },
     });
   });
 
@@ -137,7 +137,7 @@ describe("PlaywrightManager", () => {
     await manager.newContext();
 
     assert.deepEqual(newContextMock.mock.calls[0].arguments[0], {
-      viewport: { width: 1280, height: 800 },
+      viewport: null,
       proxy: { server: "http://proxy.example.com:8080" },
     });
   });
@@ -155,8 +155,30 @@ describe("PlaywrightManager", () => {
     });
 
     assert.deepEqual(newContextMock.mock.calls[0].arguments[0], {
-      viewport: { width: 1280, height: 800 },
+      viewport: null,
       proxy: { server: "http://other-proxy.example.com:8080" },
+    });
+  });
+
+  it("falls back to stock Firefox when Camoufox native bindings mismatch Node", async () => {
+    const { browserLauncher, newContextMock } = makeMocks();
+    const manager = new PlaywrightManager({
+      browserLauncher,
+      launchOptionsFn: async () => {
+        throw new Error("better-sqlite3 NODE_MODULE_VERSION 127 requires 115");
+      },
+    });
+
+    await manager.newContext();
+
+    assert.equal(browserLauncher.launch.mock.callCount(), 1);
+    assert.deepEqual(browserLauncher.launch.mock.calls[0].arguments[0], {
+      headless: true,
+      proxy: undefined,
+    });
+    assert.equal(manager.usingCamoufox, false);
+    assert.deepEqual(newContextMock.mock.calls[0].arguments[0], {
+      viewport: { width: 1280, height: 800 },
     });
   });
 

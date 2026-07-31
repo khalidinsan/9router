@@ -89,6 +89,33 @@ describe("antigravity computeRetryDelay hook (D3)", () => {
     expect(h["Accept"]).toBe("text/event-stream");
   });
 
+  it("strips rejected top-level thinking fields for consumer accounts without projectId", () => {
+    const out = ag.transformRequest("claude-opus-4-6-thinking", {
+      project: "generated-project-that-must-not-be-sent",
+      thinking: { type: "disabled" },
+      output_config: { effort: "low" },
+      reasoning_effort: "none",
+      reasoning: { effort: "none" },
+      enable_thinking: false,
+      thinking_budget: 0,
+      thinkingConfig: { thinkingBudget: 0 },
+      request: {
+        contents: [{ role: "user", parts: [{ text: "hi" }] }],
+        thinking: { type: "disabled" },
+      },
+    }, true, { connectionId: "consumer-conn" });
+
+    expect(out).not.toHaveProperty("project");
+    expect(out).not.toHaveProperty("thinking");
+    expect(out).not.toHaveProperty("output_config");
+    expect(out).not.toHaveProperty("reasoning_effort");
+    expect(out).not.toHaveProperty("reasoning");
+    expect(out).not.toHaveProperty("enable_thinking");
+    expect(out).not.toHaveProperty("thinking_budget");
+    expect(out).not.toHaveProperty("thinkingConfig");
+    expect(out.request).not.toHaveProperty("thinking");
+  });
+
   it("transforms chat requests with fork requestId shape and 64000 token cap", () => {
     const out = ag.transformRequest("claude-opus-4-6-thinking", {
       request: {

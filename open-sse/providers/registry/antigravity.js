@@ -51,6 +51,7 @@ export default {
       },
     },
     usage: {
+      // Discovery (quota/project) on PROD; daily host rejects these.
       quotaApiUrl: "https://cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels",
       loadProjectApiUrl: "https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist",
       tokenUrl: "https://oauth2.googleapis.com/token",
@@ -59,9 +60,10 @@ export default {
     clientSecret: "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",
   },
   models: [
-    // High-reasoning Gemini 3.5 Flash. This is the ID the official agy CLI uses
-    // for "Gemini 3.5 Flash (High)". Do NOT use "gemini-3.5-flash-high" — it does
-    // not exist in Antigravity and will return 404.
+    { id: "gemini-3.6-flash-high", name: "Gemini 3.6 Flash (High)", upstreamModelId: "gemini-3.6-flash-tiered(high)" },
+    { id: "gemini-3.6-flash-medium", name: "Gemini 3.6 Flash (Medium)", upstreamModelId: "gemini-3.6-flash-tiered(medium)" },
+    { id: "gemini-3.6-flash-low", name: "Gemini 3.6 Flash (Low)", upstreamModelId: "gemini-3.6-flash-tiered(low)" },
+    { id: "gemini-3.5-flash-high", name: "Gemini 3.5 Flash (High)" },
     { id: "gemini-3-flash-agent", name: "Gemini 3.5 Flash (High)" },
     { id: "gemini-3.5-flash-low", name: "Gemini 3.5 Flash (Medium)" },
     { id: "gemini-3.5-flash-extra-low", name: "Gemini 3.5 Flash (Low)" },
@@ -91,8 +93,8 @@ export default {
     ],
     apiEndpoint: "https://daily-cloudcode-pa.googleapis.com",
     apiVersion: "v1internal",
-    loadCodeAssistEndpoint: "https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist",
-    onboardUserEndpoint: "https://daily-cloudcode-pa.googleapis.com/v1internal:onboardUser",
+    loadCodeAssistEndpoint: "https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist",
+    onboardUserEndpoint: "https://cloudcode-pa.googleapis.com/v1internal:onboardUser",
     loadCodeAssistUserAgent: "google-api-nodejs-client/9.15.1",
     loadCodeAssistApiClient: "google-cloud-sdk vscode_cloudshelleditor/0.1",
     refreshLeadMs: 300000,

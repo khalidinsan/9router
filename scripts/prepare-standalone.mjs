@@ -42,3 +42,22 @@ if (fs.existsSync(sqlJsSrc)) {
   copyDir(sqlJsSrc, sqlJsDest);
   console.log("[prepare-standalone] copied sql.js dist/");
 }
+
+// Camoufox loads these files at runtime, but Next.js tracing does not include
+// non-code package assets automatically.
+const camoufoxDataSrc = path.join(root, "node_modules", "camoufox-js", "dist", "data-files");
+const camoufoxDataDest = path.join(standalone, "node_modules", "camoufox-js", "dist", "data-files");
+if (fs.existsSync(camoufoxDataSrc)) {
+  copyDir(camoufoxDataSrc, camoufoxDataDest);
+  console.log("[prepare-standalone] copied camoufox data-files/");
+}
+
+// Never ship better-sqlite3 in the portable standalone output. Its native
+// binary is tied to the Node ABI used during install/build and may not match the
+// Node runtime that starts the server. The DB driver will fall back to node:sqlite
+// (Node >=22.5) or the bundled sql.js implementation.
+const betterSqliteDest = path.join(standalone, "node_modules", "better-sqlite3");
+if (fs.existsSync(betterSqliteDest)) {
+  fs.rmSync(betterSqliteDest, { recursive: true, force: true });
+  console.log("[prepare-standalone] stripped better-sqlite3 native module");
+}

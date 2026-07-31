@@ -80,6 +80,8 @@ describe("AutomationQueue", () => {
     assert.equal(results.length, 2);
     assert.equal(results.filter((r) => r.success).length, 1);
     assert.equal(results.filter((r) => !r.success).length, 1);
+    assert.deepEqual(summary.errors, ["login failed"]);
+    assert.equal(typeof summary.errors[0], "string");
   });
 
   it("emits done summary after all jobs finish", async () => {

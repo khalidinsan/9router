@@ -27,7 +27,12 @@ export class AutomationQueue {
         if (r.status === "fulfilled" && r.value?.success) summary.success++;
         else {
           summary.failed++;
-          summary.errors.push(r.reason || r.value?.error || "unknown");
+          const failure = r.status === "rejected" ? r.reason : r.value?.error;
+          const message =
+            typeof failure === "string"
+              ? failure
+              : failure?.error || failure?.message || "unknown";
+          summary.errors.push(String(message));
         }
       }
     }

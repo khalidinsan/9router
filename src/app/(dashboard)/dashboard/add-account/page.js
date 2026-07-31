@@ -1733,9 +1733,13 @@ export default function AddAccountPage() {
           )}
           {Array.isArray(summary.errors) && summary.errors.length > 0 && (
             <div className="mt-3 rounded-lg border border-amber-500/20 bg-amber-500/5 px-3 py-2 text-xs text-amber-700 dark:text-amber-300 space-y-1">
-              {summary.errors.slice(0, 5).map((err, i) => (
-                <div key={i}>• {err}</div>
-              ))}
+              {summary.errors.slice(0, 5).map((err, i) => {
+                const message =
+                  typeof err === "string"
+                    ? err
+                    : err?.error || err?.message || JSON.stringify(err);
+                return <div key={i}>• {message}</div>;
+              })}
             </div>
           )}
         </Card>

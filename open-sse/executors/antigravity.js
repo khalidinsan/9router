@@ -132,6 +132,10 @@ export class AntigravityExecutor extends BaseExecutor {
       delete cleanBody.project;
     }
 
+    // OpenAI clients may include stream_options even for non-streaming calls.
+    // Sanitize the exact object that will be sent; consumer accounts use a clone.
+    if (stream !== true) delete cleanBody.stream_options;
+
     // ─── Image generation: completely different request structure ───
     if (isImageModel(model)) {
       const imageConfig = parseImageConfig(model);
@@ -251,15 +255,17 @@ export class AntigravityExecutor extends BaseExecutor {
       ...(tools?.length > 0 && { toolConfig: { functionCallingConfig: { mode: "VALIDATED" } } })
     };
 
-    // Strip blacklisted thinking fields from top-level body (set by thinkingUnified.js at root, not body.request)
-    stripBlacklisted(body);
+    // Strip top-level thinking fields from the exact object that will be sent.
+    // Consumer accounts without projectId use a shallow clone, so sanitizing
+    // only `body` would leak fields such as `thinking` into the Google payload.
+    stripBlacklisted(cleanBody);
 
     this._lastSessionId = transformedRequest.sessionId; // cached for buildHeaders (base.execute order)
 
     return {
       ...cleanBody,
       ...(projectId && { project: projectId }),
-      model: model,
+      model: cleanBody.model || model,
       userAgent: "antigravity",
       requestType: "agent",
       requestId: `agent-${crypto.randomUUID()}`,
