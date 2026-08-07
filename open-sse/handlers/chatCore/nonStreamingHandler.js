@@ -222,9 +222,9 @@ export async function handleNonStreamingResponse({ providerResponse, provider, m
     }
   }
 
-  // ClinePass wraps the OpenAI completion in `{ data: { choices: [...] }, success: true }`.
+  // Cline / ClinePass wrap the OpenAI completion in `{ data: { choices: [...] }, success: true }`.
   // Unwrap it so downstream code sees the standard OpenAI shape.
-  if (provider === "clinepass" && responseBody?.data && responseBody?.success === true) {
+  if ((provider === "cline" || provider === "clinepass") && responseBody?.data && responseBody?.success === true) {
     responseBody = responseBody.data;
   }
 
