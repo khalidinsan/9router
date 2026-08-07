@@ -164,6 +164,13 @@ export const LOAD_CODE_ASSIST_HEADERS = {
 
 export const LOAD_CODE_ASSIST_METADATA = ANTIGRAVITY_LOAD_CODE_ASSIST_METADATA;
 
+// Fork: keep the AGY CLI fingerprint for antigravity — upstream switched to the
+// IDE user-agent (ANTIGRAVITY_IDE_USER_AGENT) which Google's backend
+// fingerprints differently. Alias the CLI headers so upstream's projectId.js
+// branch (provider === "antigravity" ? ANTIGRAVITY_LOAD_CODE_ASSIST_HEADERS : …)
+// keeps working without swapping the fingerprint.
+export const ANTIGRAVITY_LOAD_CODE_ASSIST_HEADERS = LOAD_CODE_ASSIST_HEADERS;
+
 // System prompts
 export const CLAUDE_SYSTEM_PROMPT = "You are Claude Code, Anthropic's official CLI for Claude.";
 export const ANTIGRAVITY_DEFAULT_SYSTEM = "You are Antigravity, a powerful agentic AI coding assistant designed by the Google Deepmind team working on Advanced Agentic Coding.You are pair programming with a USER to solve their coding task. The task may require creating a new codebase, modifying or debugging an existing codebase, or simply answering a question.**Absolute paths only****Proactiveness**";
@@ -178,7 +185,6 @@ export const OAUTH_ENDPOINTS = {
   google:    { token: "https://oauth2.googleapis.com/token", auth: "https://accounts.google.com/o/oauth2/auth" },
   openai:    { token: PROVIDER_OAUTH["codex"]?.tokenUrl, auth: PROVIDER_OAUTH["codex"]?.authorizeUrl },
   anthropic: { token: PROVIDER_OAUTH["claude"]?.tokenUrl, auth: "https://api.anthropic.com/v1/oauth/authorize" }, // ≠ claude.authorizeUrl (claude.ai login) — keep
-  qwen:      { token: PROVIDER_OAUTH["qwen"]?.tokenUrl, auth: PROVIDER_OAUTH["qwen"]?.deviceCodeUrl },
   iflow:     { token: PROVIDER_OAUTH["iflow"]?.tokenUrl, auth: PROVIDER_OAUTH["iflow"]?.authorizeUrl },
   github:    { token: PROVIDER_OAUTH["github"]?.tokenUrl, auth: PROVIDER_OAUTH["github"]?.authorizeUrl, deviceCode: PROVIDER_OAUTH["github"]?.deviceCodeUrl },
 };

@@ -200,8 +200,6 @@ function freeTokenQuota(observedTokens, tokenLimit = GROK_CLI_FREE_TOKEN_LIMIT) 
   };
 }
 
-
-
 /** Percent-used (0–100+) → dashboard quota row (remaining % of allotment). */
 function percentQuota(usagePercent, resetAt) {
   const usedPct = Math.min(100, Math.max(0, toFiniteNumber(usagePercent, 0)));
@@ -212,6 +210,24 @@ function percentQuota(usagePercent, resetAt) {
     resetAt: resetAt || null,
     unlimited: false,
   };
+}
+
+// Display only; upstream remains authoritative for access and quota enforcement.
+function planFromAccessToken(accessToken) {
+  try {
+    const payload = JSON.parse(Buffer.from(accessToken.split(".")[1], "base64url"));
+    return {
+      0: "Free",
+      1: "SuperGrok",
+      2: "X Basic",
+      3: "X Premium",
+      4: "X Premium Plus",
+      5: "SuperGrok Heavy",
+      6: "SuperGrok Lite",
+    }[payload.tier] || "";
+  } catch {
+    return "";
+  }
 }
 
 function makeQuota({ used, total, resetAt, unlimited = false }) {
@@ -547,13 +563,14 @@ export async function getGrokCliUsage(
       user = await userRes.json().catch(() => null);
     }
 
-    const parsed = parseGrokCliBilling(billing, user, {
+const parsed = parseGrokCliBilling(billing, user, {
       observedTokens,
       freeTokenLimit:
         options?.freeTokenLimit ?? providerSpecificData?.freeTokenLimit,
       freeTokensActual:
         options?.freeTokensActual ?? providerSpecificData?.freeTokensActual,
     });
+    parsed.plan = planFromAccessToken(accessToken) || parsed.plan;
 
     if (!parsed.quotas || Object.keys(parsed.quotas).length === 0) {
       // Paid SuperGrok often returns cap=0 over REST but exposes the shared

@@ -39,13 +39,10 @@ const antigravity = {
     return await response.json();
   },
   postExchange: async (tokens) => {
-    // Match the official agy CLI metadata and headers for consumer accounts.
     const loadHeaders = {
       "Authorization": `Bearer ${tokens.access_token}`,
       "Content-Type": "application/json",
       "User-Agent": ANTIGRAVITY_CONFIG.loadCodeAssistUserAgent,
-      "X-Goog-Api-Client": ANTIGRAVITY_CONFIG.loadCodeAssistApiClient,
-      "Client-Metadata": ANTIGRAVITY_CONFIG.loadCodeAssistClientMetadata,
       "x-request-source": "local",
     };
     const metadata = getAntigravityClientMetadata();

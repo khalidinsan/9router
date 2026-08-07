@@ -113,7 +113,7 @@ async function runHeavyStartup() {
       .catch((e) => console.log("[AutoPing] scheduler start failed:", e.message));
   }
 
-  // Grok CLI: proactive OAuth refresh + free-quota metadata snapshots
+// Grok CLI: proactive OAuth refresh + free-quota metadata snapshots
   import("@/shared/services/grokCliMaintenance")
     .then(({ startGrokCliMaintenance }) => startGrokCliMaintenance())
     .catch((e) => console.log("[GrokMaint] start failed:", e.message));
