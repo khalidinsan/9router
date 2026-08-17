@@ -400,14 +400,21 @@
     "modelsUrl": "https://cli-chat-proxy.grok.com/v1/models",
     "userUrl": "https://cli-chat-proxy.grok.com/v1/user",
     "billingUrl": "https://cli-chat-proxy.grok.com/v1/billing",
-    "clientVersion": "0.2.99",
+    "clientVersion": "1.0.3",
     "clientIdentifier": "grok-shell",
     "tokenAuth": "xai-grok-cli",
     "headers": {
-      "User-Agent": "grok-shell/0.2.99 (linux; x86_64)",
+      "User-Agent": "grok-shell/1.0.3 (linux; x86_64)",
       "x-grok-client-identifier": "grok-shell",
-      "x-grok-client-version": "0.2.99"
+      "x-grok-client-version": "1.0.3",
+      "x-xai-token-auth": "xai-grok-cli",
+      "x-authenticateresponse": "authenticate-response",
+      "x-grok-client-mode": "headless",
+      "x-compaction-at": "400000",
+      "x-compactions-remaining": "1",
+      "x-grok-doom-loop-check": "true"
     },
+    "compactionAt": 400000,
     "usage": {
       "url": "https://cli-chat-proxy.grok.com/v1/billing?format=credits",
       "userUrl": "https://cli-chat-proxy.grok.com/v1/user?include=subscription"

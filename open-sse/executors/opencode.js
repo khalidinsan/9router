@@ -19,7 +19,7 @@ const MESSAGES_MODELS = new Set();
 //
 // Verified from this repo: curl → 200, bun → 200, node/undici → 429, python3 → 403.
 
-const RELAY_VERSION = "1";
+const RELAY_VERSION = "2";
 const RELAY_DEFAULT_PORT = Number(process.env.BUN_RELAY_PORT || 20129);
 const RELAY_SCRIPT = `
 import fs from "node:fs";
@@ -29,6 +29,7 @@ const port = Number(process.env.RELAY_PORT || 20129);
 try { fs.writeFileSync(path.join(os.tmpdir(), \`9router-bun-relay-\${port}.pid\`), String(process.pid)); } catch {}
 const server = Bun.serve({
   port,
+  idleTimeout: 0, // opencode SSE keep-alives can gap >10s; default idle timeout kills mid-stream
   async fetch(req) {
     const u = new URL(req.url);
     if (u.pathname === "/health") return new Response(JSON.stringify({ v: "${RELAY_VERSION}" }), { headers: { "Content-Type": "application/json" } });
@@ -40,18 +41,39 @@ const server = Bun.serve({
     headers.delete("content-length");
     headers.delete("connection");
     try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(new Error("relay upstream timeout")), 300000);
+      req.signal.addEventListener("abort", () => controller.abort(new Error("client disconnected")), { once: true });
       const upstream = await fetch(target, {
         method: req.method,
         headers,
         body: req.method === "GET" || req.method === "HEAD" ? undefined : req.body,
-        signal: req.signal,
+        signal: controller.signal,
         duplex: "half",
       });
+      clearTimeout(timer);
       const respHeaders = new Headers(upstream.headers);
       respHeaders.delete("content-length");
       respHeaders.delete("connection");
       respHeaders.delete("content-encoding"); // bun auto-decompresses; avoid double gunzip on the client
-      return new Response(upstream.body, { status: upstream.status, statusText: upstream.statusText, headers: respHeaders });
+      // Error-tolerant pipe: an upstream mid-stream error closes the stream cleanly
+      // instead of surfacing as an undici "terminated" TypeError to the client.
+      const stream = new ReadableStream({
+        async start(c) {
+          const reader = upstream.body.getReader();
+          try {
+            for (;;) {
+              const { done, value } = await reader.read();
+              if (done) { c.close(); return; }
+              c.enqueue(value);
+            }
+          } catch {
+            try { c.close(); } catch { /* already closed */ }
+          }
+        },
+        cancel() { try { upstream.body.cancel(); } catch { /* ignore */ } },
+      });
+      return new Response(stream, { status: upstream.status, statusText: upstream.statusText, headers: respHeaders });
     } catch (e) {
       return new Response(JSON.stringify({ error: String(e?.message || e) }), { status: 502, headers: { "Content-Type": "application/json" } });
     }
@@ -99,23 +121,6 @@ async function isRelayHealthy(port) {
   }
 }
 
-// Kill a stale relay (wrong script version) via its pidfile, so its port can be reused.
-async function killStaleRelay(port) {
-  const pidFile = path.join(os.tmpdir(), `9router-bun-relay-${port}.pid`);
-  try {
-    const pid = Number((await fs.promises.readFile(pidFile, "utf8")).trim());
-    if (Number.isInteger(pid) && pid > 0) {
-      try { process.kill(pid, "SIGTERM"); } catch { /* already dead */ }
-      await sleep(200);
-    }
-  } catch {
-    // no pidfile — leave the stale process; we'll just use another port
-  }
-  try { await fs.promises.unlink(pidFile); } catch { /* ignore */ }
-}
-
-let relayPromise = null;
-
 // Per-provider TLS mode, read from settings (providerStrategies.opencode.tlsMode).
 // "bun" (default) relays through the local bun sidecar; "direct" sends straight
 // from Node. Cached briefly so per-request lookups don't hammer the settings DB.
@@ -137,9 +142,41 @@ async function getTlsMode() {
 }
 
 async function ensureBunRelay() {
-  if (!relayPromise) relayPromise = startBunRelay();
+  if (!relayPromise) {
+    relayPromise = (async () => {
+      // Serialize concurrent start attempts: two cold-start requests racing
+      // would otherwise spawn two relays and kill each other's pidfile target.
+      if (relayStarting) return relayStarting;
+      relayStarting = startBunRelay();
+      try {
+        return await relayStarting;
+      } finally {
+        relayStarting = null;
+      }
+    })();
+  }
   return relayPromise;
 }
+
+// Kill a stale relay (wrong script version) via its pidfile, so its port can be reused.
+// Never touches a live same-version relay — only free ports from dead/stale processes.
+async function killStaleRelay(port) {
+  if (await isRelayHealthy(port)) return;
+  const pidFile = path.join(os.tmpdir(), `9router-bun-relay-${port}.pid`);
+  try {
+    const pid = Number((await fs.promises.readFile(pidFile, "utf8")).trim());
+    if (Number.isInteger(pid) && pid > 0) {
+      try { process.kill(pid, "SIGTERM"); } catch { /* already dead */ }
+      await sleep(200);
+    }
+  } catch {
+    // no pidfile — leave the stale process; we'll just use another port
+  }
+  try { await fs.promises.unlink(pidFile); } catch { /* ignore */ }
+}
+
+let relayPromise = null;
+let relayStarting = null;
 
 async function startBunRelay() {
   const bunBin = await resolveBunBinary();
@@ -162,13 +199,16 @@ async function startBunRelay() {
     });
     child.on("error", () => {});
     child.unref();
+    let exited = false;
+    child.on("exit", () => { exited = true; });
     let healthy = false;
     for (let i = 0; i < 30; i++) {
       await sleep(100);
+      if (exited) break; // our spawn died — don't waste the window, move on
       if (await isRelayHealthy(port)) { healthy = true; break; }
     }
     if (healthy) return `http://127.0.0.1:${port}`;
-    child.kill();
+    if (!exited) child.kill();
   }
   return null;
 }
@@ -190,11 +230,13 @@ export class OpenCodeExecutor extends BaseExecutor {
   }
 
   buildHeaders() {
-    // Mirror the opencode TUI's zen client request shape: no Authorization
-    // header (anonymous account-less), x-opencode-client: tui.
+    // Match the OpenCode Zen client fingerprint for callers that are not the
+    // OpenCode TUI itself (for example OMP or another OpenAI-compatible client).
     return {
       "Content-Type": "application/json",
-      "x-opencode-client": "tui",
+      "Authorization": "Bearer public",
+      "User-Agent": "opencode/1.18.18 ai-sdk/provider-utils/4.0.23 runtime/bun/1.3.14",
+      "x-opencode-client": "cli",
       "Accept": "text/event-stream"
     };
   }
@@ -206,9 +248,23 @@ export class OpenCodeExecutor extends BaseExecutor {
     // "direct" mode: skip the relay entirely (Node TLS, old behavior)
     if ((await getTlsMode()) === "direct") return super.fetch(url, options, proxyOptions);
 
-    const relay = await ensureBunRelay().catch(() => null);
-    if (!relay) return super.fetch(url, options, proxyOptions);
+    let relay = await ensureBunRelay().catch(() => null);
+    if (relay) {
+      const viaRelay = await this.fetchViaRelay(relay, url, options, proxyOptions);
+      if (viaRelay) return viaRelay;
+      // Relay died/refused — reset the cache and try to respawn once before
+      // falling back to direct (which may 429 on Node's TLS fingerprint).
+      relayPromise = null;
+      relay = await ensureBunRelay().catch(() => null);
+      if (relay) {
+        const retry = await this.fetchViaRelay(relay, url, options, proxyOptions);
+        if (retry) return retry;
+      }
+    }
+    return super.fetch(url, options, proxyOptions);
+  }
 
+  async fetchViaRelay(relay, url, options, proxyOptions) {
     const headers = new Headers(options.headers || {});
     headers.set("x-relay-target", url);
     headers.delete("host");
@@ -221,8 +277,8 @@ export class OpenCodeExecutor extends BaseExecutor {
         body: options.body ?? null,
       }, proxyOptions);
     } catch (error) {
-      console.warn(`[OpenCodeExecutor] bun relay failed (${error?.message}), falling back to direct fetch`);
-      return super.fetch(url, options, proxyOptions);
+      console.warn(`[OpenCodeExecutor] bun relay failed (${error?.message}), respawning`);
+      return null;
     }
   }
 }

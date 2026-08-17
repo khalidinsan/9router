@@ -54,8 +54,4 @@ export default {
     { id: "nemotron-3-ultra-fp4", name: "Nemotron 3 Ultra FP4" },
   ],
   serviceKinds: ["llm", "webSearch"],
-  features: {
-    usage: true,
-    usageApikey: true,
-  },
 };

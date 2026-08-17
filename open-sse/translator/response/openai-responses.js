@@ -8,6 +8,7 @@ import { buildChunk } from "../concerns/chunk.js";
 import { buildUsage } from "../concerns/usage.js";
 import { fallbackToolCallId } from "../concerns/toolCall.js";
 import { reasoningDelta, extractReasoningText } from "../concerns/reasoning.js";
+import { splitThinkTaggedText, flushThinkTaggedState } from "../concerns/thinkingTags.js";
 import { ROLE, OPENAI_BLOCK, RESPONSES_ITEM, OPENAI_FINISH, MODEL_FALLBACK } from "../schema/index.js";
 
 /**
@@ -412,27 +413,49 @@ function computeFinishReason(state) {
  * Translate OpenAI Responses API chunk to OpenAI Chat Completions format
  * This is for when Codex returns data and we need to send it to an OpenAI-compatible client
  */
+function attachContinuity(chunk, state) {
+  if (state.encryptedContent) chunk.encrypted_content = state.encryptedContent;
+  if (state.reasoningId) chunk.reasoning_id = state.reasoningId;
+  return chunk;
+}
+
+function emitThinkSplit(state, text) {
+  const { parts, state: next } = splitThinkTaggedText(text, state.thinkTag || {});
+  state.thinkTag = next;
+  const meta = { id: state.chatId, created: state.created, model: state.model || MODEL_FALLBACK };
+  const chunks = [];
+  for (const part of parts) {
+    if (part.kind === "reasoning") chunks.push(buildChunk(meta, reasoningDelta(part.text)));
+    else chunks.push(buildChunk(meta, { content: part.text }));
+  }
+  if (chunks.length === 0) return null;
+  return chunks.length === 1 ? chunks[0] : chunks;
+}
+
 export function openaiResponsesToOpenAIResponse(chunk, state) {
   if (!chunk) {
     // Flush: send final chunk with finish_reason
     if (state.finishReasonSent || !state.started) return null;
 
+    const flushed = flushThinkTaggedState(state.thinkTag || {});
+    state.thinkTag = flushed.state;
     const finishReason = computeFinishReason(state);
 
     state.finishReasonSent = true;
     state.finishReason = finishReason;
 
-    const finalChunk = buildChunk(
-      { id: state.chatId || `chatcmpl-${Date.now()}`, created: state.created || Math.floor(Date.now() / 1000), model: state.model || MODEL_FALLBACK },
-      {},
-      finishReason
-    );
-
+    const meta = { id: state.chatId || `chatcmpl-${Date.now()}`, created: state.created || Math.floor(Date.now() / 1000), model: state.model || MODEL_FALLBACK };
+    const chunks = [];
+    for (const part of flushed.parts) {
+      if (part.kind === "reasoning") chunks.push(buildChunk(meta, reasoningDelta(part.text)));
+      else chunks.push(buildChunk(meta, { content: part.text }));
+    }
+    const finalChunk = attachContinuity(buildChunk(meta, {}, finishReason), state);
     if (state.usage && typeof state.usage === "object") {
       finalChunk.usage = state.usage;
     }
-
-    return finalChunk;
+    chunks.push(finalChunk);
+    return chunks.length === 1 ? chunks[0] : chunks;
   }
 
   // Handle different event types from Responses API
@@ -448,15 +471,11 @@ export function openaiResponsesToOpenAIResponse(chunk, state) {
     state.currentToolCallId = null;
   }
 
-  // Text content delta
+  // Text content delta — peel leaked <thinking>/<think> wrappers into reasoning_content
   if (eventType === "response.output_text.delta") {
     const delta = data.delta || "";
     if (!delta) return null;
-
-    return buildChunk(
-      { id: state.chatId, created: state.created, model: state.model || MODEL_FALLBACK },
-      { content: delta }
-    );
+    return emitThinkSplit(state, delta);
   }
 
   // Text content done (ignore, we handle via delta)
@@ -499,6 +518,15 @@ export function openaiResponsesToOpenAIResponse(chunk, state) {
     return null;
   }
 
+  // Native reasoning item: keep encrypted_content for store=false multi-turn
+  if (eventType === "response.output_item.done" && data.item?.type === RESPONSES_ITEM.REASONING) {
+    if (typeof data.item.encrypted_content === "string" && data.item.encrypted_content) {
+      state.encryptedContent = data.item.encrypted_content;
+    }
+    if (typeof data.item.id === "string" && data.item.id) state.reasoningId = data.item.id;
+    return null;
+  }
+
   // Response completed
   if (eventType === "response.completed" || eventType === "response.done") {
     // Extract usage from response.completed event
@@ -519,11 +547,11 @@ export function openaiResponsesToOpenAIResponse(chunk, state) {
       state.finishReasonSent = true;
       state.finishReason = finishReason; // Mark for usage injection in stream.js
       
-      const finalChunk = buildChunk(
+      const finalChunk = attachContinuity(buildChunk(
         { id: state.chatId, created: state.created, model: state.model || MODEL_FALLBACK },
         {},
         finishReason
-      );
+      ), state);
 
       // Include usage in final chunk if available
       if (state.usage && typeof state.usage === "object") {

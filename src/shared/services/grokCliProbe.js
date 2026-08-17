@@ -1,9 +1,5 @@
 import { createHash } from "node:crypto";
-import {
-  GROK_CLI_CLIENT_IDENTIFIER,
-  GROK_CLI_USER_AGENT,
-  GROK_CLI_VERSION,
-} from "open-sse/config/grokCli.js";
+import { grokCliChatHeaders } from "open-sse/config/grokCli.js";
 import { getModelUpstreamId } from "open-sse/config/providerModels.js";
 import {
   refreshProviderCredentials,
@@ -160,11 +156,7 @@ export async function probeGrokCliConnection(connection, modelId, injected = {})
     Authorization: `Bearer ${token}`,
     Accept: "text/event-stream",
     "Content-Type": "application/json",
-    "User-Agent": GROK_CLI_USER_AGENT,
-    "x-xai-token-auth": "xai-grok-cli",
-    "x-grok-client-identifier": GROK_CLI_CLIENT_IDENTIFIER,
-    "x-grok-client-version": GROK_CLI_VERSION,
-    "x-grok-client-mode": "headless",
+    ...grokCliChatHeaders(),
   };
 
   try {

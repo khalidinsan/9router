@@ -7,6 +7,8 @@ import {
   _getGrokCliTurnStoreSize,
   normalizeGrokCliEffort,
   supportsGrokCliReasoningEffort,
+  setGrokCliReasoningBlob,
+  getGrokCliReasoningBlob,
 } from "../../open-sse/executors/grok-cli.js";
 import { getExecutor, hasSpecializedExecutor } from "../../open-sse/executors/index.js";
 import { PROVIDERS, PROVIDER_OAUTH, PROVIDER_MODELS } from "../../open-sse/providers/index.js";
@@ -31,6 +33,8 @@ describe("grok-cli registry", () => {
     expect(oauth.referrer).toBe("grok-build");
 
     expect(PROVIDER_MODELS.gcli?.some((m) => m.id === "grok-4.5")).toBe(true);
+    expect(PROVIDER_MODELS.gcli?.some((m) => m.id === "grok-4.6")).toBe(true);
+    expect(PROVIDER_MODELS.gcli?.some((m) => m.id === "grok-4.6-build")).toBe(true);
     expect(PROVIDER_MODELS.gcli?.some((m) => m.id === "grok-composer-2.5-fast")).toBe(true);
     expect(PROVIDER_MODELS.gcli?.some((m) => m.id === "composer-2.5")).toBe(true);
     expect(PROVIDER_MODELS.gcli?.some((m) => m.id === "grok-4")).toBe(true);
@@ -61,6 +65,11 @@ describe("grok-cli registry", () => {
     expect(getModelUpstreamId("gcli", "grok-4.5-medium")).toBe("grok-4.5");
     expect(getModelUpstreamId("gcli", "grok-4.5-low")).toBe("grok-4.5");
     expect(getModelUpstreamId("gcli", "grok-4.5")).toBe("grok-4.5");
+    expect(getModelUpstreamId("gcli", "grok-4.5-build")).toBe("grok-4.5");
+    expect(getModelUpstreamId("gcli", "grok-build")).toBe("grok-build");
+    expect(getModelUpstreamId("gcli", "grok-4.6")).toBe("grok-4.6");
+    expect(getModelUpstreamId("gcli", "grok-4.6-build")).toBe("grok-4.6");
+    expect(getModelUpstreamId("gcli", "grok-4.6-xhigh")).toBe("grok-4.6");
   });
 });
 
@@ -100,19 +109,24 @@ describe("GrokCliExecutor", () => {
 
     expect(headers.Authorization).toBe("Bearer tok_test");
     expect(headers.Accept).toBe("text/event-stream");
-    expect(headers["x-xai-token-auth"]).toBeUndefined();
+    expect(headers["x-xai-token-auth"]).toBe("xai-grok-cli");
+    expect(headers["x-authenticateresponse"]).toBe("authenticate-response");
+    expect(headers["x-grok-client-mode"]).toBe("headless");
     expect(headers["x-grok-client-identifier"]).toBe("grok-shell");
-    expect(headers["x-grok-client-version"]).toBe("0.2.99");
+    expect(headers["x-grok-client-version"]).toBe("1.0.3");
+    expect(headers["User-Agent"]).toBe("grok-shell/1.0.3 (linux; x86_64)");
     expect(headers["x-grok-session-id"]).toBe("sess-abc");
     expect(headers["x-grok-conv-id"]).toBe("sess-abc");
     expect(headers["x-grok-req-id"]).toBe("req-xyz");
     expect(headers["x-grok-turn-idx"]).toBe("3");
     expect(headers["x-grok-agent-id"]).toBe("agent-1");
     expect(headers["x-grok-model-override"]).toBe("grok-4.5");
-    expect(headers["x-compaction-at"]).toBeUndefined();
+    expect(headers["x-compaction-at"]).toBe("400000");
+    expect(headers["x-compactions-remaining"]).toBe("1");
+    expect(headers["x-grok-doom-loop-check"]).toBe("true");
     expect(headers["x-email"]).toBe("u@example.com");
+    expect(headers["x-grok-user-id"]).toBe("uid-1");
     expect(headers["x-userid"]).toBe("uid-1");
-    expect(headers["x-authenticateresponse"]).toBeUndefined();
   });
 
   it("buildHeaders falls back to top-level email/userId (OAuth mapTokens shape)", () => {
@@ -164,6 +178,7 @@ describe("GrokCliExecutor", () => {
     expect(out.stream).toBe(true);
     expect(out.store).toBe(false);
     expect(out.include).toContain("reasoning.encrypted_content");
+    expect(out.prompt_cache_key).toBeTruthy();
     expect(out.reasoning).toEqual({ effort: "high", summary: "concise" });
     expect(out.messages).toBeUndefined();
     expect(out.max_tokens).toBeUndefined();
@@ -184,8 +199,8 @@ describe("GrokCliExecutor", () => {
     expect(out.tools[2]).toEqual({ type: "x_search" });
   });
 
-  it("supportsGrokCliReasoningEffort is only true for grok-4.5 family", () => {
-    // Upstream protocol: only grok-4.5* accepts reasoning.effort; Composer/build keep summary.
+  it("supportsGrokCliReasoningEffort is true for grok-4.5 and grok-4.6 families", () => {
+    // Upstream protocol: grok-4.5* and grok-4.6* accept reasoning.effort; Composer/build keep summary.
     expect(supportsGrokCliReasoningEffort("composer-2.5")).toBe(false);
     expect(supportsGrokCliReasoningEffort("grok-composer-2.5-fast")).toBe(false);
     expect(supportsGrokCliReasoningEffort("grok-build")).toBe(false);
@@ -193,6 +208,11 @@ describe("GrokCliExecutor", () => {
     expect(supportsGrokCliReasoningEffort("grok-4.5")).toBe(true);
     expect(supportsGrokCliReasoningEffort("grok-4.5-high")).toBe(true);
     expect(supportsGrokCliReasoningEffort("grok-4")).toBe(false);
+    expect(supportsGrokCliReasoningEffort("grok-4.6")).toBe(true);
+    expect(supportsGrokCliReasoningEffort("grok-4.6-high")).toBe(true);
+    expect(supportsGrokCliReasoningEffort("grok-4.6-xhigh")).toBe(true);
+    expect(supportsGrokCliReasoningEffort("grok-4.6-build")).toBe(true);
+    expect(supportsGrokCliReasoningEffort("grok-4.20")).toBe(false);
   });
 
   it("maps composer-2.5 alias to official grok-composer-2.5-fast upstream id", () => {
@@ -383,8 +403,26 @@ describe("GrokCliExecutor", () => {
     expect(out.reasoning).toEqual({ effort: "xhigh", summary: "detailed" });
   });
 
+  it("keeps grok-4.6 on the wire and sends effort", () => {
+    for (const [model, wire] of [
+      ["grok-4.6", "grok-4.6"],
+      ["grok-4.6-build", "grok-4.6"],
+      ["grok-4.6-xhigh", "grok-4.6"],
+    ]) {
+      const out = executor.transformRequest(model, {
+        model,
+        input: "hi",
+        reasoning: { effort: "max" },
+      }, true, { connectionId: `effort-${model}` });
+      expect(out.model).toBe(wire);
+      expect(out.reasoning).toEqual({ effort: "xhigh", summary: "concise" });
+      expect(out.include).toContain("reasoning.encrypted_content");
+    }
+  });
+
   it("omits reasoning effort for models that reject it", () => {
     expect(supportsGrokCliReasoningEffort("grok-4.5")).toBe(true);
+    expect(supportsGrokCliReasoningEffort("grok-4.6")).toBe(true);
     expect(supportsGrokCliReasoningEffort("grok-build")).toBe(false);
     expect(supportsGrokCliReasoningEffort("grok-composer-2.5-fast")).toBe(false);
 
@@ -394,6 +432,7 @@ describe("GrokCliExecutor", () => {
         input: "hi",
         reasoning: { effort: "max" },
       }, true, { connectionId: `effort-${model}` });
+      expect(out.model).toBe(model);
       expect(out.reasoning).toEqual({ summary: "concise" });
       expect(out.include).toContain("reasoning.encrypted_content");
     }
@@ -539,6 +578,38 @@ describe("GrokCliExecutor", () => {
       resolveGrokCliTurnIdx(`session-${i}`, [{ role: "user", content: "hi" }]);
     }
     expect(_getGrokCliTurnStoreSize()).toBe(5000);
+  });
+
+  it("re-injects stashed native reasoning when the client dropped encrypted_content", () => {
+    const creds = { connectionId: "reason-sess" };
+    executor.transformRequest("grok-4.6", {
+      model: "grok-4.6",
+      input: [{ type: "message", role: "user", content: "first" }],
+    }, true, creds);
+    const sessionId = executor._currentSessionId;
+    const reasoningId = "rs_3e3f6187-892a-96db-893b-904eff019e19";
+    setGrokCliReasoningBlob(sessionId, {
+      id: reasoningId,
+      encrypted_content: "enc-keep",
+      summary: [{ type: "summary_text", text: "plan" }],
+    });
+    expect(getGrokCliReasoningBlob(sessionId)?.encrypted_content).toBe("enc-keep");
+
+    const out = executor.transformRequest("grok-4.6", {
+      model: "grok-4.6",
+      input: [
+        { type: "message", role: "user", content: "first" },
+        { type: "function_call", call_id: "c1", name: "Read", arguments: "{}" },
+        { type: "function_call_output", call_id: "c1", output: "file body" },
+        { type: "message", role: "user", content: "now edit it" },
+      ],
+    }, true, creds);
+
+    expect(out.input[0]).toMatchObject({
+      type: "reasoning",
+      id: reasoningId,
+      encrypted_content: "enc-keep",
+    });
   });
 
   it("parseError surfaces 402 spending-limit", () => {

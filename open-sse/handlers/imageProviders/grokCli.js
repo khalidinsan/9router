@@ -26,9 +26,7 @@ import { nowSec } from "./_base.js";
 import { HTTP_STATUS } from "../../config/runtimeConfig.js";
 import {
   GROK_CLI_BASE_URL,
-  GROK_CLI_CLIENT_IDENTIFIER,
-  GROK_CLI_USER_AGENT,
-  GROK_CLI_VERSION,
+  grokCliChatHeaders,
 } from "../../config/grokCli.js";
 
 const RESPONSES_URL = `${GROK_CLI_BASE_URL}/responses`;
@@ -219,11 +217,7 @@ function buildHeaders(creds) {
     Authorization: `Bearer ${token}`,
     "Content-Type": "application/json",
     Accept: "application/json",
-    "User-Agent": GROK_CLI_USER_AGENT,
-    "X-XAI-Token-Auth": "xai-grok-cli",
-    "x-grok-client-identifier": GROK_CLI_CLIENT_IDENTIFIER,
-    "x-grok-client-version": GROK_CLI_VERSION,
-    "x-grok-client-mode": "headless",
+    ...grokCliChatHeaders(),
     "x-grok-session-id": randomUUID(),
     "x-grok-req-id": randomUUID(),
   };

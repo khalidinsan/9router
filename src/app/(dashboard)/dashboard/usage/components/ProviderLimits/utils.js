@@ -366,6 +366,10 @@ export function parseQuotaData(provider, data) {
         break;
 
       case "codex":
+      case "commandcode":
+        // Codex + Command Code: session (5h) / weekly are 0–100 percent bars
+        // (`remaining` is leftover percent). Monthly dollar pots omit remaining
+        // so getRemainingPercentage falls back to used/total.
         if (data.quotas) {
           Object.entries(data.quotas).forEach(([quotaType, quota]) => {
             normalizedQuotas.push({

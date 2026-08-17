@@ -14,6 +14,7 @@ import { getCodeBuddyCnUsage, getCodeBuddyIntlUsage } from "./usage/codebuddy-cn
 import { getGrokCliUsage } from "./usage/grok-cli.js";
 import { getKimiUsage } from "./usage/kimi.js";
 import { getDeepseekUsage } from "./usage/deepseek.js";
+import { getCommandCodeUsage } from "./usage/commandcode.js";
 import { resolveQoderCredentials } from "./qoderModels.js";
 import {
   getIflowUsage,
@@ -21,7 +22,6 @@ import {
   getGlmUsage,
   getVercelAiGatewayUsage,
   getQoderUsage,
-  getKimchiUsage,
 } from "./usage/misc.js";
 
 /**
@@ -51,7 +51,6 @@ const USAGE_HANDLERS = {
   "minimax-cn": (c) => getMiniMaxUsage(c.apiKey, c.provider, c.proxyOptions),
   "vercel-ai-gateway": (c) => getVercelAiGatewayUsage(c.apiKey, c.proxyOptions),
   "codebuddy-cn": (c) => getCodeBuddyCnUsage(c.accessToken, c.apiKey, c.providerSpecificData, c.proxyOptions),
-kimchi: (c) => getKimchiUsage(c.apiKey, c.proxyOptions),
   "grok-cli": (c) =>
     getGrokCliUsage(c.accessToken, c.providerSpecificData, c.proxyOptions, {
       observedTokens: c.observedTokens,
@@ -59,6 +58,7 @@ kimchi: (c) => getKimchiUsage(c.apiKey, c.proxyOptions),
   "codebuddy-intl": (c) => getCodeBuddyIntlUsage(c.accessToken, c.apiKey, c.providerSpecificData, c.proxyOptions),
   kimi: (c) => getKimiUsage(c.accessToken, c.apiKey, c.proxyOptions, c.providerSpecificData),
   deepseek: (c) => getDeepseekUsage(c.apiKey, c.proxyOptions),
+  commandcode: (c) => getCommandCodeUsage(c.apiKey, c.proxyOptions),
 };
 
 export async function getUsageForProvider(connection, proxyOptions = null) {

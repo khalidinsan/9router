@@ -1,22 +1,24 @@
 /**
  * Grok CLI / Grok Build (cli-chat-proxy.grok.com)
  *
- * Source of truth: wire capture of official @xai-official/grok 0.2.99
+ * Source of truth: wire capture of official grok 1.0.3
  * talking to https://cli-chat-proxy.grok.com (OpenAI Responses API).
  *
  * Distinct from:
  *  - `xai`      → api.x.ai (API key / xAI API OAuth PKCE)
  *  - `grok-web` → grok.com web SSO cookie
  *
- * Model catalog: upstream Grok Build entry + fork catalog (Composer, effort
- * variants, and extra IDs still accepted by /v1/responses for some accounts).
+ * Official TUI menu (grok 1.0.3): grok-4.6 (default) and grok-4.5 as distinct
+ * models. Session metadata uses a -build suffix (grok-4.6-build / grok-4.5-build).
+ * Do not rewrite 4.6 → 4.5. grok-build is a separate product id (fork secondary).
  */
 import {
   GROK_CLI_BASE_URL,
   GROK_CLI_CLIENT_IDENTIFIER,
+  GROK_CLI_COMPACTION_AT,
   GROK_CLI_MODEL,
-  GROK_CLI_USER_AGENT,
   GROK_CLI_VERSION,
+  grokCliChatHeaders,
 } from "../../config/grokCli.js";
 
 export default {
@@ -53,13 +55,8 @@ export default {
     clientVersion: GROK_CLI_VERSION,
     clientIdentifier: GROK_CLI_CLIENT_IDENTIFIER,
     tokenAuth: "xai-grok-cli",
-    headers: {
-      "User-Agent": GROK_CLI_USER_AGENT,
-      "x-grok-client-identifier": GROK_CLI_CLIENT_IDENTIFIER,
-      "x-grok-client-version": GROK_CLI_VERSION,
-    },
-    // Compaction threshold mirrored from CLI (x-compaction-at)
-    compactionAt: 400000,
+    headers: grokCliChatHeaders(),
+    compactionAt: GROK_CLI_COMPACTION_AT,
     // Quota tracker: official CLI polls billing?format=credits + user?include=subscription
     usage: {
       url: `${GROK_CLI_BASE_URL}/billing?format=credits`,
@@ -74,7 +71,7 @@ export default {
   // Model catalog notes (probed against cli-chat-proxy + local Grok CLI):
   // Official /v1/models menu varies by account; keep full fork list so nothing is lost.
   models: [
-    // ── Upstream primary Grok Build entry ──
+    // Official TUI default / fork-secondary product id — not rewritten to 4.5
     {
       id: GROK_CLI_MODEL,
       name: "Grok Build",
@@ -83,20 +80,25 @@ export default {
       thinking: false,
     },
 
-    // ── Official / commonly listed ──
+    // ── Official TUI menu (distinct models; do not collapse 4.6 → 4.5) ──
+    { id: "grok-4.6", name: "Grok 4.6" },
+    { id: "grok-4.6-build", name: "Grok 4.6 Build", upstreamModelId: "grok-4.6" },
+    { id: "grok-4.6-high", name: "Grok 4.6 (High)", upstreamModelId: "grok-4.6" },
+    { id: "grok-4.6-medium", name: "Grok 4.6 (Medium)", upstreamModelId: "grok-4.6" },
+    { id: "grok-4.6-low", name: "Grok 4.6 (Low)", upstreamModelId: "grok-4.6" },
+    { id: "grok-4.6-xhigh", name: "Grok 4.6 (xHigh)", upstreamModelId: "grok-4.6" },
     { id: "grok-4.5", name: "Grok 4.5" },
-    // Virtual effort variants → strip suffix, send reasoning.effort (upstream id grok-4.5)
+    { id: "grok-4.5-build", name: "Grok 4.5 Build", upstreamModelId: "grok-4.5" },
     { id: "grok-4.5-high", name: "Grok 4.5 (High)", upstreamModelId: "grok-4.5" },
     { id: "grok-4.5-medium", name: "Grok 4.5 (Medium)", upstreamModelId: "grok-4.5" },
     { id: "grok-4.5-low", name: "Grok 4.5 (Low)", upstreamModelId: "grok-4.5" },
+    { id: "grok-4.5-xhigh", name: "Grok 4.5 (xHigh)", upstreamModelId: "grok-4.5" },
     // Official Composer id from /v1/models (name: "Composer 2.5"); rejects reasoningEffort
     { id: "grok-composer-2.5-fast", name: "Composer 2.5 Fast", thinking: false },
     // Short alias accepted by API (maps to same family; also rejects reasoningEffort)
     { id: "composer-2.5", name: "Composer 2.5", thinking: false, upstreamModelId: "grok-composer-2.5-fast" },
 
     // ── Extra IDs accepted by cli-chat-proxy (not in official menu for all accounts) ──
-    // Keep explicit grok-build id even when GROK_CLI_MODEL already is "grok-build"
-    // (dedupe only if constant changes later).
     { id: "grok-4", name: "Grok 4" },
     { id: "grok-4-fast-reasoning", name: "Grok 4 Fast Reasoning" },
     { id: "grok-4.20", name: "Grok 4.20" },

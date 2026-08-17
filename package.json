@@ -9,7 +9,7 @@
 "build": "node scripts/safe-next-build.mjs",
     "build:prod": "node scripts/safe-next-build.mjs && node scripts/prepare-standalone.mjs",
     "start": "next start",
-    "start:prod": "PORT=${PORT:-20127} HOSTNAME=${HOSTNAME:-0.0.0.0} NEXT_PUBLIC_BASE_URL=${NEXT_PUBLIC_BASE_URL:-http://localhost:20127} node .next/standalone/server.js",
+    "start:prod": "PORT=${PORT:-20127} HOSTNAME=${NINEROUTER_BIND_HOST:-127.0.0.1} NEXT_PUBLIC_BASE_URL=${NEXT_PUBLIC_BASE_URL:-http://localhost:20127} node .next/standalone/server.js",
     "dev:bun": "bun --bun next dev --webpack --port 20127",
     "build:bun": "bun --bun next build --webpack",
     "start:bun": "bun ./.next/standalone/server.js",

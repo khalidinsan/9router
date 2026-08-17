@@ -10,6 +10,7 @@ import { getModelUpstreamId } from "../config/providerModels.js";
 import {
   GROK_CLI_CLIENT_IDENTIFIER,
   GROK_CLI_VERSION,
+  grokCliChatHeaders,
   supportsGrokCliReasoningEffort,
 } from "../config/grokCli.js";
 import { MEMORY_CONFIG } from "../config/runtimeConfig.js";
@@ -64,6 +65,92 @@ const GROK_CLI_FREEFORM_TOOL_PARAMETERS = {
 // Per-session last turn index so multi-turn headers never go backwards within this process
 const sessionTurnStore = new Map();
 let requestTurnStore = new WeakMap();
+// Last native reasoning blob per session (Claude/OpenAI clients drop encrypted_content)
+const sessionReasoningStore = new Map();
+
+export function setGrokCliReasoningBlob(sessionId, blob) {
+  if (!sessionId || !blob?.id || typeof blob.encrypted_content !== "string") return;
+  if (!isNativeGrokCliItemId(blob.id)) return;
+  if (sessionReasoningStore.size >= GROK_CLI_TURN_STORE_MAX) {
+    sessionReasoningStore.delete(sessionReasoningStore.keys().next().value);
+  }
+  sessionReasoningStore.set(sessionId, { blob, lastUsed: Date.now() });
+}
+
+export function getGrokCliReasoningBlob(sessionId) {
+  if (!sessionId) return null;
+  const row = sessionReasoningStore.get(sessionId);
+  if (!row) return null;
+  if (Date.now() - row.lastUsed > MEMORY_CONFIG.sessionTtlMs) {
+    sessionReasoningStore.delete(sessionId);
+    return null;
+  }
+  row.lastUsed = Date.now();
+  return row.blob;
+}
+
+export function _resetGrokCliReasoningStore() {
+  sessionReasoningStore.clear();
+}
+
+function hasNativeGrokCliReasoning(input) {
+  return Array.isArray(input) && input.some(
+    (item) => item?.type === "reasoning"
+      && isNativeGrokCliItemId(item.id)
+      && typeof item.encrypted_content === "string",
+  );
+}
+
+function injectStashedGrokCliReasoning(body, sessionId) {
+  if (!sessionId || hasNativeGrokCliReasoning(body?.input)) return;
+  const blob = getGrokCliReasoningBlob(sessionId);
+  if (!blob) return;
+  const item = {
+    type: "reasoning",
+    id: blob.id,
+    encrypted_content: blob.encrypted_content,
+  };
+  if (Array.isArray(blob.summary) && blob.summary.length) item.summary = blob.summary;
+  body.input = [item, ...(Array.isArray(body.input) ? body.input : [])];
+}
+
+async function collectGrokCliReasoning(stream, sessionId) {
+  if (!stream || !sessionId) return;
+  const decoder = new TextDecoder();
+  const reader = stream.getReader();
+  let buf = "";
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      const lines = buf.split("\n");
+      buf = lines.pop() || "";
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed.startsWith("data:")) continue;
+        const payload = trimmed.slice(5).trim();
+        if (!payload || payload === "[DONE]") continue;
+        let parsed;
+        try { parsed = JSON.parse(payload); } catch { continue; }
+        const type = parsed.type || parsed.event;
+        const item = parsed.item || parsed.data?.item;
+        if (type !== "response.output_item.done" || item?.type !== "reasoning") continue;
+        if (typeof item.encrypted_content !== "string" || !item.encrypted_content) continue;
+        setGrokCliReasoningBlob(sessionId, {
+          type: "reasoning",
+          id: item.id,
+          encrypted_content: item.encrypted_content,
+          summary: item.summary,
+        });
+      }
+    }
+  } catch {
+    // tap must never break the live chat stream
+  } finally {
+    try { reader.releaseLock(); } catch { /* ignore */ }
+  }
+}
 
 /**
  * Count user turns in a Responses `input` array.
@@ -116,6 +203,7 @@ export function resolveGrokCliTurnIdx(sessionId, input, requestKey = null) {
 export function _resetGrokCliTurnStore() {
   sessionTurnStore.clear();
   requestTurnStore = new WeakMap();
+  sessionReasoningStore.clear();
 }
 
 export function _getGrokCliTurnStoreSize() {
@@ -367,9 +455,9 @@ export class GrokCliExecutor extends BaseExecutor {
   buildHeaders(credentials, stream = true) {
     const headers = super.buildHeaders(credentials, stream);
 
-    // Static fingerprint from registry
-    const staticHeaders = this.config.headers || {};
-    for (const [k, v] of Object.entries(staticHeaders)) {
+    // Official grok-shell/1.0.3 fingerprint (version, token-auth, compaction, doom-loop)
+    const fingerprint = this.config.headers || grokCliChatHeaders();
+    for (const [k, v] of Object.entries(fingerprint)) {
       if (v != null && headers[k] === undefined) headers[k] = v;
     }
 
@@ -391,13 +479,16 @@ export class GrokCliExecutor extends BaseExecutor {
     // Surface model override (CLI always sets this)
     if (this._currentModel) headers["x-grok-model-override"] = this._currentModel;
 
-    // Identity: mapTokens stores email top-level AND in providerSpecificData;
-    // fall back either way so OAuth connections always fingerprint like the CLI.
+    // Identity: mapTokens stores email top-level AND in providerSpecificData.
+    // Official chat sends x-grok-user-id; keep x-userid for older billing helpers.
     const psd = credentials?.providerSpecificData || {};
     const email = psd.email || credentials?.email;
     const userId = psd.userId || credentials?.userId || credentials?.providerUserId;
     if (email) headers["x-email"] = email;
-    if (userId) headers["x-userid"] = userId;
+    if (userId) {
+      headers["x-grok-user-id"] = userId;
+      headers["x-userid"] = userId;
+    }
 
     return headers;
   }
@@ -471,6 +562,7 @@ export class GrokCliExecutor extends BaseExecutor {
     // (Codex converts system→developer; Grok CLI does not).
     normalizeGrokCliInput(body);
     stripStoredItemReferences(body);
+    injectStashedGrokCliReasoning(body, this._currentSessionId);
     normalizeGrokCliTools(body);
 
     // Turn index after input is finalized (user-message count, monotonic per session)
@@ -492,9 +584,13 @@ export class GrokCliExecutor extends BaseExecutor {
     }
     body.model = resolvedModel;
     this._currentModel = resolvedModel;
+    // Official CLI sets prompt_cache_key to the conversation/session id
+    if (!body.prompt_cache_key && this._currentSessionId) {
+      body.prompt_cache_key = this._currentSessionId;
+    }
 
     // Reasoning effort priority: explicit > reasoning_effort > model suffix > default high.
-    // grok-build and Composer reject reasoningEffort but still accept summary/encrypted continuity.
+    // grok-4.5 / grok-4.6 accept effort. Composer and grok-build reject it (summary only).
     const supportsReasoningEffort = supportsGrokCliReasoningEffort(resolvedModel);
     if (!body.reasoning || typeof body.reasoning !== "object") {
       body.reasoning = { summary: "concise" };
@@ -566,7 +662,23 @@ export class GrokCliExecutor extends BaseExecutor {
       this._agentId = args.credentials.providerSpecificData.deviceId;
     }
 
-    return super.execute(args);
+    const result = await super.execute(args);
+    const sessionId = this._currentSessionId;
+    const body = result?.response?.body;
+    if (sessionId && body && typeof body.tee === "function") {
+      try {
+        const [out, tap] = body.tee();
+        void collectGrokCliReasoning(tap, sessionId);
+        result.response = new Response(out, {
+          status: result.response.status,
+          statusText: result.response.statusText,
+          headers: result.response.headers,
+        });
+      } catch {
+        // if tee isn't available, continue without stash
+      }
+    }
+    return result;
   }
 }
 
