@@ -802,6 +802,14 @@ async function testApiKeyConnection(connection, effectiveProxy = null) {
         );
         return { valid: exRes.ok, error: exRes.ok ? null : "Invalid Personal Access Token" };
       }
+      case "tokenharbor": {
+        const baseUrl = (PROVIDERS["tokenharbor"]?.baseUrl || "https://tokenharbor.ai/v1/chat/completions").replace(/\/chat\/completions$/, "");
+        const res = await fetchWithConnectionProxy(`${baseUrl}/models`, {
+          headers: { Authorization: `Bearer ${connection.apiKey}` },
+        }, effectiveProxy);
+        const valid = res.status !== 401 && res.status !== 403;
+        return { valid, error: valid ? null : "Invalid API key" };
+      }
       default:
         return { valid: false, error: "Provider test not supported" };
     }
