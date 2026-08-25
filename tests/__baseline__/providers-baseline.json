@@ -1,4 +1,47 @@
 {
+  "agentrouter": {
+    "baseUrl": "https://agentrouter.org/v1/messages",
+    "format": "claude",
+    "timeoutMs": 600000,
+    "headers": {
+      "Anthropic-Version": "2023-06-01",
+      "Anthropic-Beta": "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14,context-management-2025-06-27,prompt-caching-scope-2026-01-05,advanced-tool-use-2025-11-20,effort-2025-11-24,structured-outputs-2025-12-15,fast-mode-2026-02-01,redact-thinking-2026-02-12,token-efficient-tools-2026-03-28,advisor-tool-2026-03-01,extended-cache-ttl-2025-04-11,cache-diagnosis-2026-04-07",
+      "Anthropic-Dangerous-Direct-Browser-Access": "true",
+      "User-Agent": "claude-cli/2.1.187 (external, cli)",
+      "X-App": "cli",
+      "X-Stainless-Helper-Method": "stream",
+      "X-Stainless-Retry-Count": "0",
+      "X-Stainless-Package-Version": "0.94.0",
+      "X-Stainless-Runtime": "node",
+      "X-Stainless-Runtime-Version": "v24.3.0",
+      "X-Stainless-Lang": "js",
+      "X-Stainless-Arch": "arm64",
+      "X-Stainless-Os": "MacOS",
+      "X-Stainless-Timeout": "600"
+    },
+    "auth": {
+      "apiKey": {
+        "header": "x-api-key",
+        "scheme": "raw"
+      }
+    },
+    "forceStream": true,
+    "preserveAccept": true,
+    "retry": {
+      "429": {
+        "attempts": 3,
+        "delayMs": 500
+      },
+      "502": {
+        "attempts": 3,
+        "delayMs": 500
+      },
+      "503": {
+        "attempts": 3,
+        "delayMs": 1000
+      }
+    }
+  },
   "alicode-intl": {
     "baseUrl": "https://coding-intl.dashscope.aliyuncs.com/v1/chat/completions",
     "headers": {},
@@ -27,19 +70,22 @@
     "baseUrls": [
       "https://daily-cloudcode-pa.googleapis.com"
     ],
+    "forceStream": true,
     "format": "antigravity",
+    "timeoutMs": 10000,
     "headers": {
-      "User-Agent": "antigravity/ide/2.1.1 darwin/arm64"
+      "User-Agent": "antigravity/cli/1.0.16 (aidev_client; os_type=darwin; arch=arm64; auth_method=consumer)"
     },
     "retry": {
       "429": {
         "attempts": 3
       },
       "500": {
-        "attempts": 3
+        "attempts": 1
       },
       "503": {
-        "attempts": 3
+        "attempts": 1,
+        "delayMs": 1000
       }
     },
     "usage": {
@@ -216,6 +262,10 @@
     "headers": {
       "x-command-code-version": "0.25.7",
       "x-cli-environment": "cli"
+    },
+    "usage": {
+      "url": "https://api.commandcode.ai/alpha/billing/credits",
+      "subscriptionsUrl": "https://api.commandcode.ai/alpha/billing/subscriptions"
     }
   },
   "cursor": {
@@ -715,12 +765,42 @@
   "opencode-go": {
     "baseUrl": "https://opencode.ai/zen/go/v1/chat/completions",
     "headers": {},
-    "format": "openai"
+    "format": "openai",
+    "transports": [
+      {
+        "format": "openai",
+        "baseUrl": "https://opencode.ai/zen/go/v1/chat/completions",
+        "auth": {
+          "combined": true,
+          "header": "Authorization",
+          "scheme": "bearer"
+        }
+      },
+      {
+        "format": "claude",
+        "baseUrl": "https://opencode.ai/zen/go/v1/messages",
+        "auth": {
+          "combined": true,
+          "header": "x-api-key",
+          "scheme": "raw",
+          "anthropicVersion": true
+        }
+      },
+      {
+        "format": "openai-responses",
+        "baseUrl": "https://opencode.ai/zen/go/v1/responses",
+        "auth": {
+          "combined": true,
+          "header": "Authorization",
+          "scheme": "bearer"
+        }
+      }
+    ]
   },
   "opencode": {
     "baseUrl": "https://opencode.ai",
     "headers": {
-      "x-opencode-client": "desktop"
+      "x-opencode-client": "tui"
     },
     "noAuth": true,
     "format": "openai"
@@ -975,7 +1055,20 @@
   "tokenrouter": {
     "baseUrl": "https://api.tokenrouter.com/v1/chat/completions",
     "validateUrl": "https://api.tokenrouter.com/v1/models",
-    "thinkingFormat": "openai",
+    "thinkingFormat": "tokenrouter",
+    "format": "openai"
+  },
+  "tokenharbor": {
+    "baseUrl": "https://tokenharbor.ai/v1/chat/completions",
+    "validateUrl": "https://tokenharbor.ai/v1/models",
+    "format": "openai"
+  },
+  "alitp-intl": {
+    "baseUrl": "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1/chat/completions",
+    "headers": {},
+    "quirks": {
+      "preserveCacheControl": true
+    },
     "format": "openai"
   }
 }
