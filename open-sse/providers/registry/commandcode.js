@@ -38,7 +38,7 @@ export default {
   // Go plan catalog: https://commandcode.ai/docs/plans/go (33 models, /alpha/generate only)
   models: [
     { id: "deepseek/deepseek-v4-pro", name: "DeepSeek V4 Pro", contextLength: 1000000 },
-    { id: "deepseek/deepseek-v4-flash", name: "DeepSeek V4 Flash", contextLength: 1000000 },
+    { id: "deepseek/deepseek-v4-flash-vision-exp", name: "DeepSeek V4 Flash Vision Exp", contextLength: 1000000 },
     { id: "moonshotai/Kimi-K3", name: "Kimi K3", contextLength: 1000000 },
     { id: "moonshotai/Kimi-K2.7-Code", name: "Kimi K2.7 Code", contextLength: 256000 },
     { id: "moonshotai/Kimi-K2.7-Code-Highspeed", name: "Kimi K2.7 Code HighSpeed", contextLength: 262000 },

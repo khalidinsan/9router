@@ -13,6 +13,7 @@ import { register } from "../index.js";
 import { FORMATS } from "../formats.js";
 import { randomUUID } from "crypto";
 import { ROLE, OPENAI_BLOCK } from "../schema/index.js";
+import { parseDataUri } from "../concerns/image.js";
 import { DEFAULT_MAX_TOKENS } from "../../config/runtimeConfig.js";
 
 function flattenText(content) {
@@ -40,8 +41,18 @@ function toContentBlocks(content) {
       } else if (part && typeof part === "object") {
         if (part.type === OPENAI_BLOCK.TEXT && typeof part.text === "string") {
           blocks.push({ type: OPENAI_BLOCK.TEXT, text: part.text });
-        } else if (part.type === OPENAI_BLOCK.IMAGE_URL || part.type === OPENAI_BLOCK.IMAGE) {
-          blocks.push({ type: OPENAI_BLOCK.TEXT, text: "[image omitted]" });
+        } else if (part.type === OPENAI_BLOCK.IMAGE_URL) {
+          const url = typeof part.image_url === "string" ? part.image_url : part.image_url?.url;
+          const parsed = parseDataUri(url);
+          if (parsed) {
+            blocks.push({ type: "image", source: { type: "base64", media_type: parsed.mimeType, data: parsed.base64 } });
+          } else if (typeof url === "string" && (url.startsWith("http://") || url.startsWith("https://"))) {
+            blocks.push({ type: "image", source: { type: "url", url } });
+          } else {
+            blocks.push({ type: OPENAI_BLOCK.TEXT, text: "[image omitted]" });
+          }
+        } else if (part.type === OPENAI_BLOCK.IMAGE && part.source) {
+          blocks.push({ type: "image", source: part.source });
         } else if (typeof part.text === "string") {
           blocks.push({ type: OPENAI_BLOCK.TEXT, text: part.text });
         }

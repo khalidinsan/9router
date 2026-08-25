@@ -62,15 +62,17 @@ describe("OpenAI → CommandCode", () => {
     expect(Object.keys(call.input).length, "arguments silently dropped to {}").toBeGreaterThan(0);
   });
 
-  // openai-to-commandcode.js:41-42 — image becomes "[image omitted]"
-  // KNOWN BUG
-  it.fails("image content is preserved", () => {
+  // openai-to-commandcode.js — image_url → Claude-style image block matching upstream
+  // /alpha/generate schema (Verified live: source.type=base64, media_type, data).
+  it("preserves image content as an upstream-compatible image block", () => {
     const out = O2CC({
       messages: [{ role: "user", content: [
         { type: "text", text: "look" },
         { type: "image_url", image_url: { url: "data:image/png;base64,BBBB" } },
       ] }],
     });
-    expect(JSON.stringify(out), "image omitted").toContain("BBBB");
+    const img = out.params.messages.find((m) => m.role === "user").content.find((b) => b.type === "image");
+    expect(img).toBeDefined();
+    expect(img.source).toEqual({ type: "base64", media_type: "image/png", data: "BBBB" });
   });
 });
