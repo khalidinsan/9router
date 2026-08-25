@@ -119,6 +119,7 @@ import p119 from "./selfhosted-embedding.js";
 import p120 from "./tokenharbor.js";
 import p121 from "./fish-audio.js";
 import p122 from "./alitp-intl.js";
+import p123 from "./bai.js";
 
 export default [
   agentrouter,
@@ -242,4 +243,5 @@ export default [
   p120,
   p121,
   p122,
+  p123,
 ];

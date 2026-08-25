@@ -1070,5 +1070,10 @@
       "preserveCacheControl": true
     },
     "format": "openai"
+  },
+  "bai": {
+    "baseUrl": "https://api.b.ai/v1/chat/completions",
+    "validateUrl": "https://api.b.ai/v1/models",
+    "format": "openai"
   }
 }
