@@ -1,17 +1,19 @@
 import { SSE_DONE } from "../utils/sseConstants.js";
 
 /**
- * Normalize only Token Harbor's downstream OpenAI SSE terminal sequence.
+ * Normalize downstream OpenAI SSE terminal sequences for providers that
+ * emit a redundant usage-only frame and/or duplicate [DONE] sentinels.
  *
- * Token Harbor emits:
+ * Token Harbor and B.AI (reasoning mode) emit:
  *   finish_reason + usage → usage-only choices:[] → [DONE] → [DONE]
  *
  * OMP sees the usage-only frame after finish_reason and deliberately breaks
- * early, cancelling the still-open HTTP response. Buffer the terminal frame,
- * discard the redundant usage-only frame, then emit one finish frame followed
- * by one [DONE] only after the transformed upstream stream closes.
+ * early, cancelling the still-open HTTP response (logged as
+ * "DISCONNECT: ResponseAborted"). Buffer the terminal frame, discard the
+ * redundant usage-only frame, then emit one finish frame followed by one
+ * [DONE] only after the transformed upstream stream closes.
  */
-export function finalizeTokenHarborSse(readable) {
+export function finalizeOpenAITerminalSse(readable) {
   const decoder = new TextDecoder();
   const encoder = new TextEncoder();
   let buffer = "";
