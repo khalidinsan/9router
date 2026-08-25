@@ -810,6 +810,35 @@ async function testApiKeyConnection(connection, effectiveProxy = null) {
         const valid = res.status !== 401 && res.status !== 403;
         return { valid, error: valid ? null : "Invalid API key" };
       }
+      case "bai": {
+        const baseUrl = (PROVIDERS["bai"]?.baseUrl || "https://api.b.ai/v1/chat/completions").replace(/\/chat\/completions$/, "");
+        const res = await fetchWithConnectionProxy(`${baseUrl}/models`, {
+          headers: { Authorization: `Bearer ${connection.apiKey}` },
+        }, effectiveProxy);
+        const valid = res.status !== 401 && res.status !== 403;
+        return { valid, error: valid ? null : "Invalid API key" };
+      }
+      case "llm7": {
+        const baseUrl = connection.providerSpecificData?.baseUrl || "https://api.llm7.io/v1";
+        const res = await fetchWithConnectionProxy(`${baseUrl.replace(/\/$/, "")}/models`, {
+          headers: { Authorization: `Bearer ${connection.apiKey}` },
+        }, effectiveProxy);
+        return { valid: res.ok, error: res.ok ? null : "Invalid API key or base URL" };
+      }
+      case "kimchi": {
+        // Dual-auth: same validation endpoint as the OAuth flow — the token (API key
+        // or OAuth access token) is sent as Authorization: Bearer.
+        const url = KIMCHI_CONFIG.validationUrl || "https://api.cast.ai/v1/llm/openai/supported-providers";
+        const res = await fetchWithConnectionProxy(url, {
+          method: "GET",
+          headers: {
+            Accept: "application/json",
+            Authorization: `Bearer ${connection.apiKey}`,
+            "User-Agent": "kimchi/0.1.40",
+          },
+        }, effectiveProxy);
+        return { valid: res.ok, error: res.ok ? null : "Invalid API key", refreshed: false };
+      }
       default:
         return { valid: false, error: "Provider test not supported" };
     }

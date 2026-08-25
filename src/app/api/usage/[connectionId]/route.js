@@ -125,6 +125,7 @@ export async function GET(request, { params }) {
   let connection;
   try {
     const { connectionId } = await params;
+    const force = new URL(request.url).searchParams.get("force") === "1";
 
 
     // Get connection from database
@@ -183,7 +184,7 @@ export async function GET(request, { params }) {
     }
 
     // Fetch usage from provider API
-    let usage = await getUsageForProvider(connection, proxyOptions);
+    let usage = await getUsageForProvider(connection, proxyOptions, { force });
 
     // If provider returned an auth-expired message instead of throwing,
     // force-refresh token and retry once (OAuth only)
@@ -195,7 +196,7 @@ export async function GET(request, { params }) {
         if (connection.provider === "grok-cli") {
           connection.observedTokens = observedTokens ?? 0;
         }
-        usage = await getUsageForProvider(connection, proxyOptions);
+        usage = await getUsageForProvider(connection, proxyOptions, { force });
       } catch (retryError) {
         console.warn(`[Usage] ${connection.provider}: force refresh failed: ${retryError.message}`);
       }

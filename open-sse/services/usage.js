@@ -34,7 +34,7 @@ const USAGE_HANDLERS = {
   github: (c) => getGitHubUsage(c.accessToken, c.providerSpecificData, c.proxyOptions),
   "gemini-cli": (c) => getGeminiUsage(c.accessToken, c.providerDataWithProjectId, c.proxyOptions),
   antigravity: (c) => getAntigravityUsage(c.accessToken, c.providerSpecificData, c.proxyOptions),
-  claude: (c) => getClaudeUsage(c.accessToken, c.proxyOptions),
+  claude: (c) => getClaudeUsage(c.accessToken, c.proxyOptions, { force: c.force }),
   codex: (c) => getCodexUsage(c.accessToken, c.proxyOptions),
   kiro: (c) => getKiroUsage(c.accessToken, c.providerSpecificData, c.proxyOptions),
   qoder: async (c) => {
@@ -61,7 +61,7 @@ const USAGE_HANDLERS = {
   commandcode: (c) => getCommandCodeUsage(c.apiKey, c.proxyOptions),
 };
 
-export async function getUsageForProvider(connection, proxyOptions = null) {
+export async function getUsageForProvider(connection, proxyOptions = null, options = {}) {
   const { provider, accessToken, apiKey, providerSpecificData, projectId, observedTokens } =
     connection;
   const providerDataWithProjectId = {
@@ -79,5 +79,6 @@ export async function getUsageForProvider(connection, proxyOptions = null) {
     providerDataWithProjectId,
     proxyOptions,
     observedTokens,
+    force: options.force === true,
   });
 }

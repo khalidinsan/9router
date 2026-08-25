@@ -1,7 +1,9 @@
+import crypto from "crypto";
 import { BaseExecutor } from "./base.js";
 import { PROVIDERS } from "../config/providers.js";
 import { injectReasoningContent } from "../utils/reasoningContentInjector.js";
 import { proxyAwareFetch } from "../utils/proxyFetch.js";
+import { resolveSessionId } from "../utils/sessionManager.js";
 import { spawn } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
@@ -9,6 +11,7 @@ import path from "node:path";
 
 // Models that use /zen/v1/messages (claude format)
 const MESSAGES_MODELS = new Set();
+const OPENCODE_UA = "opencode";
 
 // ─── Bun TLS relay ──────────────────────────────────────────────────────────
 // opencode.ai/zen fingerprints the TLS client: Node (OpenSSL) anonymous
@@ -213,12 +216,38 @@ async function startBunRelay() {
   return null;
 }
 
+// ─── opencode session id (upstream) ─────────────────────────────────────────
+function generateRequestId() {
+  return `msg_${crypto.randomUUID().replace(/-/g, "")}`;
+}
+
+function generateSessionId() {
+  return `ses_${crypto.randomUUID().replace(/-/g, "")}`;
+}
+
+// Normalize any resolved id into opencode's ses_ format (stable per-conversation)
+function toOpencodeSession(id) {
+  const stripped = String(id || "").replace(/^ses_/, "").replace(/-/g, "");
+  return stripped ? `ses_${stripped}` : null;
+}
+
+function resolveOpencodeSession(body, credentials) {
+  return toOpencodeSession(resolveSessionId({
+    headers: credentials?.rawHeaders,
+    body,
+    connectionId: credentials?.connectionId,
+    scope: "opencode",
+  }));
+}
+
 export class OpenCodeExecutor extends BaseExecutor {
   constructor() {
     super("opencode", PROVIDERS.opencode);
+    this._currentSessionId = null;
   }
 
-  transformRequest(model, body) {
+  transformRequest(model, body, stream, credentials) {
+    this._currentSessionId = resolveOpencodeSession(body, credentials);
     return injectReasoningContent({ provider: this.provider, model, body });
   }
 
@@ -229,15 +258,23 @@ export class OpenCodeExecutor extends BaseExecutor {
       : `${base}/zen/v1/chat/completions`;
   }
 
-  buildHeaders() {
-    // Match the OpenCode Zen client fingerprint for callers that are not the
-    // OpenCode TUI itself (for example OMP or another OpenAI-compatible client).
+  buildHeaders(credentials, stream = true) {
+    const raw = credentials?.rawHeaders || {};
+    const lower = {};
+    for (const [k, v] of Object.entries(raw)) lower[k.toLowerCase()] = v;
+
+    const downstreamUa = lower["user-agent"] || "";
+    const isOpencodeDownstream = downstreamUa.toLowerCase().includes("opencode");
+
     return {
       "Content-Type": "application/json",
       "Authorization": "Bearer public",
-      "User-Agent": "opencode/1.18.18 ai-sdk/provider-utils/4.0.23 runtime/bun/1.3.14",
-      "x-opencode-client": "cli",
-      "Accept": "text/event-stream"
+      "User-Agent": isOpencodeDownstream ? downstreamUa : OPENCODE_UA,
+      "x-opencode-client": lower["x-opencode-client"] || "desktop",
+      "x-opencode-session": lower["x-opencode-session"] || this._currentSessionId || generateSessionId(),
+      "x-opencode-request": lower["x-opencode-request"] || generateRequestId(),
+      "x-opencode-project": lower["x-opencode-project"] || "global",
+      "Accept": stream ? "text/event-stream" : "*/*",
     };
   }
 
