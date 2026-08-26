@@ -16,6 +16,8 @@ import {
   isGrokCliAuthoritativeFreeUsageExhausted,
   isGrokCliFreeOrCreditExhausted,
   buildGrokCliPermissionDeniedUpdate,
+  isTokenHarborFreeTierExhausted,
+  buildTokenHarborFreeTierExhaustedUpdate,
 } from "open-sse/services/accountFallback.js";
 import {
   buildGrokCliAuthoritativeQuotaExhaustedUpdate,
@@ -440,6 +442,28 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
       log.warn(
         "AUTH",
         `${connName} DISABLED (grok-cli free usage exhausted [${status}])`
+      );
+    } catch (e) {
+      log.warn("AUTH", `${connName} quota-exhausted update failed: ${e.message}`);
+    }
+    return {
+      shouldFallback: true,
+      cooldownMs: 0,
+      disabled: true,
+      authoritativeQuotaExhausted: true,
+    };
+  }
+
+  // Token Harbor: rolling 7-day free allowance exhaustion is account-specific
+  // and authoritative (error code free_tier_limit_reached). Disable the
+  // connection so future account rotation skips it until the allowance resets.
+  if (isTokenHarborFreeTierExhausted(provider, status, errorText)) {
+    const update = buildTokenHarborFreeTierExhaustedUpdate(conn, status, errorText);
+    try {
+      await updateProviderConnection(connectionId, update);
+      log.warn(
+        "AUTH",
+        `${connName} DISABLED (tokenharbor free tier exhausted [${status}])`
       );
     } catch (e) {
       log.warn("AUTH", `${connName} quota-exhausted update failed: ${e.message}`);

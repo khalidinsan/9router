@@ -137,6 +137,71 @@ export function buildGrokCliPermissionDeniedUpdate(now = new Date()) {
 }
 
 /**
+ * Token Harbor: rolling 7-day free allowance exhausted. The upstream 429 is
+ * account-specific and authoritative — remove the connection from rotation
+ * until the allowance resets (embedded in the error as "next rolling 7-day
+ * period starts at <ISO>").
+ */
+const TOKENHARBOR_FREE_TIER_PATTERNS = [
+  /free_tier_limit_reached/i,
+  /this period's free allowance/i,
+];
+
+/**
+ * Detect whether an error body / message indicates Token Harbor free-tier
+ * allowance exhaustion (account-specific, safe to disable).
+ * @param {string} provider - provider id (e.g. "tokenharbor")
+ * @param {number} status - HTTP status
+ * @param {string|object} errorText - raw error body or message
+ * @returns {boolean}
+ */
+export function isTokenHarborFreeTierExhausted(provider, status, errorText) {
+  if (!errorText || String(provider || "").toLowerCase() !== "tokenharbor") return false;
+  if (Number(status) !== 429) return false;
+  const lower = errorTextToLower(errorText);
+  return TOKENHARBOR_FREE_TIER_PATTERNS.some(p => p.test(lower));
+}
+
+/**
+ * Extract the rolling-period reset timestamp from the Token Harbor 429 body
+ * ("Your next rolling 7-day period starts at 2026-08-30T14:17:40.804326+00:00").
+ * @param {string|object} errorText - raw error body or message
+ * @returns {string|null} ISO timestamp when the free allowance resets
+ */
+export function parseTokenHarborFreeTierResetsAt(errorText) {
+  const lower = errorTextToLower(errorText);
+  const match = lower.match(/next rolling 7-day period starts at\s*(\d{4}-\d{2}-\d{2}t\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:z|[+-]\d{2}:\d{2}))/);
+  if (!match) return null;
+  const t = new Date(match[1]);
+  return Number.isFinite(t.getTime()) ? t.toISOString() : null;
+}
+
+/**
+ * Payload to deactivate a tokenharbor connection that hit free-tier
+ * exhaustion. isActive=false only — never auto-delete the connection row.
+ */
+export function buildTokenHarborFreeTierExhaustedUpdate(conn, status = 429, error = null, now = new Date()) {
+  const resetsAt = parseTokenHarborFreeTierResetsAt(error);
+  return {
+    isActive: false,
+    testStatus: "quota_exhausted",
+    lastErrorType: "quota_exhausted",
+    errorCode: Number(status) || 429,
+    lastError: error ? String(error).slice(0, 240) : "Token Harbor free tier allowance exhausted",
+    lastErrorAt: now.toISOString(),
+    quotaExhaustedAt: now.toISOString(),
+    providerSpecificData: {
+      ...(conn?.providerSpecificData || {}),
+      quotaExhausted: true,
+      quotaExhaustedAt: now.toISOString(),
+      quotaErrorCode: "free_tier_limit_reached",
+      ...(resetsAt ? { freeTierResetsAt: resetsAt } : {}),
+      lastQuotaCheckAt: now.toISOString(),
+    },
+  };
+}
+
+/**
  * Payload after a successful re-probe of a disabled grok-cli account
  * (free quota reset / 402–403 recovered).
  */
