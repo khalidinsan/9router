@@ -34,7 +34,7 @@ export default {
     headers: {
       // Match the official agy CLI User-Agent. Google rejects requests from
       // consumer-authenticated accounts when the old "antigravity/X.X.X" UA is used.
-      "User-Agent": `antigravity/cli/1.0.16 (aidev_client; os_type=${platform()}; arch=${arch()}; auth_method=consumer)`,
+      "User-Agent": `antigravity/cli/1.1.22 (aidev_client; os_type=${platform()}; arch=${arch()}; cl=971564011; auth_method=consumer)`,
     },
     retry: {
       "429": {

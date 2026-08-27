@@ -119,21 +119,19 @@ export class AntigravityExecutor extends BaseExecutor {
   }
 
   transformRequest(model, body, stream, credentials) {
-    // When the account has no GCP project ID (e.g. RESTRICTED_DASHER_USER), the
-    // official agy CLI omits the `project` field entirely and lets Google's
-    // backend resolve the project from the OAuth context. Sending a generated
-    // random project ID causes 403 CONSUMER_INVALID / SERVICE_DISABLED.
-    const projectId = credentials?.projectId || null;
+    // Official agy CLI always sends `project` in the request body. Consumer
+    // accounts without a real GCP project use Google's fixed consumer project
+    // "aicode-consumers"; omitting it makes the API reject with
+    // 403 "You do not have a valid license of this product".
+    // Accounts with a real projectId (provisioned/enterprise) keep theirs.
+    const projectId = credentials?.projectId || "aicode-consumers";
 
     // Defensive: some upstream translators (openai-to-gemini.js) used to inject
-    // a random projectId into the body. Strip it if we don't have a real one.
-    const cleanBody = projectId ? body : { ...body };
-    if (!projectId && "project" in cleanBody) {
-      delete cleanBody.project;
-    }
+    // a random projectId into the body — the resolved project below overrides it.
+    const cleanBody = { ...body };
 
     // OpenAI clients may include stream_options even for non-streaming calls.
-    // Sanitize the exact object that will be sent; consumer accounts use a clone.
+    // Sanitize the exact object that will be sent.
     if (stream !== true) delete cleanBody.stream_options;
 
     // ─── Image generation: completely different request structure ───

@@ -7,7 +7,7 @@ import { platform, arch } from "os";
 
 const MAX_RETRY_AFTER_MS = 5000;
 const TRANSIENT_MAX_MS = 3000;
-const FORK_UA = `antigravity/cli/1.0.16 (aidev_client; os_type=${platform()}; arch=${arch()}; auth_method=consumer)`;
+const FORK_UA = `antigravity/cli/1.1.22 (aidev_client; os_type=${platform()}; arch=${arch()}; cl=971564011; auth_method=consumer)`;
 
 function res(status, headers = {}, body = null) {
   return {
@@ -89,7 +89,7 @@ describe("antigravity computeRetryDelay hook (D3)", () => {
     expect(h["Accept"]).toBe("text/event-stream");
   });
 
-  it("strips rejected top-level thinking fields for consumer accounts without projectId", () => {
+  it("strips rejected top-level thinking fields and falls back to consumer project for accounts without projectId", () => {
     const out = ag.transformRequest("claude-opus-4-6-thinking", {
       project: "generated-project-that-must-not-be-sent",
       thinking: { type: "disabled" },
@@ -105,7 +105,9 @@ describe("antigravity computeRetryDelay hook (D3)", () => {
       },
     }, true, { connectionId: "consumer-conn" });
 
-    expect(out).not.toHaveProperty("project");
+    // Consumer accounts without a real projectId fall back to Google's fixed
+    // consumer project (official agy CLI behavior) — the generated one is dropped.
+    expect(out.project).toBe("aicode-consumers");
     expect(out).not.toHaveProperty("thinking");
     expect(out).not.toHaveProperty("output_config");
     expect(out).not.toHaveProperty("reasoning_effort");

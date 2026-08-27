@@ -74,7 +74,7 @@
     "format": "antigravity",
     "timeoutMs": 10000,
     "headers": {
-      "User-Agent": "antigravity/cli/1.0.16 (aidev_client; os_type=darwin; arch=arm64; auth_method=consumer)"
+      "User-Agent": "antigravity/cli/1.1.22 (aidev_client; os_type=darwin; arch=arm64; cl=971564011; auth_method=consumer)"
     },
     "retry": {
       "429": {

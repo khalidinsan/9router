@@ -133,7 +133,7 @@ export const AG_DEFAULT_TOOLS = new Set([
 // Match the official agy CLI User-Agent so Google accepts the request for
 // consumer-authenticated accounts that have no GCP project ID.
 export const ANTIGRAVITY_HEADERS = {
-  "User-Agent": `antigravity/cli/1.0.16 (aidev_client; os_type=${platform()}; arch=${arch()}; auth_method=consumer)`
+  "User-Agent": `antigravity/cli/1.1.22 (aidev_client; os_type=${platform()}; arch=${arch()}; cl=971564011; auth_method=consumer)`
 };
 
 // Cloud Code Assist discovery/onboarding endpoints differ by client ecosystem.

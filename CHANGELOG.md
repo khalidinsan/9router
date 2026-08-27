@@ -1,3 +1,14 @@
+# Unreleased
+
+## Fixes
+- **Antigravity**: fix blanket 403/404 from `daily-cloudcode-pa` — the official
+  agy CLI 1.1.22 now requires every request to carry `project` (consumer
+  accounts fall back to Google's fixed `aicode-consumers` project; omitting it
+  yields 403 "You do not have a valid license of this product"), and Google
+  rejects the old `antigravity/cli/1.0.16` User-Agent (404 "Requested entity was
+  not found"). Bumped the fingerprint to `1.1.22` with `cl=971564011` and always
+  send the resolved project id.
+
 # v0.5.55 (2026-08-14)
 
 ## Features
