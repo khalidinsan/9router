@@ -182,34 +182,39 @@ export class AntigravityExecutor extends BaseExecutor {
 
     // ─── Standard (non-image) request ───
     // Fix contents for Claude models via Antigravity
-    const contents = body.request?.contents?.map(c => {
-      let role = c.role;
-      // functionResponse must be role "user" for Claude models
-      if (c.parts?.some(p => p.functionResponse)) {
-        role = "user";
-      }
-      // Strip thought-only parts, keep thoughtSignature on functionCall parts (Gemini 3+ requires it)
-      const parts = c.parts?.filter(p => {
-        if (p.thought && !p.functionCall) return false;
-        if (p.thoughtSignature && !p.functionCall && !p.text) return false;
-        return true;
-      });
-      // Gemini 3+ rejects functionCall parts without thoughtSignature. Clients (Claude Code, IDE)
-      // don't persist thoughtSignature in their history, so backfill the default signature on any
-      // functionCall part that arrives without one.
-      const needsBackfill = parts?.some(p => p.functionCall && !p.thoughtSignature) ?? false;
-      if (role !== c.role || parts?.length !== c.parts?.length || needsBackfill) {
-        return {
-          ...c, role,
-          parts: needsBackfill
-            ? parts.map(p => (p.functionCall && !p.thoughtSignature)
-                ? { ...p, thoughtSignature: DEFAULT_THINKING_AG_SIGNATURE }
-                : p)
-            : parts,
-        };
-      }
-      return c;
-    });
+    const contents = (body.request?.contents || [])
+      .map(c => {
+        let role = c.role;
+        // functionResponse must be role "user" for Claude models
+        if (c.parts?.some(p => p.functionResponse)) {
+          role = "user";
+        }
+        // Strip thought-only parts, keep thoughtSignature on functionCall parts (Gemini 3+ requires it)
+        const parts = c.parts?.filter(p => {
+          if (p.thought && !p.functionCall) return false;
+          if (p.thoughtSignature && !p.functionCall && !p.text) return false;
+          return true;
+        });
+        // Gemini 3+ rejects functionCall parts without thoughtSignature. Clients (Claude Code, IDE)
+        // don't persist thoughtSignature in their history, so backfill the default signature on any
+        // functionCall part that arrives without one.
+        const needsBackfill = parts?.some(p => p.functionCall && !p.thoughtSignature) ?? false;
+        if (role !== c.role || parts?.length !== c.parts?.length || needsBackfill) {
+          return {
+            ...c, role,
+            parts: needsBackfill
+              ? parts.map(p => (p.functionCall && !p.thoughtSignature)
+                  ? { ...p, thoughtSignature: DEFAULT_THINKING_AG_SIGNATURE }
+                  : p)
+              : parts,
+          };
+        }
+        return c;
+      })
+      // Drop messages whose parts were stripped to empty (e.g. assistant
+      // thinking-only messages with no text/toolCall). Google rejects them
+      // with 400 "Request contains an invalid argument".
+      .filter(c => (c?.parts?.length ?? 0) > 0);
 
     // Sanitize tool schemas and function names before sending to Antigravity.
     let tools = body.request?.tools;

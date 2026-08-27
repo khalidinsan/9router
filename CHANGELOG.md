@@ -8,6 +8,10 @@
   rejects the old `antigravity/cli/1.0.16` User-Agent (404 "Requested entity was
   not found"). Bumped the fingerprint to `1.1.22` with `cl=971564011` and always
   send the resolved project id.
+- **Antigravity**: drop history messages whose parts were stripped to empty —
+  assistant thinking-only messages (reasoning without text/tool calls) ended up
+  as `parts: []` after the thought-part filter and Google rejected the request
+  with 400 "Request contains an invalid argument" on resumed sessions.
 
 # v0.5.55 (2026-08-14)
 

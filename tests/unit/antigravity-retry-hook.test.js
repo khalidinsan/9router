@@ -133,4 +133,44 @@ describe("antigravity computeRetryDelay hook (D3)", () => {
     expect(out.requestId).toMatch(/^agent-[0-9a-f-]{36}$/);
     expect(out.request.generationConfig.maxOutputTokens).toBe(64000);
   });
+
+  it("drops messages whose parts were stripped to empty (thinking-only assistant history)", () => {
+    const out = ag.transformRequest("gemini-3.7-flash-high", {
+      request: {
+        contents: [
+          { role: "user", parts: [{ text: "hi" }] },
+          // Thinking-only assistant message: both parts get stripped → must be dropped
+          {
+            role: "model",
+            parts: [
+              { thought: true, text: "let me think..." },
+              { thoughtSignature: "sig", text: "" },
+            ],
+          },
+          { role: "user", parts: [{ text: "continue" }] },
+          {
+            role: "model",
+            parts: [
+              { thought: true, text: "calling tool..." },
+              { functionCall: { id: "c1", name: "tool_1", args: {} } },
+            ],
+          },
+          { role: "user", parts: [{ functionResponse: { name: "tool_1", response: { ok: true } } }] },
+          { role: "model", parts: [{ text: "done" }] },
+        ],
+        generationConfig: {},
+      },
+    }, true, { projectId: null, connectionId: "conn-1" });
+
+    // The thinking-only model message is dropped; functionCall keeps its backfilled signature
+    expect(out.request.contents.map(c => c.role)).toEqual(["user", "user", "model", "user", "model"]);
+    expect(out.request.contents[2].parts[0]).toMatchObject({
+      functionCall: { id: "c1", name: "tool_1", args: {} },
+    });
+    expect(out.request.contents[2].parts[0].thoughtSignature).toBeTruthy();
+    // No message may carry an empty parts array
+    for (const c of out.request.contents) {
+      expect(c.parts.length).toBeGreaterThan(0);
+    }
+  });
 });
