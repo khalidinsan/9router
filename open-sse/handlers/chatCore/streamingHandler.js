@@ -9,7 +9,7 @@ import { buildAbortedResponsesTerminalBytes } from "../../utils/responsesStreamH
 import { buildRequestDetail, extractRequestConfig, saveUsageStats, formatDoneLine } from "./requestDetail.js";
 import { saveRequestDetail } from "@/lib/usageDb.js";
 import { SSE_HEADERS_CORS as SSE_HEADERS } from "../../utils/sseConstants.js";
-import { finalizeOpenAITerminalSse } from "../../providers/openai-terminal-normalizer.js";
+import { finalizeOpenAITerminalSse, needsOpenAITerminalNormalization } from "../../providers/openai-terminal-normalizer.js";
 
 // Codex returns Responses API SSE → which client format to translate INTO, by request sourceFormat.
 // Gemini-family all map to ANTIGRAVITY decoder; unknown sources fall back to OPENAI.
@@ -89,11 +89,11 @@ export async function handleStreamingResponse({ providerResponse, provider, mode
   const onAbortTerminal = isResponsesPassthrough ? buildAbortedResponsesTerminalBytes : null;
   const stallTimeoutMs = PROVIDERS[provider]?.stallTimeoutMs || STREAM_STALL_TIMEOUT_MS;
   const transformedBody = pipeWithDisconnect(providerResponse, transformStream, streamController, onAbortTerminal, stallTimeoutMs);
-  // Provider-local terminal normalization. Token Harbor and B.AI emit a
-  // redundant usage-only terminal frame that triggers OMP's OpenAI client
-  // early-break path, causing DISCONNECT: ResponseAborted in the gateway log.
-  const needsTerminalNormalization = provider === "tokenharbor" || provider === "bai";
-  const responseBody = needsTerminalNormalization
+  // Provider-local terminal normalization. Token Harbor, B.AI and Antigravity
+  // emit terminal frames that trigger OMP's OpenAI client early-break path,
+  // causing DISCONNECT: ResponseAborted in the gateway log (finish+usage frame
+  // mid-stream; antigravity additionally never sends [DONE] downstream).
+  const responseBody = needsOpenAITerminalNormalization(provider, sourceFormat)
     ? finalizeOpenAITerminalSse(transformedBody)
     : transformedBody;
 

@@ -12,6 +12,13 @@
   assistant thinking-only messages (reasoning without text/tool calls) ended up
   as `parts: []` after the thought-part filter and Google rejected the request
   with 400 "Request contains an invalid argument" on resumed sessions.
+- **Antigravity**: fix `DISCONNECT: ResponseAborted` on every streaming request
+  from OpenAI clients — the finish+usage frame lands mid-stream and (unlike
+  other providers) no `data: [DONE]` sentinel is ever emitted downstream
+  (isGeminiFamily skip), so OMP's client broke early and cancelled the open
+  response, losing usage tracking. Generalize the Token Harbor/B.AI terminal
+  normalizer to antigravity (OpenAI clients only — Gemini-family clients still
+  get no sentinel).
 
 # v0.5.55 (2026-08-14)
 

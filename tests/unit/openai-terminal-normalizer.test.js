@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { finalizeOpenAITerminalSse } from "../../open-sse/providers/openai-terminal-normalizer.js";
+import { finalizeOpenAITerminalSse, needsOpenAITerminalNormalization } from "../../open-sse/providers/openai-terminal-normalizer.js";
 
 function makeFrame(type, data) {
   if (type === "done") return "data: [DONE]";
@@ -74,5 +74,41 @@ describe("finalizeOpenAITerminalSse", () => {
     const dones = frames.filter(f => f === "data: [DONE]");
     expect(dones).toHaveLength(1);
     expect(frames[frames.length - 1]).toBe("data: [DONE]");
+  });
+
+  it("buffers the finish+usage frame and appends [DONE] at EOF (antigravity pattern: no upstream [DONE])", async () => {
+    const stream = framesToStream(
+      makeFrame("content", "hi"),
+      makeFrame("finish"),
+    );
+    const frames = await collectFrames(finalizeOpenAITerminalSse(stream));
+    const dones = frames.filter(f => f === "data: [DONE]");
+    expect(dones).toHaveLength(1);
+    // finish+usage frame must be present exactly once, and [DONE] must be last
+    const finishes = frames.filter(f => {
+      try { const e = JSON.parse(f.slice(5)); return e.choices?.[0]?.finish_reason === "stop" && e.usage; } catch { return false; }
+    });
+    expect(finishes).toHaveLength(1);
+    expect(frames[frames.length - 1]).toBe("data: [DONE]");
+  });
+});
+
+describe("needsOpenAITerminalNormalization", () => {
+  it("normalizes antigravity/bai/tokenharbor for OpenAI clients", () => {
+    expect(needsOpenAITerminalNormalization("antigravity", "openai")).toBe(true);
+    expect(needsOpenAITerminalNormalization("bai", "openai")).toBe(true);
+    expect(needsOpenAITerminalNormalization("tokenharbor", "openai")).toBe(true);
+  });
+
+  it("never normalizes Gemini-family clients (they reject the [DONE] sentinel)", () => {
+    expect(needsOpenAITerminalNormalization("antigravity", "antigravity")).toBe(false);
+    expect(needsOpenAITerminalNormalization("antigravity", "gemini")).toBe(false);
+    expect(needsOpenAITerminalNormalization("antigravity", "gemini-cli")).toBe(false);
+  });
+
+  it("leaves other providers untouched", () => {
+    expect(needsOpenAITerminalNormalization("claude", "openai")).toBe(false);
+    expect(needsOpenAITerminalNormalization("gemini", "openai")).toBe(false);
+    expect(needsOpenAITerminalNormalization("vertex", "openai")).toBe(false);
   });
 });

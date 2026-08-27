@@ -1,4 +1,24 @@
 import { SSE_DONE } from "../utils/sseConstants.js";
+import { FORMATS } from "../translator/formats.js";
+
+/**
+ * Should the downstream stream be run through finalizeOpenAITerminalSse?
+ *
+ * Applies to providers whose terminal sequence triggers OMP's OpenAI-client
+ * early-break path (client sees finish+usage, cancels the still-open response,
+ * gateway logs DISCONNECT: ResponseAborted, flush()/usage never runs):
+ *  - tokenharbor / bai: emit finish+usage → usage-only choices:[] → [DONE] → [DONE]
+ *  - antigravity: emits finish+usage mid-stream and (isGeminiFamily skip in
+ *    stream.js) never sends [DONE] downstream at all
+ *
+ * Only normalize OpenAI-family clients: Gemini-family clients (Antigravity IDE,
+ * Gemini CLI via MITM) reject the `data: [DONE]` sentinel with 400 syntax
+ * errors, so leave their streams untouched.
+ */
+export function needsOpenAITerminalNormalization(provider, sourceFormat) {
+  if (sourceFormat !== FORMATS.OPENAI) return false;
+  return provider === "tokenharbor" || provider === "bai" || provider === "antigravity";
+}
 
 /**
  * Normalize downstream OpenAI SSE terminal sequences for providers that
