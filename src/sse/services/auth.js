@@ -2,6 +2,7 @@ import {
   getProviderConnections,
   validateApiKey,
   updateProviderConnection,
+  deleteProviderConnection,
   getSettings,
   getProxyPools,
 } from "@/lib/localDb";
@@ -18,6 +19,7 @@ import {
   buildGrokCliPermissionDeniedUpdate,
   isTokenHarborFreeTierExhausted,
   buildTokenHarborFreeTierExhaustedUpdate,
+  isTokenHarborAccountFlagged,
 } from "open-sse/services/accountFallback.js";
 import {
   buildGrokCliAuthoritativeQuotaExhaustedUpdate,
@@ -474,6 +476,18 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
       disabled: true,
       authoritativeQuotaExhausted: true,
     };
+  }
+
+  // Token Harbor: account flagged/banned upstream (402 "can't serve our
+  // models on this account"). These accounts never recover — delete them.
+  if (isTokenHarborAccountFlagged(provider, status, errorText)) {
+    log.warn("AUTH", `${connName} DELETED (tokenharbor account flagged [402] — can't serve)`);
+    try {
+      await deleteProviderConnection(connectionId);
+    } catch (e) {
+      log.warn("AUTH", `${connName} delete failed: ${e.message}`);
+    }
+    return { shouldFallback: true, cooldownMs: 0, deleted: true };
   }
 
   // Ambiguous spending-limit 402 may be a shared/transient upstream gate.

@@ -177,6 +177,31 @@ export function parseTokenHarborFreeTierResetsAt(errorText) {
 }
 
 /**
+ * Token Harbor: account flagged by upstream ("We can't serve our models on
+ * this account right now."). The account is unusable — remove it entirely
+ * from the connection pool.
+ */
+const TOKENHARBOR_ACCOUNT_FLAGGED_PATTERNS = [
+  /can'?t serve our models on this account/i,
+  /cannot serve our models on this account/i,
+];
+
+/**
+ * Detect whether a Token Harbor error indicates the account itself was
+ * flagged/banned upstream (402). Such accounts never recover — delete them.
+ * @param {string} provider - provider id (e.g. "tokenharbor")
+ * @param {number} status - HTTP status
+ * @param {string|object} errorText - raw error body or message
+ * @returns {boolean}
+ */
+export function isTokenHarborAccountFlagged(provider, status, errorText) {
+  if (!errorText || String(provider || "").toLowerCase() !== "tokenharbor") return false;
+  if (Number(status) !== 402) return false;
+  const lower = errorTextToLower(errorText);
+  return TOKENHARBOR_ACCOUNT_FLAGGED_PATTERNS.some(p => p.test(lower));
+}
+
+/**
  * Payload to deactivate a tokenharbor connection that hit free-tier
  * exhaustion. isActive=false only — never auto-delete the connection row.
  */

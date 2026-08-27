@@ -3,12 +3,14 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
   getProviderConnections: vi.fn(),
   updateProviderConnection: vi.fn(),
+  deleteProviderConnection: vi.fn(),
 }));
 
 vi.mock("@/lib/localDb", () => ({
   getProviderConnections: mocks.getProviderConnections,
   validateApiKey: vi.fn(),
   updateProviderConnection: mocks.updateProviderConnection,
+  deleteProviderConnection: mocks.deleteProviderConnection,
   getSettings: vi.fn(),
   getProxyPools: vi.fn(),
 }));
@@ -96,5 +98,35 @@ describe("markAccountUnavailable tokenharbor free-tier", () => {
     await markAccountUnavailable("conn-1", 429, FREE_TIER_ERROR, "kimchi", "m");
     const update = mocks.updateProviderConnection.mock.calls[0][1];
     expect(update.isActive).toBeUndefined();
+  });
+
+  it("deletes the connection when the account is flagged (402 can't serve)", async () => {
+    const flaggedError = JSON.stringify({
+      error: { message: "We can't serve our models on this account right now." },
+    });
+    const result = await markAccountUnavailable(
+      "conn-1",
+      402,
+      flaggedError,
+      "tokenharbor",
+      "deepseek-v4-flash:free"
+    );
+
+    expect(result).toMatchObject({ shouldFallback: true, deleted: true });
+    expect(mocks.deleteProviderConnection).toHaveBeenCalledWith("conn-1");
+    // No lock/update written for a deleted account
+    expect(mocks.updateProviderConnection).not.toHaveBeenCalled();
+  });
+
+  it("keeps the account on generic 402 (payment required, not flagged)", async () => {
+    const result = await markAccountUnavailable(
+      "conn-1",
+      402,
+      "payment required, add credits",
+      "tokenharbor",
+      "deepseek-v4-flash:free"
+    );
+    expect(result.deleted).toBeUndefined();
+    expect(mocks.deleteProviderConnection).not.toHaveBeenCalled();
   });
 });
