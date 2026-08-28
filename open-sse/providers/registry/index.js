@@ -120,6 +120,7 @@ import p120 from "./tokenharbor.js";
 import p121 from "./fish-audio.js";
 import p122 from "./alitp-intl.js";
 import p123 from "./bai.js";
+import p124 from "./genspark.js";
 
 export default [
   agentrouter,
@@ -244,4 +245,5 @@ export default [
   p121,
   p122,
   p123,
+  p124,
 ];

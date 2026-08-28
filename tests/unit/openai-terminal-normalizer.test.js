@@ -13,6 +13,11 @@ function makeFrame(type, data) {
   if (type === "usage-only") {
     return `data: ${JSON.stringify({ id: "x", object: "chat.completion.chunk", created: 1, model: "m", choices: [], usage: { prompt_tokens: 10, completion_tokens: 5 } })}`;
   }
+  if (type === "genspark-usage-only") {
+    // genspark emits a trailing usage-only frame with non-empty choices whose
+    // delta is all-null (no finish_reason) — distinct from `choices: []`.
+    return `data: ${JSON.stringify({ id: "x", object: "chat.completion.chunk", created: 1, model: "m", choices: [{ index: 0, delta: { content: null, function_call: null, refusal: null, role: null, tool_calls: null }, finish_reason: null }], usage: { prompt_tokens: 10, completion_tokens: 5 } })}`;
+  }
   return "";
 }
 
@@ -47,6 +52,24 @@ describe("finalizeOpenAITerminalSse", () => {
     const dones = frames.filter(f => f === "data: [DONE]");
     const usageOnly = frames.filter(f => {
       try { const e = JSON.parse(f.slice(5)); return Array.isArray(e.choices) && e.choices.length === 0 && e.usage; } catch { return false; }
+    });
+    expect(dones).toHaveLength(1);
+    expect(usageOnly).toHaveLength(0);
+    expect(frames[frames.length - 1]).toBe("data: [DONE]");
+  });
+
+  it("collapses genspark finish+usage → all-null-choices usage-only → [DONE] ×2 to single [DONE]", async () => {
+    const stream = framesToStream(
+      makeFrame("content", "hi"),
+      makeFrame("finish"),
+      makeFrame("genspark-usage-only"),
+      makeFrame("done"),
+      makeFrame("done"),
+    );
+    const frames = await collectFrames(finalizeOpenAITerminalSse(stream));
+    const dones = frames.filter(f => f === "data: [DONE]");
+    const usageOnly = frames.filter(f => {
+      try { const e = JSON.parse(f.slice(5)); return e.usage && e.choices?.length > 0 && !e.choices[0].finish_reason; } catch { return false; }
     });
     expect(dones).toHaveLength(1);
     expect(usageOnly).toHaveLength(0);
@@ -94,10 +117,11 @@ describe("finalizeOpenAITerminalSse", () => {
 });
 
 describe("needsOpenAITerminalNormalization", () => {
-  it("normalizes antigravity/bai/tokenharbor for OpenAI clients", () => {
+  it("normalizes antigravity/bai/tokenharbor/genspark for OpenAI clients", () => {
     expect(needsOpenAITerminalNormalization("antigravity", "openai")).toBe(true);
     expect(needsOpenAITerminalNormalization("bai", "openai")).toBe(true);
     expect(needsOpenAITerminalNormalization("tokenharbor", "openai")).toBe(true);
+    expect(needsOpenAITerminalNormalization("genspark", "openai")).toBe(true);
   });
 
   it("never normalizes Gemini-family clients (they reject the [DONE] sentinel)", () => {

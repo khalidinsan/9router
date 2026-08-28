@@ -17,7 +17,7 @@ import { FORMATS } from "../translator/formats.js";
  */
 export function needsOpenAITerminalNormalization(provider, sourceFormat) {
   if (sourceFormat !== FORMATS.OPENAI) return false;
-  return provider === "tokenharbor" || provider === "bai" || provider === "antigravity";
+  return provider === "tokenharbor" || provider === "bai" || provider === "antigravity" || provider === "genspark";
 }
 
 /**
@@ -71,7 +71,19 @@ export function finalizeOpenAITerminalSse(readable) {
       const event = JSON.parse(raw);
       const choices = Array.isArray(event.choices) ? event.choices : [];
       const hasFinishWithUsage = Boolean(event.usage && choices.some(choice => choice?.finish_reason));
-      const isTrailingUsageOnly = Boolean(terminalUsageSeen && event.usage && choices.length === 0);
+      // Usage-only terminal frame after finish. tokenharbor/bai emit it as
+      // `choices: []`; genspark emits `choices:[{delta:{...all null}}]` (no
+      // finish_reason). Treat both as redundant usage-only and drop them.
+      const isEmptyDelta = (choice) => {
+        const d = choice?.delta;
+        if (!d) return true;
+        return !d.content && !d.reasoning_content && !d.tool_calls && !d.role;
+      };
+      const isTrailingUsageOnly = Boolean(
+        terminalUsageSeen &&
+        event.usage &&
+        (choices.length === 0 || choices.every(isEmptyDelta))
+      );
 
       if (hasFinishWithUsage) {
         terminalUsageSeen = true;

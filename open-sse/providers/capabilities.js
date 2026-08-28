@@ -121,6 +121,26 @@ const CODEX_GPT_56_DEFAULT_CAPS = { vision: true, reasoning: true, search: true,
  * Provider-specific capability overrides. Keyed by provider alias/id.
  */
 export const PROVIDER_CAPABILITIES = {
+  // Genspark LLM proxy is OpenAI-compatible — it rejects Claude-native
+  // `output_config`/adaptive thinking and requires `reasoning_effort`
+  // (or `thinking.budget_tokens >= 1024`). Force openai format for all its
+  // reasoning models (claude-*/gpt-5.6-*/deepseek-*/grok-*/kimi-*/glm-*).
+  "genspark": {
+    "claude-opus-5":  { vision: true, reasoning: true, thinkingFormat: "openai", contextWindow: 1000000, maxOutput: 128000 },
+    "claude-fable-5": { vision: true, reasoning: true, thinkingFormat: "openai", contextWindow: 1000000, maxOutput: 128000 },
+    "claude-sonnet-5": { vision: true, reasoning: true, thinkingFormat: "openai", contextWindow: 1000000, maxOutput: 128000 },
+    "claude-sonnet-4-6": { vision: true, reasoning: true, thinkingFormat: "openai", contextWindow: 1000000, maxOutput: 128000 },
+    "claude-opus-4-8": { vision: true, reasoning: true, thinkingFormat: "openai", contextWindow: 1000000, maxOutput: 128000 },
+    "claude-opus-4-7": { vision: true, reasoning: true, thinkingFormat: "openai", contextWindow: 1000000, maxOutput: 128000 },
+    "claude-opus-4-6": { vision: true, reasoning: true, thinkingFormat: "openai", contextWindow: 1000000, maxOutput: 128000 },
+    "gpt-5.6-sol":    { vision: true, reasoning: true, thinkingFormat: "openai", contextWindow: 1000000, maxOutput: 128000 },
+    "gpt-5.6-terra":  { vision: true, reasoning: true, thinkingFormat: "openai", contextWindow: 1000000, maxOutput: 128000 },
+    "gpt-5.6-luna":   { vision: true, reasoning: true, thinkingFormat: "openai", contextWindow: 1000000, maxOutput: 128000 },
+    "gpt-5.6-luna-max": { vision: true, reasoning: true, thinkingFormat: "openai", contextWindow: 1000000, maxOutput: 128000 },
+    "deep-seek-v4-flash": { reasoning: true, thinkingFormat: "openai", contextWindow: 1000000, maxOutput: 65536 },
+    "deep-seek-v4-pro":   { reasoning: true, thinkingFormat: "openai", contextWindow: 1000000, maxOutput: 65536 },
+    "grok-4.6":       { vision: true, reasoning: true, thinkingFormat: "openai", contextWindow: 500000, maxOutput: 64000 },
+  },
   // NVIDIA NIM is OpenAI-compatible → rejects MiniMax/GLM native `thinking` field.
   // Force openai reasoning_effort format for its reasoning models. #issue
   "nvidia": {

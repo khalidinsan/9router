@@ -106,6 +106,16 @@ export function translateRequest(sourceFormat, targetFormat, model, body, stream
         }
       }
     }
+  } else if (provider === "genspark") {
+    // Genspark is OpenAI-compatible but rejects Claude-style thinking
+    // (`thinking.budget_tokens` < 1024 → 422). Normalize to OpenAI
+    // `reasoning_effort` even though the wire format is unchanged. The
+    // genspark capability override pins thinkingFormat:"openai", so
+    // applyThinking emits reasoning_effort (never adaptive thinking).
+    applyThinking(targetFormat, model, result, provider, thinkingIntent);
+    result = filterToOpenAIFormat(result, {
+      preserveCacheControl: !!PROVIDERS[provider]?.quirks?.preserveCacheControl,
+    });
   }
 
   // Normalize thinking to the target provider-native format (config-driven, capability-aware).
