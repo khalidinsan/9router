@@ -1,4 +1,5 @@
 import { platform, arch } from "os";
+import { ANTIGRAVITY_IDE_BASE_URL } from "../shared.js";
 
 export default {
   id: "antigravity",
