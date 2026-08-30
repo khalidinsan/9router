@@ -66,6 +66,7 @@ import p63 from "./nebius.js";
 import p64 from "./nvidia.js";
 import p65 from "./ollama-local.js";
 import p66 from "./ollama.js";
+import p125 from "./ollama-search.js";
 import p67 from "./openai.js";
 import p68 from "./opencode-go.js";
 import p69 from "./opencode.js";
@@ -121,6 +122,7 @@ import p121 from "./fish-audio.js";
 import p122 from "./alitp-intl.js";
 import p123 from "./bai.js";
 import p124 from "./genspark.js";
+import p126 from "./xquik.js";
 
 export default [
   agentrouter,
@@ -191,6 +193,7 @@ export default [
   p64,
   p65,
   p66,
+  p125,
   p67,
   p68,
   p69,
@@ -246,4 +249,5 @@ export default [
   p122,
   p123,
   p124,
+  p126,
 ];

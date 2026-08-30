@@ -2,8 +2,8 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { UPDATER_CONFIG } from "@/shared/constants/config";
+import { readPresets, upsertPreset, deletePreset, subscribePresets, stripSlash } from "./cliEndpointPresets";
 
-const STORAGE_KEY = "9router.cliToolEndpointPresets";
 const CUSTOM_VALUE = "__custom__";
 const SAVE_VALUE = "__save__";
 const FALLBACK_LOCAL_ORIGIN = `http://127.0.0.1:${UPDATER_CONFIG.appPort}`;
@@ -22,22 +22,6 @@ const normalizeLocalOrigin = (origin) =>
 const resolveLocalOrigin = () => {
   if (typeof window === "undefined") return FALLBACK_LOCAL_ORIGIN;
   return normalizeLocalOrigin(window.location.origin) || FALLBACK_LOCAL_ORIGIN;
-};
-
-const readSavedPresets = () => {
-  if (typeof window === "undefined") return [];
-  try {
-    const raw = JSON.parse(window.localStorage.getItem(STORAGE_KEY) || "[]");
-    if (!Array.isArray(raw)) return [];
-    return raw.filter((p) => p?.name && p?.baseUrl);
-  } catch {
-    return [];
-  }
-};
-
-const writeSavedPresets = (presets) => {
-  if (typeof window === "undefined") return;
-  window.localStorage.setItem(STORAGE_KEY, JSON.stringify(presets));
 };
 
 const buildOptions = ({ requiresExternalUrl, localOrigin, tunnelEnabled, tunnelPublicUrl, tailscaleEnabled, tailscaleUrl, cloudEnabled, cloudUrl, savedPresets, withV1 }) => {
@@ -77,17 +61,37 @@ export default function BaseUrlSelect({
   cloudEnabled = false,
   cloudUrl = "",
   withV1 = true,
+  currentUrl = "",
 }) {
   const [savedPresets, setSavedPresets] = useState([]);
   // null until client mount so we don't flash the wrong hardcoded port (e.g. 20128 vs 20127)
   const [localOrigin, setLocalOrigin] = useState(null);
+  const [presetsLoaded, setPresetsLoaded] = useState(false);
   const [mode, setMode] = useState("");
   const [customInput, setCustomInput] = useState("");
   const initializedRef = useRef(false);
+  const customInputRef = useRef("");
 
   useEffect(() => {
-    setSavedPresets(readSavedPresets());
     setLocalOrigin(resolveLocalOrigin());
+    const sync = () => {
+      const presets = readPresets();
+      setSavedPresets(presets);
+      // A preset saved elsewhere (e.g. on Apply) takes over the custom slot
+      setMode((prev) => {
+        if (prev !== CUSTOM_VALUE) return prev;
+        const typed = stripSlash(customInputRef.current);
+        if (!typed) return prev;
+        const match = presets.find((p) => {
+          const saved = stripSlash(p.baseUrl);
+          return saved === typed || saved === ensureV1(typed);
+        });
+        return match ? `saved:${match.name}` : prev;
+      });
+    };
+    sync();
+    setPresetsLoaded(true);
+    return subscribePresets(sync);
   }, []);
 
   const options = useMemo(
@@ -107,21 +111,25 @@ export default function BaseUrlSelect({
     [requiresExternalUrl, localOrigin, tunnelEnabled, tunnelPublicUrl, tailscaleEnabled, tailscaleUrl, cloudEnabled, cloudUrl, savedPresets, withV1]
   );
 
-  // Default to first option once we know the real local origin (matches dashboard/endpoint current)
+  // Prefer a saved preset matching the currently configured URL, else first option.
+  // Wait for both client origin (SSR port guard) and presets before selecting.
   useEffect(() => {
     if (initializedRef.current) return;
-    // Wait for client origin so we don't lock in the SSR fallback port
     if (!requiresExternalUrl && localOrigin == null) return;
-    if (options.length === 0) return;
+    if (!presetsLoaded || options.length === 0) return;
     initializedRef.current = true;
-    const first = options.find((o) => o.value !== CUSTOM_VALUE);
-    if (first) {
-      setMode(first.value);
-      onChange(first.url);
+    const current = stripSlash(currentUrl);
+    const matched = current
+      ? options.find((o) => o.saved && stripSlash(o.url) === current)
+      : null;
+    const target = matched || options.find((o) => o.value !== CUSTOM_VALUE);
+    if (target) {
+      setMode(target.value);
+      onChange(target.url);
     } else {
       setMode(CUSTOM_VALUE);
     }
-  }, [options, onChange, localOrigin, requiresExternalUrl]);
+  }, [options, onChange, localOrigin, requiresExternalUrl, presetsLoaded, currentUrl]);
 
   const handleSelect = (e) => {
     const next = e.target.value;
@@ -131,11 +139,8 @@ export default function BaseUrlSelect({
       let defaultName = trimmed;
       try { defaultName = new URL(trimmed).host; } catch {}
       const name = window.prompt("Save endpoint as:", defaultName);
-      if (!name?.trim()) return;
-      const updated = [...savedPresets.filter((p) => p.name !== name.trim()), { name: name.trim(), baseUrl: trimmed }]
-        .sort((a, b) => a.name.localeCompare(b.name));
-      setSavedPresets(updated);
-      writeSavedPresets(updated);
+      const saved = name?.trim() ? upsertPreset(trimmed, name.trim()) : null;
+      if (saved) setMode(`saved:${saved}`);
       return;
     }
     setMode(next);
@@ -150,19 +155,23 @@ export default function BaseUrlSelect({
 
   const handleCustomInput = (e) => {
     const v = e.target.value;
+    customInputRef.current = v;
     setCustomInput(v);
     onChange(v);
   };
 
   const handleDeleteSaved = () => {
     if (!mode.startsWith("saved:")) return;
-    const name = mode.slice(6);
-    const updated = savedPresets.filter((p) => p.name !== name);
-    setSavedPresets(updated);
-    writeSavedPresets(updated);
-    setMode(CUSTOM_VALUE);
+    deletePreset(mode.slice(6));
     setCustomInput("");
-    onChange("");
+    const fallback = options.find((o) => o.value !== CUSTOM_VALUE && o.value !== mode);
+    if (fallback) {
+      setMode(fallback.value);
+      onChange(fallback.url);
+    } else {
+      setMode(CUSTOM_VALUE);
+      onChange("");
+    }
   };
 
   const isSaved = mode.startsWith("saved:");
