@@ -3,12 +3,15 @@ import {
   GrokCliExecutor,
   countGrokCliUserTurns,
   resolveGrokCliTurnIdx,
+  resolveGrokCliSessionId,
+  getGrokCliReasoningBlob,
+  setGrokCliReasoningBlob,
+  poisonGrokCliSession,
+  isGrokCliSessionPoisoned,
   _resetGrokCliTurnStore,
   _getGrokCliTurnStoreSize,
   normalizeGrokCliEffort,
   supportsGrokCliReasoningEffort,
-  setGrokCliReasoningBlob,
-  getGrokCliReasoningBlob,
 } from "../../open-sse/executors/grok-cli.js";
 import { getExecutor, hasSpecializedExecutor } from "../../open-sse/executors/index.js";
 import { PROVIDERS, PROVIDER_OAUTH, PROVIDER_MODELS } from "../../open-sse/providers/index.js";
@@ -623,5 +626,44 @@ describe("GrokCliExecutor", () => {
     expect(err.status).toBe(402);
     expect(err.code).toBe("personal-team-blocked:spending-limit");
     expect(err.message).toMatch(/credits/i);
+  });
+
+  it("anchors session id on the first user message, not the connection", () => {
+    const creds = { connectionId: "conn-poison" };
+    const bodyA = { model: "grok-4.6", messages: [{ role: "user", content: "hai" }] };
+    const bodyB = { model: "grok-4.6", messages: [{ role: "user", content: "hai" }] };
+    const bodyC = { model: "grok-4.6", messages: [{ role: "user", content: "different question" }] };
+    const idA1 = resolveGrokCliSessionId(creds, bodyA);
+    const idA2 = resolveGrokCliSessionId(creds, bodyB);
+    const idC = resolveGrokCliSessionId(creds, bodyC);
+    expect(idA1).toBe(idA2);            // same conversation anchor
+    expect(idC).not.toBe(idA1);         // different first message → different conversation
+    // no user message at all → one-shot, never the connection-derived id
+    const idEmpty1 = resolveGrokCliSessionId(creds, { model: "grok-4.6", messages: [{ role: "system", content: "sys" }] });
+    const idEmpty2 = resolveGrokCliSessionId(creds, { model: "grok-4.6", messages: [{ role: "system", content: "sys" }] });
+    expect(idEmpty1).not.toBe(idEmpty2);
+  });
+
+  it("poisoned conversations get a fresh id and never resolve back", () => {
+    const creds = { connectionId: "conn-blob2" };
+    const body = { model: "grok-4.6", messages: [{ role: "user", content: "can you compact" }] };
+    const id = resolveGrokCliSessionId(creds, body);
+    poisonGrokCliSession(id);
+    expect(resolveGrokCliSessionId(creds, body)).not.toBe(id);
+    // still fresh on repeat attempts (upstream state under `id` is unrecoverable)
+    expect(resolveGrokCliSessionId(creds, body)).not.toBe(id);
+  });
+
+  it("parseError poisons the session on compaction-blob decode failure", () => {
+    executor._currentSessionId = "sess-blobdec";
+    const err = executor.parseError(
+      { status: 400 },
+      JSON.stringify({
+        code: "invalid-argument",
+        error: "Could not decode the compaction blob. Ensure it is unmodified from the compact response.",
+      })
+    );
+    expect(err.status).toBe(400);
+    expect(isGrokCliSessionPoisoned("sess-blobdec")).toBe(true);
   });
 });

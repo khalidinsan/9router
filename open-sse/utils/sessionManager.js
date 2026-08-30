@@ -88,6 +88,7 @@ export function clearSessionStore() {
 const assistantSessionStore = new Map();
 const ASSISTANT_MIN_LEN = 50;
 const ASSISTANT_CAP_LEN = 50;
+const FIRST_USER_CAP_LEN = 2000;
 const MAX_ASSISTANT_SESSIONS = 5000;
 const MAX_CONTINUATION_SESSIONS = 5000;
 
@@ -101,7 +102,7 @@ function sha16(text) {
 }
 
 // Normalize a session id candidate (trim, length cap)
-function normalizeSessionId(value) {
+export function normalizeSessionId(value) {
     if (typeof value !== "string") return null;
     const v = value.trim();
     if (!v || v.length > 256) return null;
@@ -135,7 +136,7 @@ function extractAntigravitySession(body) {
     return m ? normalizeSessionId(m[1]) : null;
 }
 
-function extractClientSessionId(headers, body, scope = "") {
+export function extractClientSessionId(headers, body, scope = "") {
     // Claude Code sends the session in a header AND in metadata.user_id; the header
     // survives translation to formats that drop metadata (e.g. Responses API).
     const claude = extractClaudeCodeSession(body?.metadata?.user_id)
@@ -177,6 +178,33 @@ function accumulateAssistantText(body) {
         if (text.length >= ASSISTANT_CAP_LEN) break;
     }
     return text;
+}
+
+// First user message text (string content or content blocks), for conversation anchoring
+function firstUserText(body, maxLen) {
+    const items = requestMessages(body);
+    for (const item of items) {
+        if (item?.role !== "user") continue;
+        if (typeof item.content === "string" && item.content.trim()) {
+            return item.content.slice(0, maxLen);
+        }
+        if (Array.isArray(item.content)) {
+            for (const block of item.content) {
+                const t = typeof block === "string" ? block : block?.text || block?.output || "";
+                if (typeof t === "string" && t.trim()) return t.slice(0, maxLen);
+            }
+        }
+    }
+    return null;
+}
+
+// Conversation anchor: stable hash of the FIRST user message, so first turns and
+// multi-turn continuations share one session id WITHOUT colliding with other
+// conversations on the same connection (composer jobs, dashboard tests, etc.).
+export function firstUserMessageSessionId(scope, connectionId, body) {
+    const text = firstUserText(body, FIRST_USER_CAP_LEN);
+    if (!text) return null;
+    return sha16(`${scope}:${connectionId || ""}:${text}`);
 }
 
 // Stable session id keyed on accumulated assistant text (avoids collision on identical first user prompt)

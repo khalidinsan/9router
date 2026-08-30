@@ -14,7 +14,12 @@ import {
   supportsGrokCliReasoningEffort,
 } from "../config/grokCli.js";
 import { MEMORY_CONFIG } from "../config/runtimeConfig.js";
-import { resolveSessionId } from "../utils/sessionManager.js";
+import {
+  extractClientSessionId,
+  firstUserMessageSessionId,
+  generateBinaryStyleId,
+  normalizeSessionId,
+} from "../utils/sessionManager.js";
 import { getConsistentMachineId } from "../shared/machineId.js";
 import { curlFetch } from "../utils/curlFetch.js";
 
@@ -67,6 +72,29 @@ const sessionTurnStore = new Map();
 let requestTurnStore = new WeakMap();
 // Last native reasoning blob per session (Claude/OpenAI clients drop encrypted_content)
 const sessionReasoningStore = new Map();
+
+// Upstream conversations whose compaction continuity state is unrecoverable
+// (proxy 400 "Could not decode the compaction blob" — the blob was never kept).
+// Such ids must never be reused: the proxy state keyed on them is fused.
+const poisonedGrokCliSessions = new Set();
+
+export function poisonGrokCliSession(sessionId) {
+  if (!sessionId) return;
+  poisonedGrokCliSessions.add(sessionId);
+  const row = sessionReasoningStore.get(sessionId);
+  if (row) sessionReasoningStore.delete(sessionId);
+  if (poisonedGrokCliSessions.size > GROK_CLI_TURN_STORE_MAX) {
+    poisonedGrokCliSessions.delete(poisonedGrokCliSessions.keys().next().value);
+  }
+}
+
+function bypassPoison(sessionId) {
+  return poisonedGrokCliSessions.has(sessionId) ? generateBinaryStyleId() : sessionId;
+}
+
+export function isGrokCliSessionPoisoned(sessionId) {
+  return poisonedGrokCliSessions.has(sessionId);
+}
 
 export function setGrokCliReasoningBlob(sessionId, blob) {
   if (!sessionId || !blob?.id || typeof blob.encrypted_content !== "string") return;
@@ -204,6 +232,7 @@ export function _resetGrokCliTurnStore() {
   sessionTurnStore.clear();
   requestTurnStore = new WeakMap();
   sessionReasoningStore.clear();
+  poisonedGrokCliSessions.clear();
 }
 
 export function _getGrokCliTurnStoreSize() {
@@ -220,21 +249,31 @@ export function normalizeGrokCliEffort(value) {
 export { supportsGrokCliReasoningEffort } from "../config/grokCli.js";
 
 export function resolveGrokCliSessionId(credentials, body) {
-  // ponytail: clients without stable thread metadata share one connection session;
-  // split further when their wire format exposes a durable conversation id.
-  const explicitSessionBody = {
-    prompt_cache_key: body?.prompt_cache_key,
-    session_id: body?.session_id,
-    conversation_id: body?.conversation_id,
-    metadata: body?.metadata,
-  };
-  return resolveSessionId({
+  // ponytail: clients without stable thread metadata must NOT share one session
+  // per connection — upstream conversation state (incl. compaction continuity)
+  // is keyed on these ids, and reuse across conversations makes the proxy reach
+  // a compacted state with no blob to replay → 400 "Could not decode the
+  // compaction blob". Anchor on the first user message instead (stable across
+  // turns of one conversation, unique across conversations).
+  const explicit = {
     headers: credentials?.rawHeaders,
-    body: explicitSessionBody,
-    connectionId: credentials?.connectionId || credentials?.id,
-    workspaceId: credentials?.providerSpecificData?.workspaceId,
-    scope: "grok-cli",
-  });
+    body: {
+      prompt_cache_key: body?.prompt_cache_key,
+      session_id: body?.session_id,
+      conversation_id: body?.conversation_id,
+      metadata: body?.metadata,
+    },
+  };
+  const clientSid = extractClientSessionId(explicit.headers, explicit.body, "grok-cli");
+  if (clientSid) return bypassPoison(clientSid);
+  const connectionId = credentials?.connectionId || credentials?.id;
+  const anchor = firstUserMessageSessionId("grok-cli", connectionId, body);
+  if (anchor) return bypassPoison(anchor);
+  const ws = normalizeSessionId(credentials?.providerSpecificData?.workspaceId);
+  if (ws) return bypassPoison(ws);
+  // No conversation anchor at all → one-shot id, never reused (kills the
+  // cross-conversation collision class entirely).
+  return generateBinaryStyleId();
 }
 
 function stringifyGrokCliToolOutput(output) {
@@ -494,6 +533,13 @@ export class GrokCliExecutor extends BaseExecutor {
   }
 
   parseError(response, bodyText) {
+    // 400 compaction-blob decode failure: the upstream conversation state keyed on
+    // our session id is fused (a compaction event happened whose blob we never
+    // stored). The error is unrecoverable for that id — abandon it so the next
+    // request starts a fresh upstream conversation instead of 400-looping.
+    if (response.status === 400 && typeof bodyText === "string" && /compaction blob/i.test(bodyText)) {
+      if (this._currentSessionId) poisonGrokCliSession(this._currentSessionId);
+    }
     // 402 personal-team-blocked:spending-limit → surface as payment/quota for fallback
     if (response.status === 402 && bodyText) {
       try {

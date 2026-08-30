@@ -23,6 +23,16 @@
   probed `api.b.ai` and the model accepts up to ~805k input tokens (400
   `quota_limit_reached` "Input token exceed the limit" only past that); the
   declared 100k was 8x too small and misled clients into truncating early.
+- **Grok CLI**: fix 400 `invalid-argument` "Could not decode the compaction
+  blob" on `gcli/grok-4.6` — first-turn requests (and composer/dashboard
+  jobs) shared one per-connection session id, so a long conversation that hit
+  upstream compaction fused that id and every later request 400'd against
+  its unrecoverable compaction state. Session ids now anchor on the first
+  user message (stable per conversation, unique across conversations on a
+  connection), and a compaction-blob decode failure poisons that id so the
+  next request starts a fresh upstream conversation instead of looping.
+  Verified against the official grok CLI wire (the request shape itself was
+  accepted by the proxy — only the id reuse was at fault).
 
 # v0.5.59 (2026-08-29)
 
