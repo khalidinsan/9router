@@ -31,7 +31,7 @@ export default {
   },
   models: [
     { id: "deepseek-v4-flash", name: "DeepSeek V4 Flash", contextLength: 1000000 },
-    { id: "deepseek-v4-flash-vision-exp", name: "DeepSeek V4 Flash Vision Exp", contextLength: 100000 },
+    { id: "deepseek-v4-flash-vision-exp", name: "DeepSeek V4 Flash Vision Exp", contextLength: 805000 },
     { id: "hy3", name: "Hy3", contextLength: 262144 },
     { id: "mimo-v2.5", name: "MiMo V2.5", contextLength: 1000000 },
   ],

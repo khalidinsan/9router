@@ -19,6 +19,10 @@
   response, losing usage tracking. Generalize the Token Harbor/B.AI terminal
   normalizer to antigravity (OpenAI clients only — Gemini-family clients still
   get no sentinel).
+- **B.AI**: correct `deepseek-v4-flash-vision-exp` context to 805k — directly
+  probed `api.b.ai` and the model accepts up to ~805k input tokens (400
+  `quota_limit_reached` "Input token exceed the limit" only past that); the
+  declared 100k was 8x too small and misled clients into truncating early.
 
 # v0.5.59 (2026-08-29)
 
