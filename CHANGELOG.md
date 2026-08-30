@@ -39,6 +39,11 @@
   `prompt_tokens`), so Claude-format providers (e.g. GLM via agentrouter) showed
   the log at roughly half the page value. The cache breakdown is still shown in
   parentheses.
+- **Request details**: the `/dashboard/usage?tab=details` feed had silently
+  frozen — the settings row lacked `enableObservability` and the merge-with-
+  defaults path yielded `false`, so `saveRequestDetail` no-oped without a log
+  line (no DB rows since 2026-08-07). Flip the default to `true` and backfill
+  the stored settings so detail recording resumes.
 
 # v0.5.59 (2026-08-29)
 
