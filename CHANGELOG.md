@@ -33,6 +33,12 @@
   next request starts a fresh upstream conversation instead of looping.
   Verified against the official grok CLI wire (the request shape itself was
   accepted by the proxy — only the id reuse was at fault).
+- **Usage log**: make the console `📊 DONE` line report the same cache-inclusive
+  input total as `/dashboard/usage` — Anthropic-style `input_tokens` excludes
+  cache reads/creations (and the usage page stores canonical cache-inclusive
+  `prompt_tokens`), so Claude-format providers (e.g. GLM via agentrouter) showed
+  the log at roughly half the page value. The cache breakdown is still shown in
+  parentheses.
 
 # v0.5.59 (2026-08-29)
 
