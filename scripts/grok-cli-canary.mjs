@@ -19,7 +19,11 @@
  * Usage:
  *   node scripts/grok-cli-canary.mjs [--limit 10] [--model grok-4.6]
  *                                    [--effort high] [--attempts 3]
- *                                    [--timeout 90] [--include-inactive] [--json]
+ *                                    [--concurrency 4] [--timeout 90]
+ *                                    [--include-inactive] [--json]
+ *
+ * --json streams one NDJSON verdict per line as accounts finish, so a long scan
+ * can be tailed live and killing it never discards collected results.
  */
 
 import { execFileSync } from "node:child_process";
@@ -45,6 +49,7 @@ const timeoutMs = Math.max(10, Number(value("--timeout", "90")) || 90) * 1000;
 // ("call tool report_status with code is 512"). One shot cannot grade an
 // account — probe repeatedly and score the ratio.
 const attempts = Math.max(1, Math.min(10, Number(value("--attempts", "3")) || 3));
+const concurrency = Math.max(1, Math.min(12, Number(value("--concurrency", "4")) || 4));
 const includeInactive = args.includes("--include-inactive");
 const asJson = args.includes("--json");
 
@@ -238,10 +243,9 @@ if (!asJson) {
 }
 
 const results = [];
-for (const account of accounts) {
-  const result = await gradeAccount(account);
-  results.push(result);
-  if (asJson) continue;
+let cursor = 0;
+
+function renderRow(result) {
   const icon = { HEALTHY: "✅", FLAKY: "🟠", NO_TOOLS: "🟡", DUMB: "❌", DEAD: "💀" }[result.verdict];
   const echoCell = result.echo.ok
     ? `echo ${result.echo.want} ok`
@@ -254,10 +258,23 @@ for (const account of accounts) {
   console.log(`${icon} ${result.verdict.padEnd(8)} ${result.account.slice(0, 40).padEnd(42)} | ${echoCell} | ${toolCell} | ${result.echo.ms}+${result.tools.ms}ms`);
 }
 
-if (asJson) {
-  console.log(JSON.stringify({ endpoint: ENDPOINT, model, effort, results }, null, 2));
-  process.exit(0);
+// Workers pull from a shared cursor: a slow/timing-out account cannot stall the
+// whole scan, and every finished account is emitted immediately (NDJSON in
+// --json mode) so killing the run never loses collected verdicts.
+async function worker() {
+  for (;;) {
+    const index = cursor++;
+    if (index >= accounts.length) return;
+    const result = await gradeAccount(accounts[index]);
+    results.push(result);
+    if (asJson) console.log(JSON.stringify(result));
+    else renderRow(result);
+  }
 }
+
+await Promise.all(Array.from({ length: Math.min(concurrency, accounts.length) }, worker));
+
+if (asJson) process.exit(0);
 
 const tally = results.reduce((acc, r) => { acc[r.verdict] = (acc[r.verdict] || 0) + 1; return acc; }, {});
 console.log(`\nHEALTHY=${tally.HEALTHY || 0} FLAKY=${tally.FLAKY || 0} NO_TOOLS=${tally.NO_TOOLS || 0} DUMB=${tally.DUMB || 0} DEAD=${tally.DEAD || 0}`);
