@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   filterQuotasByVisibility,
   getHiddenQuotaRows,
+  getPlanLabel,
   parseQuotaData,
   trimHiddenQuotaKeys,
 } from "@/app/(dashboard)/dashboard/usage/components/ProviderLimits/utils.js";
@@ -71,5 +72,35 @@ describe("provider quota visibility", () => {
       codex: { hidden: ["gemini"] },
     };
     expect(filterQuotasByVisibility("antigravity", quotas, visibility)).toHaveLength(2);
+  });
+});
+
+describe("provider plan label", () => {
+  it("surfaces a real plan name (Command Code GOAT)", () => {
+    expect(getPlanLabel({ plan: "GOAT" }, "commandcode")).toBe("GOAT");
+    expect(getPlanLabel({ plan: "Pro" }, "commandcode")).toBe("Pro");
+    expect(getPlanLabel({ plan: "Go" }, "commandcode")).toBe("Go");
+  });
+
+  it("reports Codex plan types and Claude subscription plans as-is", () => {
+    expect(getPlanLabel({ plan: "plus" }, "codex")).toBe("plus");
+    expect(getPlanLabel({ plan: "max" }, "claude")).toBe("max");
+  });
+
+  it("drops a plan that only echoes the provider name", () => {
+    // commandcode falls back to its own name with no subscription; opencode-go
+    // always returns its name. A badge repeating the provider is noise.
+    expect(getPlanLabel({ plan: "Command Code" }, "commandcode")).toBeNull();
+    expect(getPlanLabel({ plan: "OpenCode Go" }, "opencode-go")).toBeNull();
+  });
+
+  it("drops placeholder and missing plans", () => {
+    expect(getPlanLabel({ plan: "Unknown" }, "claude")).toBeNull();
+    expect(getPlanLabel({ plan: "unknown" }, "codex")).toBeNull();
+    expect(getPlanLabel({ plan: "N/A" }, "codex")).toBeNull();
+    expect(getPlanLabel({ plan: "   " }, "codex")).toBeNull();
+    expect(getPlanLabel({ plan: null }, "codex")).toBeNull();
+    expect(getPlanLabel({}, "codex")).toBeNull();
+    expect(getPlanLabel(undefined, "codex")).toBeNull();
   });
 });

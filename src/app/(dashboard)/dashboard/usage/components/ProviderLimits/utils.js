@@ -36,6 +36,35 @@ export function getConnectionQuotaRemaining(connection, quotaData) {
   return Number.POSITIVE_INFINITY;
 }
 
+// Plan values that mean "the provider could not tell us", not a plan name.
+const UNKNOWN_PLAN_VALUES = new Set(["unknown", "n/a", "na", "none"]);
+
+function normalizePlanToken(value) {
+  return String(value || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+/**
+ * Human-readable subscription plan for a connection's quota payload, or null
+ * when the payload carries nothing worth showing.
+ *
+ * Several providers return their own name when they cannot read the plan
+ * ("Command Code" with no subscription, "OpenCode Go"), and a badge that merely
+ * repeats the provider already printed above it is noise — so a plan that
+ * normalizes to the provider id is dropped. "Unknown"/"N/A" are dropped too.
+ *
+ * @param {{plan?: string|null}} quota - quota entry stored for the connection
+ * @param {string} [providerId] - provider id, used to detect an echoed name
+ * @returns {string|null}
+ */
+export function getPlanLabel(quota, providerId) {
+  const plan = typeof quota?.plan === "string" ? quota.plan.trim() : "";
+  if (!plan) return null;
+  const token = normalizePlanToken(plan);
+  if (!token || UNKNOWN_PLAN_VALUES.has(token)) return null;
+  if (providerId && token === normalizePlanToken(providerId)) return null;
+  return plan;
+}
+
 // Stable group-by-provider: first-seen provider order, original order within group.
 function groupByProviderStable(connections) {
   const seen = new Map();

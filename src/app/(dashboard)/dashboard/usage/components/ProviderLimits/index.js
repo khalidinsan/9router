@@ -37,6 +37,7 @@ import {
   ACCOUNT_PAGE_SIZE_MAX,
   ACCOUNT_FILTER_OPTIONS,
   QUOTA_SORT_OPTIONS,
+  getPlanLabel,
 } from "./utils";
 import Card from "@/shared/components/Card";
 import { ConfirmModal, EditConnectionModal } from "@/shared/components";
@@ -1057,6 +1058,7 @@ export default function ProviderLimits() {
           const rawQuotas = quota?.quotas || [];
           const visibleQuotas = filterQuotasByVisibility(conn.provider, rawQuotas, quotaVisibility);
           const hiddenQuotaRows = getHiddenQuotaRows(conn.provider, rawQuotas, quotaVisibility);
+          const planLabel = getPlanLabel(quota, conn.provider);
 
           return (
             <Card
@@ -1092,6 +1094,16 @@ export default function ProviderLimits() {
                           {getConnectionSecondaryLabel(conn)}
                         </p>
                       ) : null}
+                      {planLabel && (
+                        <div className="mt-1">
+                          <span
+                            className="inline-flex max-w-full items-center rounded-full bg-brand-500/10 px-2 py-0.5 text-[10px] font-semibold text-brand-600 dark:text-brand-300"
+                            title={`Subscription plan: ${planLabel}`}
+                          >
+                            <span className="truncate">{planLabel}</span>
+                          </span>
+                        </div>
+                      )}
                       {conn.provider === "kiro" && (
                         <div className="mt-1 flex flex-wrap items-center gap-1">
                           <span className="rounded-full bg-brand-500/10 px-2 py-0.5 text-[10px] font-semibold text-brand-600 dark:text-brand-300">

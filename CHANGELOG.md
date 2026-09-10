@@ -1,6 +1,15 @@
 # Unreleased
 
 ## Features
+- **Quota tracker**: show the subscription plan on each account card. The usage
+  API already returned `plan` and the dashboard stored it, but nothing rendered
+  it — the only component that read it (`ProviderLimitCard`) is not imported
+  anywhere. The card now shows it as a chip beside the connection label
+  (e.g. Command Code `GOAT`, Grok CLI `Free`). A plan is hidden when it is
+  absent, a placeholder (`Unknown`/`N/A`), or merely echoes the provider name —
+  several providers fall back to their own name when they cannot read the tier
+  (Command Code without a subscription, OpenCode Go, Antigravity), and a chip
+  repeating the heading above it is noise.
 - **Antigravity**: group quota by pool instead of only per model — read
   `retrieveUserQuotaSummary` (the same source as `agy /usage`) and normalize it
   into weekly + 5-hour buckets. `fetchAvailableModels` only carries a single
