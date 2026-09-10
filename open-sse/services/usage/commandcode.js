@@ -17,16 +17,26 @@ const SUBSCRIPTIONS_URL =
 
 const PLAN_LABELS = {
   "individual-go": "Go",
+  "individual-goat": "GOAT",
   "individual-pro": "Pro",
   "individual-max": "Max",
   "individual-ultra": "Ultra",
   "teams-pro": "Teams Pro",
 };
 
-/** Monthly included credits (USD) by planId — CLI catalog. */
+/**
+ * Monthly included credits (USD) by planId — CLI catalog.
+ * Source: https://commandcode.ai/docs/resources/pricing-limits (Credits/mo).
+ * The billing API reports only the *remaining* pool, never the allotment, and
+ * exposes no plan/entitlement endpoint, so the plan id is the only way to size
+ * the monthly bar. An id missing here yields allotment 0, which silently drops
+ * the Monthly row — the 5h/weekly windows keep working, so it looks like the
+ * plan regressed rather than the map being stale.
+ */
 const PLAN_MONTHLY_CREDITS = {
   "individual-go": 10,
-  "individual-pro": 30,
+  "individual-goat": 70,
+  "individual-pro": 80,
   "individual-max": 150,
   "individual-ultra": 300,
   "teams-pro": 40,

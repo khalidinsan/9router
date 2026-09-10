@@ -107,6 +107,53 @@ describe("parseCommandCodeUsage", () => {
     expect(parsed.quotas.session.used).toBe(100);
     expect(parsed.quotas.session.remaining).toBe(0);
   });
+
+  // A plan id that is absent from the map yields allotment 0, which drops the
+  // Monthly row silently while the 5h/weekly windows keep rendering. Payloads
+  // below are verbatim from live accounts.
+  it("sizes the GOAT plan monthly pool at $70", () => {
+    const parsed = parseCommandCodeUsage(
+      {
+        credits: {
+          belowThreshold: false,
+          creditThreshold: 0,
+          monthlyCredits: 69.633978792,
+          purchasedCredits: 0,
+          freeCredits: 0,
+        },
+        windowLimits: {
+          limited: true,
+          exceeded: null,
+          fiveHour: { used: 0.366021208, cap: 14, exceeded: false, resetAt: 1789051561193 },
+          weekly: { used: 0.366021208, cap: 35, exceeded: false, resetAt: 1789638361193 },
+        },
+      },
+      {
+        success: true,
+        data: {
+          status: "active",
+          planId: "individual-goat",
+          currentPeriodStart: "2026-09-10T06:03:49.000Z",
+          currentPeriodEnd: "2026-10-10T06:03:49.000Z",
+        },
+      },
+    );
+
+    expect(parsed.plan).toBe("GOAT");
+    expect(parsed.quotas.session).toMatchObject({ used: 3, total: 100, remaining: 97 });
+    expect(parsed.quotas.weekly).toMatchObject({ used: 1, total: 100, remaining: 99 });
+    expect(parsed.quotas.Monthly).toMatchObject({ used: 0.366, total: 70 });
+    expect(parsed.quotas.Monthly.resetAt).toBe("2026-10-10T06:03:49.000Z");
+  });
+
+  it("sizes the Pro plan monthly pool at $80", () => {
+    const parsed = parseCommandCodeUsage(
+      { credits: { monthlyCredits: 60 }, windowLimits: {} },
+      { data: { status: "active", planId: "individual-pro" } },
+    );
+    expect(parsed.plan).toBe("Pro");
+    expect(parsed.quotas.Monthly).toMatchObject({ used: 20, total: 80 });
+  });
 });
 
 describe("getUsageForProvider(commandcode)", () => {
@@ -164,10 +211,14 @@ describe("parseQuotaData(commandcode)", () => {
         Monthly: { used: 5.8868, total: 10, resetAt: "2026-09-10T11:37:39.000Z" },
       },
     });
+    // The monthly dollar pot must survive normalization — dropping it is how a
+    // plan change silently reduced this tracker to two percent bars.
     expect(rows).toHaveLength(3);
-    expect(rows[0]).toMatchObject({ name: "session", used: 24, remaining: 76 });
-    expect(rows[1]).toMatchObject({ name: "weekly", used: 98, remaining: 2 });
-    expect(rows[2]).toMatchObject({ name: "Monthly", used: 5.8868, total: 10 });
+    // Assert the stable quota key, not the human-readable label: `name` is a
+    // display string this module is free to rename.
+    expect(rows[0]).toMatchObject({ quotaType: "session", used: 24, remaining: 76 });
+    expect(rows[1]).toMatchObject({ quotaType: "weekly", used: 98, remaining: 2 });
+    expect(rows[2]).toMatchObject({ quotaType: "Monthly", used: 5.8868, total: 10 });
     expect(rows[2].remaining).toBeUndefined();
   });
 });

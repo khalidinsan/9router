@@ -24,6 +24,13 @@
   API like 1.2.
 
 ## Fixes
+- **Command Code**: size the monthly credit pool for the GOAT plan — the plan map
+  had no `individual-goat` entry, so the monthly allotment resolved to 0 and the
+  Monthly row silently vanished from the quota tracker (the 5h/weekly bars kept
+  working, which makes a stale map look like a plan regression). GOAT is $70/mo;
+  `individual-pro` was also stale at $30 and is now $80. Both from the official
+  pricing table; the billing API reports only the *remaining* pool and exposes no
+  plan/entitlement endpoint, so the plan id is the only way to size the bar.
 - **Antigravity**: realign to the agy 1.1.27 wire (MITM-verified against the
   official CLI). Three changes move the request back into the quota pool agy
   itself draws from, which is what stops `RESOURCE_EXHAUSTED` while agy stays
