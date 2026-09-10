@@ -51,5 +51,10 @@ export function getThinkingLevels(provider, model) {
   );
   let levels = hit?.levels || FORMAT_LEVELS[caps.thinkingFormat] || L.base;
   if (caps.thinkingCanDisable === false) levels = levels.filter((l) => l !== "none");
+  // gemini-3.8 dropped "minimal" — keep only levels at/above the model's minimum.
+  if (caps.minThinkingLevel) {
+    const floorIdx = levels.indexOf(caps.minThinkingLevel);
+    if (floorIdx > 0) levels = levels.slice(floorIdx);
+  }
   return levels;
 }

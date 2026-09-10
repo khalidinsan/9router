@@ -143,9 +143,12 @@ function normalizeOpenAILevel(level, supportedLevels) {
   return "xhigh";
 }
 
-function toGeminiThinkingLevel(cfg) {
+function toGeminiThinkingLevel(cfg, minLevel = null) {
   const raw = cfg.mode === "auto" ? "high" : (toLevel(cfg) || "high");
-  return effortToThinkingLevel(raw);
+  let level = effortToThinkingLevel(raw);
+  // gemini-3.8 dropped "minimal" — raise any floor-level request to the model's minimum.
+  if (minLevel && level === "minimal") level = minLevel;
+  return level;
 }
 
 function toKimiReasoningEffort(cfg) {
@@ -225,8 +228,11 @@ function stripAll(body) {
 function applyFormat(fmt, body, cfg, caps, supportedLevels) {
   const none = cfg.mode === "none";
   const canDisable = caps.thinkingCanDisable !== false;
-  // Model cannot disable thinking → clamp "none" to minimal effort instead.
-  const eff = none && !canDisable ? { mode: "level", level: "minimal" } : cfg;
+  // Model cannot disable thinking → clamp "none" to the model's minimum effort
+  // (gemini-3.8 dropped the "minimal" level, so its floor is "low").
+  const eff = none && !canDisable
+    ? { mode: "level", level: caps.minThinkingLevel || "minimal" }
+    : cfg;
 
   switch (fmt) {
     case "openai": {
@@ -254,7 +260,9 @@ function applyFormat(fmt, body, cfg, caps, supportedLevels) {
       break;
     }
     case "gemini-level": {
-      const level = none ? "minimal" : toGeminiThinkingLevel(eff);
+      const level = caps.minThinkingLevel
+        ? (none ? caps.minThinkingLevel : toGeminiThinkingLevel(eff, caps.minThinkingLevel))
+        : (none ? "minimal" : toGeminiThinkingLevel(eff));
       setGeminiThinking(body, { thinkingLevel: level, includeThoughts: level !== "minimal" });
       ensureGeminiOutputFloor(body, geminiLevelOutputFloor(level), caps);
       break;

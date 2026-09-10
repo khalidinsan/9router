@@ -193,6 +193,11 @@ export function trackPendingRequest(model, provider, connectionId, started, erro
   scheduleStatsEvent("pending");
 }
 
+export function getConnectionPendingRequests(connectionId) {
+  if (!connectionId || !pendingRequests.byAccount[connectionId]) return 0;
+  return Object.values(pendingRequests.byAccount[connectionId]).reduce((sum, n) => sum + (n || 0), 0);
+}
+
 export async function getActiveRequests() {
   const activeRequests = [];
   const connectionMap = await getConnectionMapCached();

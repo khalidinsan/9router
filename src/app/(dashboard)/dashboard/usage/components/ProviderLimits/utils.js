@@ -300,11 +300,11 @@ export function calculatePercentage(used, total) {
  * @returns {number} Remaining percentage (0-100)
  */
 export function getRemainingPercentage(quota) {
-  if (quota?.remaining !== undefined) {
+  if (quota?.remaining != null) {
     return Math.max(0, Math.round(quota.remaining));
   }
 
-  if (quota?.remainingPercentage !== undefined) {
+  if (quota?.remainingPercentage != null) {
     return Math.round(quota.remainingPercentage);
   }
 
@@ -362,13 +362,37 @@ export function parseQuotaData(provider, data) {
         break;
 
       case "antigravity":
+        // agy /usage parity: grouped Weekly + 5h buckets first, per-model fallback.
+        if (Array.isArray(data.groups) && data.groups.length > 0) {
+          data.groups.forEach((group) => {
+            (group.buckets || []).forEach((bucket) => {
+              const pct = bucket.remainingPercentage == null ? null : Math.round(bucket.remainingPercentage);
+              normalizedQuotas.push({
+                name: `${group.name} — ${bucket.name}`,
+                group: group.name,
+                window: bucket.window,
+                remaining: pct,
+                remainingPercentage: bucket.remainingPercentage,
+                used: null,
+                total: null,
+                resetAt: bucket.resetAt || null,
+                disabled: bucket.disabled === true,
+                description: bucket.description || null,
+                recurring: true,
+              });
+            });
+          });
+          break;
+        }
         if (data.quotas) {
           Object.entries(data.quotas).forEach(([modelKey, quota]) => {
+            const pct = quota.remainingPercentage == null ? null : Math.round(quota.remainingPercentage);
             normalizedQuotas.push({
               name: quota.displayName || modelKey,
               modelKey: modelKey, // Keep modelKey for sorting
-              used: quota.used || 0,
-              total: quota.total || 0,
+              remaining: pct,
+              used: quota.used ?? null,
+              total: quota.total ?? null,
               resetAt: quota.resetAt || null,
               remainingPercentage: quota.remainingPercentage,
             });

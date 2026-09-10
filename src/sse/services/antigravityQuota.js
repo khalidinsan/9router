@@ -5,11 +5,13 @@
  */
 
 import { resolveConnectionProxyConfig } from "@/lib/network/connectionProxy";
-import { getAntigravityUsage } from "open-sse/services/usage/google.js";
+import { getAntigravityUsage, findAntigravityGroupForModel } from "open-sse/services/usage/google.js";
 import * as log from "../utils/logger.js";
 
 // In-memory cache: connectionId → { [modelId]: { remainingPercentage, resetAt } }
 const quotaCache = new Map();
+// Grouped weekly + 5h quotas (agy /usage source): connectionId → normalized groups
+const quotaGroupCache = new Map();
 // Track last refresh per connection to avoid hammering
 const lastRefreshAt = new Map();
 // In-flight refresh promises — dedup concurrent 409/429 bursts
@@ -22,6 +24,40 @@ const MIN_REFRESH_INTERVAL_MS = 30_000; // 30s between refreshes per connection
  */
 export function getAntigravityQuotaCache() {
   return quotaCache;
+}
+
+/**
+ * Get the quota group cache (read-only reference).
+ */
+export function getAntigravityQuotaGroups() {
+  return quotaGroupCache;
+}
+
+/**
+ * Resolve the effective quota for a model on a connection.
+ * Prefers the explicit per-model bucket; falls back to the governing group
+ * weekly bucket (Claude/GPT share the 3p-weekly pool and carry no
+ * per-model remainingFraction). Returns null when unknown — callers must
+ * fail open, never treat unknown as exhausted.
+ * @returns {{ remainingPercentage: number|null, resetAt: string|null, source: string }|null}
+ */
+export function resolveAntigravityQuota(connectionId, model) {
+  const models = quotaCache.get(connectionId);
+  const entry = model ? models?.[model] : null;
+  if (entry && entry.remainingPercentage != null) {
+    return { remainingPercentage: entry.remainingPercentage, resetAt: entry.resetAt || null, source: "model" };
+  }
+  const groups = quotaGroupCache.get(connectionId);
+  const group = findAntigravityGroupForModel(groups, model);
+  const weekly = group?.buckets?.find((b) => b.window === "weekly");
+  if (weekly && weekly.remainingPercentage != null) {
+    // A disabled 5h bucket means weekly is hit — weekly reset governs.
+    return { remainingPercentage: weekly.remainingPercentage, resetAt: weekly.resetAt || entry?.resetAt || null, source: "group-weekly" };
+  }
+  if (entry) {
+    return { remainingPercentage: null, resetAt: entry.resetAt || null, source: "model-unknown" };
+  }
+  return null;
 }
 
 /**
@@ -70,6 +106,7 @@ async function _doRefresh(connectionId, accessToken, providerSpecificData, now) 
 
     // Update in-memory cache. Caller logs CACHE_BLOCK only if requested model is exhausted.
     quotaCache.set(connectionId, usage.quotas);
+    if (Array.isArray(usage.groups)) quotaGroupCache.set(connectionId, usage.groups);
 
     return usage.quotas;
   } catch (e) {
@@ -88,8 +125,11 @@ export async function handleAntigravityQuotaError(connectionId, status, model, a
 
   // Throttle applies to error paths too: one quota request per account/30s.
   // The first 409/429 populates cache; concurrent or repeated errors reuse it.
-  const quota = (await refreshAntigravityQuota(connectionId, accessToken, providerSpecificData))?.[model];
-  if (!quota || quota.remainingPercentage > 0 || !quota.resetAt) return null;
+  await refreshAntigravityQuota(connectionId, accessToken, providerSpecificData);
+  const quota = resolveAntigravityQuota(connectionId, model);
+  // Unknown quota fails open: only block a model proven exhausted. A null
+  // remainingPercentage means group-governed with no group data yet.
+  if (!quota || quota.remainingPercentage == null || quota.remainingPercentage > 0 || !quota.resetAt) return null;
 
   const resetMs = new Date(quota.resetAt).getTime();
   if (resetMs <= Date.now()) return null;

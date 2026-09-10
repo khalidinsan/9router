@@ -71,11 +71,11 @@ function getColorClasses(remainingPercentage) {
 
 function sortQuotas(quotas, sortMode) {
   if (sortMode === "remaining-asc") {
-    return [...quotas].sort((a, b) => a.remaining - b.remaining || a.name.localeCompare(b.name));
+    return [...quotas].sort((a, b) => (a.remaining ?? -1) - (b.remaining ?? -1) || a.name.localeCompare(b.name));
   }
 
   if (sortMode === "remaining-desc") {
-    return [...quotas].sort((a, b) => b.remaining - a.remaining || a.name.localeCompare(b.name));
+    return [...quotas].sort((a, b) => (b.remaining ?? -1) - (a.remaining ?? -1) || a.name.localeCompare(b.name));
   }
 
   return quotas;
@@ -94,11 +94,15 @@ export default function QuotaTable({
   const [page, setPage] = useState(1);
 
   const normalizedQuotas = useMemo(
-    () => quotas.map((quota, index) => ({
-      ...quota,
-      index,
-      remaining: getRemainingPercentage(quota),
-    })),
+    () => quotas.map((quota, index) => {
+      // No own numbers and no explicit percent = governed by a group bucket
+      // (or simply unknown). Never render as 0% red — that reads as exhausted.
+      const known =
+        quota.remaining != null ||
+        quota.remainingPercentage != null ||
+        (quota.used != null && quota.total != null);
+      return { ...quota, index, remaining: known ? getRemainingPercentage(quota) : null };
+    }),
     [quotas],
   );
 
@@ -151,7 +155,10 @@ export default function QuotaTable({
       <div className="space-y-px">
         {currentPageRows.map((quota) => {
           const isUnlimited = quota.unlimited === true;
-          const colors = getColorClasses(quota.remaining);
+          const isUnknown = !isUnlimited && quota.remaining == null;
+          const colors = isUnknown
+            ? { text: "text-text-muted", bg: "bg-gray-400", bgLight: "bg-gray-400/10", emoji: "⚪" }
+            : getColorClasses(quota.remaining);
           const countdown = formatResetTime(quota.resetAt);
           const resetDisplay = formatResetTimeDisplay(quota.resetAt);
           // recurring defaults true: a missing flag means the quota
@@ -181,7 +188,7 @@ export default function QuotaTable({
                 }`}>
                   <div
                     className={`h-full transition-all duration-300 ${colors.bg}`}
-                    style={{ width: `${Math.min(quota.remaining, 100)}%` }}
+                    style={{ width: `${Math.min(quota.remaining ?? 0, 100)}%` }}
                   />
                 </div>
                 )}
@@ -191,16 +198,20 @@ export default function QuotaTable({
                     className="text-text-muted truncate"
                     title={
                       isUnlimited
-                        ? `${quota.used.toLocaleString()} used · Unlimited`
-                        : `${quota.used.toLocaleString()} / ${quota.total > 0 ? quota.total.toLocaleString() : "∞"}`
+                        ? `${quota.used?.toLocaleString?.() ?? "–"} used · Unlimited`
+                        : quota.used == null || quota.total == null
+                          ? "shared pool"
+                          : `${quota.used.toLocaleString()} / ${quota.total > 0 ? quota.total.toLocaleString() : "∞"}`
                     }
                   >
                     {isUnlimited
-                      ? `${quota.used.toLocaleString()} used · Unlimited`
-                      : `${quota.used.toLocaleString()} / ${quota.total > 0 ? quota.total.toLocaleString() : "∞"}`}
+                      ? `${quota.used?.toLocaleString?.() ?? "–"} used · Unlimited`
+                      : quota.used == null || quota.total == null
+                        ? "shared pool"
+                        : `${quota.used.toLocaleString()} / ${quota.total > 0 ? quota.total.toLocaleString() : "∞"}`}
                   </span>
                   <span className={`font-medium ${isUnlimited ? "text-green-600 dark:text-green-400" : colors.text} shrink-0`}>
-                    {isUnlimited ? "Unlimited" : `${quota.remaining}%`}
+                    {isUnlimited ? "Unlimited" : isUnknown ? "n/a" : `${quota.remaining}%`}
                   </span>
                 </div>
               </div>

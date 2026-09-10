@@ -7,7 +7,7 @@ import { platform, arch } from "os";
 
 const MAX_RETRY_AFTER_MS = 5000;
 const TRANSIENT_MAX_MS = 3000;
-const FORK_UA = `antigravity/cli/1.1.22 (aidev_client; os_type=${platform()}; arch=${arch()}; cl=971564011; auth_method=consumer)`;
+const FORK_UA = `antigravity/cli/1.1.27 (aidev_client; os_type=${platform()}; arch=${arch()}; cl=976543523; auth_method=consumer)`;
 
 function res(status, headers = {}, body = null) {
   return {
@@ -70,6 +70,9 @@ describe("antigravity computeRetryDelay hook (D3)", () => {
     }, true, { projectId: "project-1", connectionId: "conn-1" });
 
     expect(out.request.tools[0].functionDeclarations.map(fn => fn.name)).toEqual(["read_file"]);
+    // MITM-verified: agy always sends the fixed consumer project, even for
+    // accounts that own a real GCP project — the stored id must not leak in.
+    expect(out.project).toBe("aicode-consumers");
   });
 
   it("registry uses daily cloudcode host, forceStream, and fork CLI user agent", () => {
@@ -78,18 +81,18 @@ describe("antigravity computeRetryDelay hook (D3)", () => {
     expect(antigravity.transport.headers["User-Agent"]).toBe(FORK_UA);
   });
 
-  it("buildHeaders includes session id, local source, and Accept", () => {
+  it("buildHeaders mirrors agy: content-type, auth, UA, anti-loop flag only", () => {
     ag._lastSessionId = "sess-123";
     const h = ag.buildHeaders({ accessToken: "tok" }, true);
     expect(h["User-Agent"]).toBe(FORK_UA);
     expect(h["Content-Type"]).toBe("application/json");
     expect(h["Authorization"]).toBe("Bearer tok");
-    expect(h["X-Machine-Session-Id"]).toBe("sess-123");
     expect(h["x-request-source"]).toBe("local");
-    expect(h["Accept"]).toBe("text/event-stream");
+    expect(h).not.toHaveProperty("X-Machine-Session-Id");
+    expect(h).not.toHaveProperty("Accept");
   });
 
-  it("strips rejected top-level thinking fields and falls back to consumer project for accounts without projectId", () => {
+  it("strips rejected top-level thinking fields and always uses the consumer project", () => {
     const out = ag.transformRequest("claude-opus-4-6-thinking", {
       project: "generated-project-that-must-not-be-sent",
       thinking: { type: "disabled" },
@@ -105,8 +108,8 @@ describe("antigravity computeRetryDelay hook (D3)", () => {
       },
     }, true, { connectionId: "consumer-conn" });
 
-    // Consumer accounts without a real projectId fall back to Google's fixed
-    // consumer project (official agy CLI behavior) — the generated one is dropped.
+    // agy always sends the fixed consumer project (MITM-verified) — the
+    // generated one is dropped even when the account owns a real projectId.
     expect(out.project).toBe("aicode-consumers");
     expect(out).not.toHaveProperty("thinking");
     expect(out).not.toHaveProperty("output_config");
@@ -118,7 +121,7 @@ describe("antigravity computeRetryDelay hook (D3)", () => {
     expect(out.request).not.toHaveProperty("thinking");
   });
 
-  it("transforms chat requests with fork requestId shape and 64000 token cap", () => {
+  it("transforms chat requests with IDE requestId shape and 64000 token cap", () => {
     const out = ag.transformRequest("claude-opus-4-6-thinking", {
       request: {
         contents: [
@@ -130,7 +133,7 @@ describe("antigravity computeRetryDelay hook (D3)", () => {
       },
     }, true, { projectId: "project-1", connectionId: "conn-1" });
 
-    expect(out.requestId).toMatch(/^agent-[0-9a-f-]{36}$/);
+    expect(out.requestId).toMatch(/^agent\/[^/]+\/\d+\/[^/]+\/\d+$/);
     expect(out.request.generationConfig.maxOutputTokens).toBe(64000);
   });
 

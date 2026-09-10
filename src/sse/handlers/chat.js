@@ -4,6 +4,7 @@ import {
   getProviderCredentials,
   markAccountUnavailable,
   clearAccountError,
+  decrementConnectionInflight,
   extractApiKey,
   isValidApiKey,
 } from "../services/auth.js";
@@ -246,6 +247,11 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
   let lastStatus = null;
   let grokCliSharedFailures = 0;
   let grokCliExhaustedSkips = 0;
+  // Antigravity 409/429 = quota exhausted with minutes-long reset. Cap how many
+  // EXTRA accounts one request may burn: each attempt holds ~13s and deepens the
+  // hole for everyone. Fail fast with the last error past the cap.
+  let agQuotaFallbacks = 0;
+  const AG_QUOTA_MAX_FALLBACKS = 2;
 
   while (true) {
     const isGrokCli = provider === "grok-cli" || provider === "gcli";
@@ -325,45 +331,50 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
     // Use shared chatCore
     const chatSettings = await getSettings();
     const providerThinking = (chatSettings.providerThinking || {})[provider] || null;
-    const result = await handleChatCore({
-      body: { ...body, model: `${provider}/${model}` },
-      modelInfo: { provider, model },
-      credentials: refreshedCredentials,
-      log,
-      clientRawRequest,
-      connectionId: credentials.connectionId,
-      userAgent,
-      apiKey,
-      ccFilterNaming: !!chatSettings.ccFilterNaming,
-      rtkEnabled: !!chatSettings.rtkEnabled,
-      headroomEnabled: !!chatSettings.headroomEnabled,
-      headroomUrl: chatSettings.headroomUrl || DEFAULT_HEADROOM_URL,
-      headroomCompressUserMessages: !!chatSettings.headroomCompressUserMessages,
-      headroomTimeoutMs: chatSettings.headroomTimeoutMs,
-      cavemanEnabled: !!chatSettings.cavemanEnabled,
-      cavemanLevel: chatSettings.cavemanLevel || "full",
-      ponytailEnabled: !!chatSettings.ponytailEnabled,
-      ponytailLevel: chatSettings.ponytailLevel || "full",
-      pxpipeEnabled: !!chatSettings.pxpipeEnabled,
-      pxpipeMinChars: chatSettings.pxpipeMinChars,
-      pxpipeTimeoutMs: chatSettings.pxpipeTimeoutMs,
-      // Lazily warms the in-process module on first use; null when not installed (fail-open)
-      pxpipeTransform: chatSettings.pxpipeEnabled ? await getPxpipeTransform() : null,
-      onPxpipeEvent: appendPxpipeEvent,
-      providerThinking,
-      // Detect source format by endpoint + body
-      sourceFormatOverride: request?.url ? detectFormatByEndpoint(new URL(request.url).pathname, body) : null,
-      onCredentialsRefreshed: async (newCreds) => {
-        await updateProviderCredentials(credentials.connectionId, {
-          ...newCreds,
-          existingProviderSpecificData: credentials.providerSpecificData,
-          testStatus: "active"
-        });
-      },
-      onRequestSuccess: async () => {
-        await clearAccountError(credentials.connectionId, credentials, model);
-      }
-    });
+    let result;
+    try {
+      result = await handleChatCore({
+        body: { ...body, model: `${provider}/${model}` },
+        modelInfo: { provider, model },
+        credentials: refreshedCredentials,
+        log,
+        clientRawRequest,
+        connectionId: credentials.connectionId,
+        userAgent,
+        apiKey,
+        ccFilterNaming: !!chatSettings.ccFilterNaming,
+        rtkEnabled: !!chatSettings.rtkEnabled,
+        headroomEnabled: !!chatSettings.headroomEnabled,
+        headroomUrl: chatSettings.headroomUrl || DEFAULT_HEADROOM_URL,
+        headroomCompressUserMessages: !!chatSettings.headroomCompressUserMessages,
+        headroomTimeoutMs: chatSettings.headroomTimeoutMs,
+        cavemanEnabled: !!chatSettings.cavemanEnabled,
+        cavemanLevel: chatSettings.cavemanLevel || "full",
+        ponytailEnabled: !!chatSettings.ponytailEnabled,
+        ponytailLevel: chatSettings.ponytailLevel || "full",
+        pxpipeEnabled: !!chatSettings.pxpipeEnabled,
+        pxpipeMinChars: chatSettings.pxpipeMinChars,
+        pxpipeTimeoutMs: chatSettings.pxpipeTimeoutMs,
+        // Lazily warms the in-process module on first use; null when not installed (fail-open)
+        pxpipeTransform: chatSettings.pxpipeEnabled ? await getPxpipeTransform() : null,
+        onPxpipeEvent: appendPxpipeEvent,
+        providerThinking,
+        // Detect source format by endpoint + body
+        sourceFormatOverride: request?.url ? detectFormatByEndpoint(new URL(request.url).pathname, body) : null,
+        onCredentialsRefreshed: async (newCreds) => {
+          await updateProviderCredentials(credentials.connectionId, {
+            ...newCreds,
+            existingProviderSpecificData: credentials.providerSpecificData,
+            testStatus: "active"
+          });
+        },
+        onRequestSuccess: async () => {
+          await clearAccountError(credentials.connectionId, credentials, model);
+        }
+      });
+    } finally {
+      decrementConnectionInflight(credentials.connectionId);
+    }
 
     if (result.success) return result.response;
 
@@ -398,7 +409,13 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
         credentials.connectionId, result.status, model,
         refreshedCredentials.accessToken, credentials.providerSpecificData
       );
-      if (quotaResetMs) resetsAtMs = quotaResetMs;
+      if (quotaResetMs) {
+        resetsAtMs = quotaResetMs;
+      } else {
+        // Quota is not exhausted upstream — transient rate/concurrency limit.
+        // Cap cooldown to 3 seconds with zero backoff escalation.
+        resetsAtMs = Date.now() + 3000;
+      }
     }
 
     // Exhausted Antigravity model is blocked only in RAM cache until upstream resetAt.
@@ -420,6 +437,15 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
       if (isGrokCli) {
         if (fallbackState.authoritativeQuotaExhausted) grokCliExhaustedSkips += 1;
         else grokCliSharedFailures += 1;
+      }
+      // Fail fast past the cap: a 3rd consecutive quota error means global
+      // exhaustion, not one bad account — sweeping the rest only burns them.
+      if (!isGrokCli && provider === "antigravity" && (result.status === 409 || result.status === 429)) {
+        agQuotaFallbacks += 1;
+        if (agQuotaFallbacks > AG_QUOTA_MAX_FALLBACKS) {
+          log.warn("CHAT", `Antigravity quota fallback cap reached (${AG_QUOTA_MAX_FALLBACKS} extra accounts) — failing fast with last ${result.status} instead of burning remaining accounts`);
+          return result.response;
+        }
       }
       log.warn("FALLBACK", `⇄ ACC:${credentials.connectionName} UNAVAILABLE (${result.status}) → NEXT ACCOUNT`);
       excludeConnectionIds.add(credentials.connectionId);

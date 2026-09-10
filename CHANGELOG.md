@@ -1,13 +1,54 @@
 # Unreleased
 
+## Features
+- **Antigravity**: group quota by pool instead of only per model — read
+  `retrieveUserQuotaSummary` (the same source as `agy /usage`) and normalize it
+  into weekly + 5-hour buckets. `fetchAvailableModels` only carries a single
+  per-model window, so the weekly limits behind it were invisible. Claude and GPT
+  models share the `3p` weekly pool and carry no per-model `remainingFraction`, so
+  `resolveAntigravityQuota` falls back to the governing group's weekly bucket and
+  treats an unknown group as fail-open — never as exhausted. The usage dashboard
+  renders the grouped pools.
+- **Antigravity**: reserve a connection while a request is in flight — the
+  account-selection loop could hand the same connection to several concurrent
+  requests before any of them had started, so they all raced into the same quota
+  window. Selection now counts in-flight reservations on top of the DB's pending
+  requests, and a request that keeps hitting quota falls back to at most 2 extra
+  accounts before failing fast with the last error (each attempt holds ~13s and
+  deepens the shared hole for everyone).
+- **Gemini**: add Gemini 3.8 Flash (high/medium/low) and honour its thinking
+  floor — 3.8 dropped the `minimal` level, so a `none` request on a model that
+  cannot disable thinking now clamps to the model's declared minimum instead of
+  sending a level it rejects.
+- **opencode**: add `muse-spark-1.3-contributor-free`, routed to the Responses
+  API like 1.2.
+
 ## Fixes
+- **Antigravity**: realign to the agy 1.1.27 wire (MITM-verified against the
+  official CLI). Three changes move the request back into the quota pool agy
+  itself draws from, which is what stops `RESOURCE_EXHAUSTED` while agy stays
+  healthy: (1) the CLI fingerprint is now `antigravity/cli/1.1.27` with
+  `cl=976543523`; (2) every request carries the fixed `project:
+  "aicode-consumers"` — agy sends it even for accounts that own a real GCP
+  project, and sending the stored project id routes into a different pool with
+  weekly numbers that never match `agy /usage`; (3) `quota`/`loadCodeAssist`
+  discovery moved to the `daily-cloudcode-pa` host, since PROD reports a
+  different pool (weekly 100% vs agy's 68%). The request id is now the
+  IDE-shaped `agent/<conversation>/<ms>/<trajectory>/<step>` (derived
+  deterministically from the session, so it stays stable across a conversation)
+  instead of `agent-<uuid>`; the legacy shape correlates with quota
+  misattribution. Headers were trimmed to what agy actually sends — no
+  `X-Machine-Session-Id`, no `Accept` — and the default thinking signature is
+  the `skip_thought_signature_validator` sentinel. 429 retry attempts go from 3
+  to 0: a quota reset is minutes away, so retrying in place only burns the
+  window deeper.
 - **Antigravity**: fix blanket 403/404 from `daily-cloudcode-pa` — the official
   agy CLI 1.1.22 now requires every request to carry `project` (consumer
   accounts fall back to Google's fixed `aicode-consumers` project; omitting it
   yields 403 "You do not have a valid license of this product"), and Google
   rejects the old `antigravity/cli/1.0.16` User-Agent (404 "Requested entity was
   not found"). Bumped the fingerprint to `1.1.22` with `cl=971564011` and always
-  send the resolved project id.
+  send a `project` id (the fingerprint was moved on again to 1.1.27 above).
 - **Antigravity**: drop history messages whose parts were stripped to empty —
   assistant thinking-only messages (reasoning without text/tool calls) ended up
   as `parts: []` after the thought-part filter and Google rejected the request
@@ -23,6 +64,13 @@
   probed `api.b.ai` and the model accepts up to ~805k input tokens (400
   `quota_limit_reached` "Input token exceed the limit" only past that); the
   declared 100k was 8x too small and misled clients into truncating early.
+- **Capabilities**: report `vision: true` for DeepSeek V4.1 (`deepseek-v4.1-flash`,
+  including vendor-prefixed and `:free` reseller ids). The blanket `*deepseek-v4*`
+  pattern left it text-only, so clients dropped images before they were ever sent —
+  but both resellers (tokenharbor, commandcode) accept image blocks and read them
+  correctly, and the models.dev catalog already declared the modality. Verified
+  end-to-end through the gateway against two distinct images; the new rule sits
+  before the generic V4 pattern so plain V4 (`-pro`, `-flash`) stays text-only.
 - **Grok CLI**: fix 400 `invalid-argument` "Could not decode the compaction
   blob" on `gcli/grok-4.6` — first-turn requests (and composer/dashboard
   jobs) shared one per-connection session id, so a long conversation that hit

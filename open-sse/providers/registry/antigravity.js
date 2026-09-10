@@ -33,13 +33,17 @@ export default {
     // 60s connect timeout was the dominant contributor to multi-minute retries.
     timeoutMs: 10_000,
     headers: {
-      // Match the official agy CLI User-Agent. Google rejects requests from
+      // Match the official agy CLI User-Agent (MITM-verified against agy 1.1.27:
+      // `antigravity/cli/1.1.27 (... cl=976543523 ...)`). Google rejects requests from
       // consumer-authenticated accounts when the old "antigravity/X.X.X" UA is used.
-      "User-Agent": `antigravity/cli/1.1.22 (aidev_client; os_type=${platform()}; arch=${arch()}; cl=971564011; auth_method=consumer)`,
+      "User-Agent": `antigravity/cli/1.1.27 (aidev_client; os_type=${platform()}; arch=${arch()}; cl=976543523; auth_method=consumer)`,
     },
     retry: {
+      // 429 = quota exhausted with minutes-long reset: retrying in place only
+      // burns quota deeper (each attempt holds ~13s). Fail fast to fallback
+      // instead — matches DEFAULT_RETRY_CONFIG (429: attempts 0).
       "429": {
-        attempts: 3,
+        attempts: 0,
       },
       "500": {
         attempts: 1,
@@ -52,15 +56,22 @@ export default {
       },
     },
     usage: {
-      // Discovery (quota/project) on PROD; daily host rejects these.
-      quotaApiUrl: "https://cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels",
-      loadProjectApiUrl: "https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist",
+      // Quota/discovery on the daily host with the fixed consumer project —
+      // MITM-verified: agy calls loadCodeAssist/fetchAvailableModels/
+      // retrieveUserQuotaSummary on daily-cloudcode-pa with
+      // {"project":"aicode-consumers"}. PROD returns a different pool
+      // (weekly 100% vs agy's 68%), so quota must not be read there.
+      quotaApiUrl: "https://daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels",
+      loadProjectApiUrl: "https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist",
       tokenUrl: "https://oauth2.googleapis.com/token",
     },
     clientId: "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com",
     clientSecret: "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",
   },
   models: [
+    { id: "gemini-3.8-flash-high", name: "Gemini 3.8 Flash (High)", upstreamModelId: "gemini-3.8-flash-high" },
+    { id: "gemini-3.8-flash-medium", name: "Gemini 3.8 Flash (Medium)", upstreamModelId: "gemini-3.8-flash-medium" },
+    { id: "gemini-3.8-flash-low", name: "Gemini 3.8 Flash (Low)", upstreamModelId: "gemini-3.8-flash-low" },
     { id: "gemini-3.7-flash-high", name: "Gemini 3.7 Flash (High)", upstreamModelId: "gemini-3.7-flash-tiered(high)" },
     { id: "gemini-3.7-flash-medium", name: "Gemini 3.7 Flash (Medium)", upstreamModelId: "gemini-3.7-flash-tiered(medium)" },
     { id: "gemini-3.7-flash-low", name: "Gemini 3.7 Flash (Low)", upstreamModelId: "gemini-3.7-flash-tiered(low)" },

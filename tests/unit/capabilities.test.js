@@ -55,4 +55,31 @@ describe("getCapabilitiesForModel", () => {
     expect(getCapabilitiesForModel("kiro", "gpt-5.6-luna-agentic")).toMatchObject(kiroGpt56Expected);
     expect(getCapabilitiesForModel("kiro", "gpt-5.6-sol-thinking-agentic")).toMatchObject(kiroGpt56Expected);
   });
+
+  it("reports Gemini 3.8 models with minThinkingLevel low", () => {
+    const caps = getCapabilitiesForModel("antigravity", "gemini-3.8-flash-high");
+    expect(caps.minThinkingLevel).toBe("low");
+    expect(caps.thinkingFormat).toBe("gemini-level");
+    expect(caps.thinkingCanDisable).toBe(false);
+  });
+
+  it("reports DeepSeek V4.1 as vision-capable, and the rest of V4 as text-only", () => {
+    const v41 = {
+      vision: true,
+      reasoning: true,
+      thinkingFormat: "deepseek",
+      contextWindow: 1000000,
+      maxOutput: 384000,
+    };
+    // Vendor-prefixed id, plain id, and the free-tier reseller suffix must all resolve.
+    expect(getCapabilitiesForModel("cmc", "deepseek/deepseek-v4.1-flash")).toMatchObject(v41);
+    expect(getCapabilitiesForModel("commandcode", "deepseek-v4.1-flash")).toMatchObject(v41);
+    expect(getCapabilitiesForModel("tokenharbor", "deepseek-v4.1-flash:free")).toMatchObject(v41);
+
+    // V4.1 is natively multimodal; plain V4 is not — a blanket "*deepseek-v4*"
+    // vision rule would silently send images to models that reject them.
+    expect(getCapabilitiesForModel("cmc", "deepseek/deepseek-v4-pro").vision).toBe(false);
+    expect(getCapabilitiesForModel("bai", "deepseek-v4-flash").vision).toBe(false);
+  });
 });
+

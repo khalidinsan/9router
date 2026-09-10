@@ -22,6 +22,7 @@ const MAX_RETRY_AFTER_MS = 5000;
 const ANTIGRAVITY_TRANSIENT_RETRY_MAX_MS = 3000;
 // Raised from fork's 16k to match upstream model ceilings for long outputs.
 const MAX_ANTIGRAVITY_OUTPUT_TOKENS = 64000;
+const ANTIGRAVITY_IDE_REQUEST_ID_RE = /^agent\/[^/]+\/\d+\/[^/]+\/\d+$/;
 
 const ANTIGRAVITY_TRANSIENT_ERROR_PATTERNS = [
   /high\s+traffic/i,
@@ -62,6 +63,30 @@ const IMAGE_MODEL_PATTERNS = [
   /imagen/i,
   /image-generation/i,
 ];
+
+function uuidFromSeed(seed) {
+  const bytes = crypto.createHash("sha256").update(String(seed || "antigravity")).digest().subarray(0, 16);
+  bytes[6] = (bytes[6] & 0x0f) | 0x50;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = bytes.toString("hex");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
+// IDE-style requestId (`agent/<conv>/<ms>/<traj>/<step>`) — MITM-verified
+// against the official agy CLI. The legacy `agent-<uuid>` shape correlates
+// with quota misattribution (RESOURCE_EXHAUSTED while agy stays healthy).
+function buildIdeRequestId({ body, request, credentials, model, requestType }) {
+  if (ANTIGRAVITY_IDE_REQUEST_ID_RE.test(body?.requestId || "")) {
+    return body.requestId;
+  }
+
+  const sessionId = request?.sessionId || body?.request?.sessionId || credentials?._clientSessionId || credentials?.connectionId || credentials?.email || "anonymous";
+  const conversationId = uuidFromSeed(`antigravity:conversation:${sessionId}`);
+  const trajectoryId = uuidFromSeed(`antigravity:trajectory:${sessionId}:${model}:${requestType}`);
+  const contentCount = Array.isArray(request?.contents) ? request.contents.length : 1;
+  const step = Math.max(1, contentCount * 2 - 1);
+  return `agent/${conversationId}/${Date.now()}/${trajectoryId}/${step}`;
+}
 
 // Detect if a model is an image generation model
 function isImageModel(model) {
@@ -104,27 +129,25 @@ export class AntigravityExecutor extends BaseExecutor {
     return `${baseUrl}/v1internal:${action}`;
   }
 
-  // sessionId comes from transformRequest output; base.execute runs transformRequest before
-  // buildHeaders, so we read it from instance state cached there (fallback: explicit arg).
+  // Headers mirror the official agy CLI exactly (Content-Type + auth + UA).
+  // agy sends no X-Machine-Session-Id / Accept / X-Client-* headers; the only
+  // extra we keep is x-request-source, which is our own MITM anti-loop flag.
   buildHeaders(credentials, stream = true, sessionId = null) {
-    const sid = sessionId || this._lastSessionId;
     return {
       "Content-Type": "application/json",
       "Authorization": `Bearer ${credentials.accessToken}`,
       "User-Agent": this.config.headers?.["User-Agent"] || ANTIGRAVITY_HEADERS["User-Agent"],
       [INTERNAL_REQUEST_HEADER.name]: INTERNAL_REQUEST_HEADER.value,
-      ...(sid && { "X-Machine-Session-Id": sid }),
-      "Accept": stream ? "text/event-stream" : "application/json"
     };
   }
 
   transformRequest(model, body, stream, credentials) {
-    // Official agy CLI always sends `project` in the request body. Consumer
-    // accounts without a real GCP project use Google's fixed consumer project
-    // "aicode-consumers"; omitting it makes the API reject with
-    // 403 "You do not have a valid license of this product".
-    // Accounts with a real projectId (provisioned/enterprise) keep theirs.
-    const projectId = credentials?.projectId || "aicode-consumers";
+    // MITM-verified against the official agy CLI: it ALWAYS sends
+    // `project: "aicode-consumers"` — even for accounts that own a real GCP
+    // project. Sending the stored projectId routes the request into a
+    // different quota pool (RESOURCE_EXHAUSTED while agy stays healthy, and
+    // weekly numbers that don't match agy /usage).
+    const projectId = "aicode-consumers";
 
     // Defensive: some upstream translators (openai-to-gemini.js) used to inject
     // a random projectId into the body — the resolved project below overrides it.
@@ -164,7 +187,7 @@ export class AntigravityExecutor extends BaseExecutor {
         model: cleanModel,
         userAgent: "antigravity",
         requestType: "image_gen",
-        requestId: `agent-${crypto.randomUUID()}`,
+        requestId: buildIdeRequestId({ body: cleanBody, request: { contents, sessionId }, credentials, model: cleanModel, requestType: "image_gen" }),
         request: {
           contents,
           generationConfig: {
@@ -283,7 +306,7 @@ export class AntigravityExecutor extends BaseExecutor {
       model: cleanBody.model || model,
       userAgent: "antigravity",
       requestType: "agent",
-      requestId: `agent-${crypto.randomUUID()}`,
+      requestId: buildIdeRequestId({ body: cleanBody, request: transformedRequest, credentials, model, requestType: "agent" }),
       request: transformedRequest
     };
   }

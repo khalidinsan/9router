@@ -71,8 +71,13 @@ export default function QuotaProgressBar({
   unlimited = false,
   resetTime = null,
   recurring = true,
+  note = null,
 }) {
-  const colors = getColorClasses(percentage);
+  const effectivePercentage = percentage == null ? null : percentage;
+  const isUnknown = effectivePercentage == null;
+  const colors = isUnknown
+    ? { text: "text-text-muted", bg: "bg-gray-400", bgLight: "bg-gray-400/10", emoji: "⚪" }
+    : getColorClasses(effectivePercentage);
   const countdown = formatResetTime(resetTime);
   const resetDisplay = formatResetTimeDisplay(resetTime);
 
@@ -80,8 +85,10 @@ export default function QuotaProgressBar({
   // set recurring:false: resetTime is a hard expiry, so word it as "expires".
   const resetWord = recurring ? "Reset" : "Expires";
 
-  // percentage is already remaining percentage (from ProviderLimitCard)
-  const remaining = percentage;
+  // percentage is already remaining percentage (from ProviderLimitCard);
+  // null = unknown (pool without data), never render as 0%.
+  const remaining = effectivePercentage;
+  const hasCounts = used != null && total != null;
   
   return (
     <div className="space-y-2">
@@ -93,7 +100,7 @@ export default function QuotaProgressBar({
         <div className="flex items-center gap-1.5">
           <span className="text-xs">{colors.emoji}</span>
           <span className={cn("font-medium", colors.text)}>
-            {remaining}%
+            {remaining == null ? "n/a" : `${remaining}%`}
           </span>
         </div>
       </div>
@@ -103,15 +110,22 @@ export default function QuotaProgressBar({
         <div className={cn("h-2 rounded-full overflow-hidden", colors.bgLight)}>
           <div
             className={cn("h-full transition-all duration-300", colors.bg)}
-            style={{ width: `${Math.min(remaining, 100)}%` }}
+            style={{ width: `${Math.min(remaining ?? 0, 100)}%` }}
           />
+        </div>
+      )}
+
+      {/* Disabled-pool note (e.g. agy "weekly hit, 5h does not apply") */}
+      {note && (
+        <div className="text-xs text-yellow-600 dark:text-yellow-400">
+          {note}
         </div>
       )}
 
       {/* Usage details and countdown */}
       <div className="flex items-center justify-between text-xs text-text-muted">
         <span>
-          {used.toLocaleString()} / {total.toLocaleString()} requests
+          {hasCounts ? `${used.toLocaleString()} / ${total.toLocaleString()} requests` : "shared pool"}
         </span>
         {countdown !== "-" && (
           <div className="flex items-center gap-1">

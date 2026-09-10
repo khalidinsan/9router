@@ -14,7 +14,7 @@ vi.mock("../../open-sse/utils/proxyFetch.js", () => ({
   proxyAwareFetch,
 }));
 
-const FORK_USAGE_UA = `antigravity/1.104.0 ${platform()}/${arch()}`;
+const AGY_CLI_UA = `antigravity/cli/1.1.27 (aidev_client; os_type=${platform()}; arch=${arch()}; cl=976543523; auth_method=consumer)`;
 
 describe("Antigravity usage headers", () => {
   beforeEach(() => proxyAwareFetch.mockClear());
@@ -24,9 +24,12 @@ describe("Antigravity usage headers", () => {
 
     await getAntigravityUsage("access-token", {});
 
-    expect(proxyAwareFetch).toHaveBeenCalledTimes(2);
+    // loadCodeAssist + fetchAvailableModels + retrieveUserQuotaSummary
+    expect(proxyAwareFetch).toHaveBeenCalledTimes(3);
+    const urls = proxyAwareFetch.mock.calls.map(([url]) => url);
+    expect(urls.some((u) => u.includes(":retrieveUserQuotaSummary"))).toBe(true);
     for (const [, options] of proxyAwareFetch.mock.calls) {
-      expect(options.headers["User-Agent"]).toBe(FORK_USAGE_UA);
+      expect(options.headers["User-Agent"]).toBe(AGY_CLI_UA);
       expect(options.headers["x-request-source"]).toBe("local");
     }
   });

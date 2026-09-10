@@ -149,12 +149,13 @@ export default function ProviderLimitCard({
       {!loading && !error && !message && quotas?.length > 0 && (
         <div className="space-y-4">
           {quotas.map((quota, index) => {
-            // For Antigravity, use remainingPercentage if available, otherwise calculate
-            const percentage =
-              quota.remainingPercentage !== undefined
-                ? Math.round(((quota.total - quota.used) / quota.total) * 100)
-                : calculatePercentage(quota.used, quota.total);
-            const unlimited = quota.total === 0 || quota.total === null;
+            // Prefer explicit remaining percent (group pools, Codex-style rows);
+            // fall back to used/total. Null = unknown, never render as 0%.
+            const explicit = quota.remaining ?? quota.remainingPercentage;
+            const percentage = explicit == null
+              ? (quota.used == null || quota.total == null ? null : calculatePercentage(quota.used, quota.total))
+              : Math.round(explicit);
+            const unlimited = quota.unlimited === true || quota.total === 0;
 
             return (
               <QuotaProgressBar
@@ -166,6 +167,7 @@ export default function ProviderLimitCard({
                 unlimited={unlimited}
                 resetTime={quota.resetAt}
                 recurring={quota.recurring !== false}
+                note={quota.disabled ? quota.description : null}
               />
             );
           })}

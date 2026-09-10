@@ -29,8 +29,35 @@ import {
 } from "open-sse/services/grokCliSafety.js";
 import { MAX_RATE_LIMIT_COOLDOWN_MS } from "open-sse/config/errorConfig.js";
 import { resolveProviderId, FREE_PROVIDERS } from "@/shared/constants/providers.js";
-import { getAntigravityQuotaCache } from "./antigravityQuota.js";
+import { getConnectionPendingRequests } from "@/lib/usageDb.js";
+import { resolveAntigravityQuota } from "./antigravityQuota.js";
 import * as log from "../utils/logger.js";
+
+// In-flight reservation tracker: prevents concurrent requests arriving in the
+// same window from selecting the same connection before execution starts.
+const activeInflightByConnection = new Map();
+
+export function incrementConnectionInflight(connectionId) {
+  if (!connectionId) return;
+  activeInflightByConnection.set(connectionId, (activeInflightByConnection.get(connectionId) || 0) + 1);
+}
+
+export function decrementConnectionInflight(connectionId) {
+  if (!connectionId) return;
+  const current = activeInflightByConnection.get(connectionId) || 0;
+  if (current <= 1) {
+    activeInflightByConnection.delete(connectionId);
+  } else {
+    activeInflightByConnection.set(connectionId, current - 1);
+  }
+}
+
+export function getConnectionLoad(connectionId) {
+  if (!connectionId) return 0;
+  const pending = typeof getConnectionPendingRequests === "function" ? getConnectionPendingRequests(connectionId) : 0;
+  const reserved = activeInflightByConnection.get(connectionId) || 0;
+  return pending + reserved;
+}
 
 // Mutex to prevent race conditions during account selection
 let selectionMutex = Promise.resolve();
@@ -138,7 +165,6 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
 
     // Antigravity quota cache is lazy: only populated after that account returns 409/429.
     const isAntigravity = providerId === "antigravity";
-    const antigravityQuotaCache = isAntigravity && model ? getAntigravityQuotaCache() : null;
 
     // Filter out model-locked, excluded, grok-cli hard-blocked, and Antigravity
     // quota-exhausted connections. botFlagged / JWT bot_flag: IGNORE completely —
@@ -153,10 +179,12 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
         skippedHard += 1;
         return false;
       }
-      // Antigravity: skip if live quota exhausted for this model
-      if (isAntigravity && model && antigravityQuotaCache) {
-        const quota = antigravityQuotaCache.get(c.id)?.[model];
-        if (quota && quota.remainingPercentage <= 0 && quota.resetAt && new Date(quota.resetAt).getTime() > Date.now()) {
+      // Antigravity: skip only when live quota proves this model exhausted.
+      // Group-governed models (Claude/GPT → 3p-weekly) resolve via their group
+      // bucket; unknown quota fails open so healthy models keep routing.
+      if (isAntigravity && model) {
+        const quota = resolveAntigravityQuota(c.id, model);
+        if (quota && quota.remainingPercentage === 0 && quota.resetAt && new Date(quota.resetAt).getTime() > Date.now()) {
           const account = c.id?.slice(0, 8) || "unknown";
           log.info("AG_QUOTA", `${account} | CACHE_BLOCK ${model} — skip upstream until ${quota.resetAt}`);
           return false;
@@ -186,9 +214,9 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
       // Find earliest persistent lock or lazy Antigravity quota-cache reset for retry timing.
       const lockedConns = connections.filter((c) => isModelLockActive(c, model));
       const expiries = lockedConns.map((c) => getEarliestModelLockUntil(c)).filter(Boolean);
-      if (isAntigravity && model && antigravityQuotaCache) {
+      if (isAntigravity && model) {
         connections.forEach((c) => {
-          const resetAt = antigravityQuotaCache.get(c.id)?.[model]?.resetAt;
+          const resetAt = resolveAntigravityQuota(c.id, model)?.resetAt;
           if (resetAt && new Date(resetAt).getTime() > Date.now()) expiries.push(resetAt);
         });
       }
@@ -223,6 +251,11 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
     // grok-cli: prefer clean accounts with more free remaining, then least recently used
     if (providerId === "grok-cli" || providerId === "gcli") {
       availableConnections.sort((a, b) => scoreGrokCliConnection(b) - scoreGrokCliConnection(a));
+    } else if (availableConnections.length > 1) {
+      // Distribute load across connections to avoid concurrency collisions (e.g. single-stream
+      // limits on Antigravity where Google rejects concurrent streams per consumer account with 429).
+      // Stable sort prefers connections with lowest active load first.
+      availableConnections.sort((a, b) => getConnectionLoad(a.id) - getConnectionLoad(b.id));
     }
 
     const settings = await getSettings();
@@ -350,6 +383,10 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
     }
 
     const resolvedProxy = await resolveConnectionProxyConfig(connection.providerSpecificData || {});
+
+    if (connection?.id) {
+      incrementConnectionInflight(connection.id);
+    }
 
     return {
       authType: connection.authType,
@@ -560,6 +597,13 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
     cooldownMs = resolveProviderId(provider) === "antigravity"
       ? resetsAtMs - Date.now()
       : Math.min(resetsAtMs - Date.now(), MAX_RATE_LIMIT_COOLDOWN_MS);
+    newBackoffLevel = 0;
+  } else if (resolveProviderId(provider) === "antigravity" && Number(status) === 429) {
+    // Defensive: transient Antigravity 429 without explicit resetsAtMs should never
+    // escalate exponential backoff to 300s. Live quota determines actual exhaustion;
+    // transient 429 (rate/concurrency) only needs a 3s pause to rotate to next account.
+    shouldFallback = true;
+    cooldownMs = 3000;
     newBackoffLevel = 0;
   } else {
     ({ shouldFallback, cooldownMs, newBackoffLevel } = checkFallbackError(status, errorText, backoffLevel));
