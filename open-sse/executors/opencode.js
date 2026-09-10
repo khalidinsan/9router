@@ -12,7 +12,10 @@ import path from "node:path";
 
 const OPENCODE_UA = "opencode";
 // Models served by /zen/v1/responses; every other model stays on /chat/completions.
-const RESPONSES_MODELS = new Set(["muse-spark-1.2-contributor-free"]);
+const RESPONSES_MODELS = new Set([
+  "muse-spark-1.2-contributor-free",
+  "muse-spark-1.3-contributor-free",
+]);
 
 // ─── Bun TLS relay ──────────────────────────────────────────────────────────
 // opencode.ai/zen fingerprints the TLS client: Node (OpenSSL) anonymous

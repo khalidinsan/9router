@@ -7,7 +7,10 @@ import { OpenCodeExecutor } from "../../open-sse/executors/opencode.js";
 import "../translator/registerAll.js";
 import { translateRequest } from "../../open-sse/translator/index.js";
 
-const MODEL = "muse-spark-1.2-contributor-free";
+const MODELS = [
+  "muse-spark-1.2-contributor-free",
+  "muse-spark-1.3-contributor-free",
+];
 const PROVIDER = "opencode";
 
 const input = [{
@@ -17,20 +20,20 @@ const input = [{
 }];
 
 describe("OpenCode Free Muse Spark thinking", () => {
-  it("advertises reasoning and the requested model limits", () => {
-    expect(PROVIDER_MODELS.oc?.some((model) => model.id === MODEL)).toBe(true);
-    expect(getCapabilitiesForModel(PROVIDER, MODEL)).toMatchObject({
+  it.each(MODELS)("advertises reasoning and the requested model limits for %s", (model) => {
+    expect(PROVIDER_MODELS.oc?.some((m) => m.id === model)).toBe(true);
+    expect(getCapabilitiesForModel(PROVIDER, model)).toMatchObject({
       reasoning: true,
       thinkingFormat: "openai",
       contextWindow: 1048576,
       maxOutput: 131072,
     });
-    expect(getCapabilitiesForModel(PROVIDER, `oc/${MODEL}`)).toMatchObject({
+    expect(getCapabilitiesForModel(PROVIDER, `oc/${model}`)).toMatchObject({
       reasoning: true,
       contextWindow: 1048576,
       maxOutput: 131072,
     });
-    expect(getThinkingLevels(PROVIDER, MODEL)).toEqual([
+    expect(getThinkingLevels(PROVIDER, model)).toEqual([
       "none",
       "minimal",
       "low",
@@ -40,14 +43,14 @@ describe("OpenCode Free Muse Spark thinking", () => {
     ]);
   });
 
-  it("clamps max to xhigh and emits the Responses reasoning shape", () => {
+  it.each(MODELS)("clamps max to xhigh and emits the Responses reasoning shape for %s", (model) => {
     const body = {
       input,
       reasoning: { effort: "max" },
       max_tokens: 131072,
     };
 
-    const out = new OpenCodeExecutor().transformRequest(MODEL, body, true, {
+    const out = new OpenCodeExecutor().transformRequest(model, body, true, {
       connectionId: "opencode-muse-spark-test",
     });
 
@@ -66,9 +69,9 @@ describe("OpenCode Free Muse Spark thinking", () => {
     expect(body.max_output_tokens).toBeUndefined();
   });
 
-  it("translates Chat Completions max thinking into a Responses request", () => {
+  it.each(MODELS)("translates Chat Completions max thinking into a Responses request for %s", (model) => {
     const body = {
-      model: `oc/${MODEL}`,
+      model: `oc/${model}`,
       messages: [{ role: "user", content: "Think, then answer: 2 + 2?" }],
       reasoning_effort: "max",
       max_tokens: 131072,
@@ -77,13 +80,13 @@ describe("OpenCode Free Muse Spark thinking", () => {
     const translated = translateRequest(
       FORMATS.OPENAI,
       FORMATS.OPENAI_RESPONSES,
-      MODEL,
+      model,
       body,
       true,
       {},
       PROVIDER,
     );
-    const out = new OpenCodeExecutor().transformRequest(MODEL, translated, true, {
+    const out = new OpenCodeExecutor().transformRequest(model, translated, true, {
       connectionId: "opencode-muse-spark-translation-test",
     });
 
