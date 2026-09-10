@@ -74,11 +74,11 @@
     "format": "antigravity",
     "timeoutMs": 10000,
     "headers": {
-      "User-Agent": "antigravity/cli/1.1.22 (aidev_client; os_type=darwin; arch=arm64; cl=971564011; auth_method=consumer)"
+      "User-Agent": "antigravity/cli/1.1.27 (aidev_client; os_type=darwin; arch=arm64; cl=976543523; auth_method=consumer)"
     },
     "retry": {
       "429": {
-        "attempts": 3
+        "attempts": 0
       },
       "500": {
         "attempts": 1
@@ -89,8 +89,8 @@
       }
     },
     "usage": {
-      "quotaApiUrl": "https://cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels",
-      "loadProjectApiUrl": "https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist",
+      "quotaApiUrl": "https://daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels",
+      "loadProjectApiUrl": "https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist",
       "tokenUrl": "https://oauth2.googleapis.com/token"
     },
     "clientId": "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com",
@@ -138,7 +138,7 @@
       "Anthropic-Version": "2023-06-01",
       "Anthropic-Beta": "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,context-management-2025-06-27,prompt-caching-scope-2026-01-05,advanced-tool-use-2025-11-20,effort-2025-11-24,structured-outputs-2025-12-15,fast-mode-2026-02-01,redact-thinking-2026-02-12,token-efficient-tools-2026-03-28",
       "Anthropic-Dangerous-Direct-Browser-Access": "true",
-      "User-Agent": "claude-cli/2.1.92 (external, sdk-cli)",
+      "User-Agent": "claude-cli/2.1.258 (external, sdk-cli)",
       "X-App": "cli",
       "X-Stainless-Helper-Method": "stream",
       "X-Stainless-Retry-Count": "0",
@@ -494,6 +494,9 @@
   "groq": {
     "baseUrl": "https://api.groq.com/openai/v1/chat/completions",
     "validateUrl": "https://api.groq.com/openai/v1/models",
+    "usage": {
+      "url": "https://api.groq.com/openai/v1/models"
+    },
     "format": "openai"
   },
   "hyperbolic": {
@@ -765,6 +768,9 @@
   "opencode-go": {
     "baseUrl": "https://opencode.ai/zen/go/v1/chat/completions",
     "headers": {},
+    "usage": {
+      "url": "https://opencode.ai/zen/go/v1/usage"
+    },
     "format": "openai",
     "transports": [
       {

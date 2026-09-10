@@ -9,6 +9,7 @@ import { spawn } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { isMuseSparkModel } from "../providers/models/helpers.js";
 
 const OPENCODE_UA = "opencode";
 // Models served by /zen/v1/responses; every other model stays on /chat/completions.
@@ -235,7 +236,8 @@ function baseModelId(model) {
 }
 
 function isResponsesModel(model) {
-  return RESPONSES_MODELS.has(baseModelId(model));
+  const base = baseModelId(model);
+  return RESPONSES_MODELS.has(base) || isMuseSparkModel(base);
 }
 
 function resolveOpencodeSession(body, credentials) {

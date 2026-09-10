@@ -32,6 +32,13 @@ describe("getCapabilitiesForModel", () => {
     }
   });
 
+  it("reports Claude Fable 5.1 as a permanent adaptive-thinking model", () => {
+    expect(getCapabilitiesForModel("claude", "claude-fable-5-1")).toMatchObject({
+      ...claudeSonnet5Expected,
+      thinkingCanDisable: false,
+    });
+  });
+
   it("reports Kiro Claude Opus 4.8 as a 1M context model", () => {
     expect(getCapabilitiesForModel("kiro", "claude-opus-4.8").contextWindow).toBe(1000000);
     expect(getCapabilitiesForModel("kiro", "anthropic/claude-opus-4.8").contextWindow).toBe(1000000);
@@ -80,6 +87,17 @@ describe("getCapabilitiesForModel", () => {
     // vision rule would silently send images to models that reject them.
     expect(getCapabilitiesForModel("cmc", "deepseek/deepseek-v4-pro").vision).toBe(false);
     expect(getCapabilitiesForModel("bai", "deepseek-v4-flash").vision).toBe(false);
+  });
+
+  it("reports Codex GPT 6.0 Astra as a vision and thinking capable model", () => {
+    expect(getCapabilitiesForModel("codex", "gpt-6-astra")).toMatchObject({
+      vision: true,
+      reasoning: true,
+      search: true,
+      thinkingFormat: "openai",
+      contextWindow: 272000,
+      maxOutput: 128000,
+    });
   });
 });
 
