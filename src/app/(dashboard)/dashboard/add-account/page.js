@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useRef, useEffect, useCallback } from "react";
+import { formatTimeOnly } from "@/shared/utils/datetime";
 import {
   Card,
   Button,
@@ -1441,7 +1442,7 @@ export default function AddAccountPage() {
                   </div>
                   <div className="font-semibold tabular-nums text-text-main">
                     {etaSec != null && etaSec > 0 && runStartedAt
-                      ? new Date(Date.now() + etaSec * 1000).toLocaleTimeString([], {
+                      ? formatTimeOnly(Date.now() + etaSec * 1000, undefined, [], {
                           hour: "2-digit",
                           minute: "2-digit",
                         })
@@ -1585,7 +1586,7 @@ export default function AddAccountPage() {
                     >
                       <span className="text-zinc-500 tabular-nums shrink-0 w-[4.5rem]">
                         {log.time
-                          ? new Date(log.time).toLocaleTimeString()
+                          ? formatTimeOnly(log.time)
                           : ""}
                       </span>
                       {wid && (

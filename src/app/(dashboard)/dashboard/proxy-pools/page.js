@@ -3,18 +3,12 @@
 import { useCallback, useEffect, useMemo, useState, useRef } from "react";
 import { Badge, Button, Card, CardSkeleton, Input, Modal, Toggle, ConfirmModal } from "@/shared/components";
 import { useNotificationStore } from "@/store/notificationStore";
+import { formatDateTime } from "@/shared/utils/datetime";
 
 function getStatusVariant(status) {
   if (status === "active") return "success";
   if (status === "error") return "error";
   return "default";
-}
-
-function formatDateTime(value) {
-  if (!value) return "Never";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "Never";
-  return date.toLocaleString();
 }
 
 function normalizeFormData(data = {}) {
@@ -731,7 +725,7 @@ export default function ProxyPoolsPage() {
                     <p className="text-xs text-text-muted truncate">No proxy: {pool.noProxy}</p>
                   ) : null}
                   <p className="text-[11px] text-text-muted mt-1">
-                    Last tested: {formatDateTime(pool.lastTestedAt)}
+                    Last tested: {formatDateTime(pool.lastTestedAt) || "Never"}
                     {pool.lastError ? ` · ${pool.lastError}` : ""}
                   </p>
                   </div>

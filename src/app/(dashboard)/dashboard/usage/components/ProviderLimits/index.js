@@ -43,6 +43,7 @@ import Card from "@/shared/components/Card";
 import { ConfirmModal, EditConnectionModal } from "@/shared/components";
 import { USAGE_SUPPORTED_PROVIDERS } from "@/shared/constants/providers";
 import { useCopyToClipboard } from "@/shared/hooks/useCopyToClipboard";
+import { getClientTimeZone } from "@/shared/utils/datetime";
 
 // Maps the stored providerSpecificData.authMethod to a human label for Kiro.
 // Values come from the Kiro connect flows: builder-id/idc (device code),
@@ -105,12 +106,14 @@ function formatCreditDate(value) {
   if (!value) return "N/A";
   const date = new Date(value);
   if (!Number.isFinite(date.getTime())) return "N/A";
+  const zone = getClientTimeZone() || undefined;
   return date.toLocaleString(undefined, {
     month: "short",
     day: "numeric",
     year: "numeric",
     hour: "numeric",
     minute: "2-digit",
+    ...(zone ? { timeZone: zone } : null),
   });
 }
 

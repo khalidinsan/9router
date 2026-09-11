@@ -2,9 +2,10 @@
 import { STREAM_STALL_TIMEOUT_MS } from "../config/runtimeConfig.js";
 import { dbg, isDebugEnabled } from "./debugLog.js";
 
-// Get HH:MM:SS timestamp
+// ISO instant (UTC, unambiguous) — the console-log page converts the
+// leading bracket to the viewer's time zone. See src/sse/utils/logger.js.
 function getTimeString() {
-  return new Date().toLocaleTimeString("en-US", { hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  return new Date().toISOString();
 }
 
 /**

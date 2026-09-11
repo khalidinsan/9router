@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import { getClientTimeZone } from "@/shared/utils/datetime";
 import Card from "./Card";
 
 export default function RequestLogger() {
@@ -25,7 +26,9 @@ export default function RequestLogger() {
   const fetchLogs = async (showLoading = true) => {
     if (showLoading) setLoading(true);
     try {
-      const res = await fetch("/api/usage/request-logs");
+      // DateTime column follows the client's zone (server formats it).
+      const tz = getClientTimeZone();
+      const res = await fetch(`/api/usage/request-logs${tz ? `?tz=${encodeURIComponent(tz)}` : ""}`);
       if (res.ok) {
         const data = await res.json();
         setLogs(data);

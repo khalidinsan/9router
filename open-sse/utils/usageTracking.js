@@ -20,9 +20,10 @@ export const COLORS = {
 // Buffer tokens to prevent context errors
 const BUFFER_TOKENS = 2000;
 
-// Get HH:MM:SS timestamp
+// ISO instant (UTC, unambiguous) — the console-log page converts the
+// leading bracket to the viewer's time zone. See src/sse/utils/logger.js.
 function getTimeString() {
-  return new Date().toLocaleTimeString("en-US", { hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  return new Date().toISOString();
 }
 
 /**

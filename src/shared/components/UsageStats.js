@@ -3,6 +3,7 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import { FREE_PROVIDERS, AI_PROVIDERS } from "@/shared/constants/providers";
+import { timeAgo, TimeAgo, tzQueryParam } from "@/shared/utils/datetime";
 
 // Keep providers without serviceKinds (default LLM) or with "llm" in serviceKinds
 function isLLMProvider(id) {
@@ -18,27 +19,9 @@ import dynamic from "next/dynamic";
 // Lazy-load: keeps @xyflow/react out of the shared bundle until topology renders
 const ProviderTopology = dynamic(() => import("@/app/(dashboard)/dashboard/usage/components/ProviderTopology"), { ssr: false });
 import UsageChart from "@/app/(dashboard)/dashboard/usage/components/UsageChart";
+import ActiveApiKeys from "@/app/(dashboard)/dashboard/usage/components/ActiveApiKeys";
 
-function timeAgo(timestamp) {
-  const diff = Math.floor((Date.now() - new Date(timestamp)) / 1000);
-  if (diff < 60) return `${diff}s ago`;
-  if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
-  if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
-  return `${Math.floor(diff / 86400)}d ago`;
-}
-
-// Auto-update time display every second without re-rendering parent
-function TimeAgo({ timestamp }) {
-  const [, setTick] = useState(0);
-  
-  useEffect(() => {
-    const timer = setInterval(() => setTick(t => t + 1), 1000);
-    return () => clearInterval(timer);
-  }, []);
-  
-  return <>{timeAgo(timestamp)}</>;
-}
-
+// Relative-time helpers live in the central datetime module.
 function RecentRequests({ requests = [] }) {
   return (
     <Card className="flex min-w-0 flex-col overflow-hidden" padding="sm" style={{ height: 480 }}>
@@ -116,14 +99,17 @@ function sortData(dataMap, pendingMap = {}, sortBy, sortOrder) {
 function getGroupKey(item, keyField) {
   switch (keyField) {
     case "rawModel": return item.rawModel || "Unknown Model";
-    case "accountName": return item.accountName || `Account ${item.connectionId?.slice(0, 8)}...` || "Unknown Account";
-    case "keyName": return item.keyName || "Unknown Key";
+    case "accountName": return item.accountName || (item.connectionId ? `Account ${item.connectionId.slice(0, 8)}...` : "Unknown Account");
+    // Stable id = FULL raw key (apiKeyKey). Never group by display keyName or
+    // masked prefix: masked prefixes collide across keys on one server.
+    case "apiKeyKey": return item.apiKeyKey || item.keyName || "Unknown Key";
+    case "keyName": return item.apiKeyKey || item.keyName || "Unknown Key";
     case "endpoint": return item.endpoint || "Unknown Endpoint";
     default: return item[keyField] || "Unknown";
   }
 }
 
-function groupDataByKey(data, keyField) {
+function groupDataByKey(data, keyField, labelField) {
   if (!Array.isArray(data)) return [];
   const groups = {};
   data.forEach((item) => {
@@ -131,7 +117,8 @@ function groupDataByKey(data, keyField) {
     if (!groups[gk]) {
       groups[gk] = {
         groupKey: gk,
-        summary: { requests: 0, promptTokens: 0, completionTokens: 0, cachedTokens: 0, totalTokens: 0, cost: 0, inputCost: 0, cachedCost: 0, outputCost: 0, lastUsed: null, pending: 0 },
+        label: labelField ? (item[labelField] || gk) : gk,
+        summary: { requests: 0, promptTokens: 0, completionTokens: 0, cachedTokens: 0, totalTokens: 0, cost: 0, totalCost: 0, inputCost: 0, cachedCost: 0, outputCost: 0, lastUsed: null, pending: 0 },
         items: [],
       };
     }
@@ -142,6 +129,7 @@ function groupDataByKey(data, keyField) {
     s.cachedTokens += item.cachedTokens || 0;
     s.totalTokens += item.totalTokens || 0;
     s.cost += item.cost || 0;
+    s.totalCost += item.totalCost || item.cost || 0;
     s.inputCost += item.inputCost || 0;
     s.cachedCost += item.cachedCost || 0;
     s.outputCost += item.outputCost || 0;
@@ -152,6 +140,42 @@ function groupDataByKey(data, keyField) {
     groups[gk].items.push(item);
   });
   return Object.values(groups);
+}
+
+// Sortable group-summary fields (sortBy -> summary field)
+const GROUP_SUMMARY_NUMERIC = {
+  requests: "requests",
+  promptTokens: "promptTokens",
+  cachedTokens: "cachedTokens",
+  completionTokens: "completionTokens",
+  totalTokens: "totalTokens",
+  inputCost: "inputCost",
+  cachedCost: "cachedCost",
+  outputCost: "outputCost",
+  cost: "cost",
+  totalCost: "cost",
+};
+
+// Sort groups by their SUMMARY values (not by first-seen insertion order),
+// so "sort by total tokens/cost" actually orders the group rows.
+function sortGroups(groups, sortBy, sortOrder) {
+  const dir = sortOrder === "asc" ? 1 : -1;
+  const numField = GROUP_SUMMARY_NUMERIC[sortBy];
+  return [...groups].sort((a, b) => {
+    if (numField) {
+      return ((a.summary[numField] || 0) - (b.summary[numField] || 0)) * dir;
+    }
+    if (sortBy === "lastUsed") {
+      const ta = a.summary.lastUsed ? new Date(a.summary.lastUsed).getTime() : -1;
+      const tb = b.summary.lastUsed ? new Date(b.summary.lastUsed).getTime() : -1;
+      return (ta - tb) * dir;
+    }
+    const la = String(a.label || a.groupKey || "").toLowerCase();
+    const lb = String(b.label || b.groupKey || "").toLowerCase();
+    if (la < lb) return -1 * dir;
+    if (la > lb) return 1 * dir;
+    return 0;
+  });
 }
 
 const MODEL_COLUMNS = [
@@ -204,20 +228,64 @@ export default function UsageStats({ period: periodProp, setPeriod: setPeriodPro
   const router = useRouter();
   const searchParams = useSearchParams();
 
-  const sortBy = searchParams.get("sortBy") || "rawModel";
-  const sortOrder = searchParams.get("sortOrder") || "asc";
-
   const [stats, setStats] = useState(null);
   const [loading, setLoading] = useState(true);
   const [fetching, setFetching] = useState(false);
-  const [tableView, setTableView] = useState("model");
-  const [viewMode, setViewMode] = useState("costs");
+  // "Usage by ..." remembers the last choice across refreshes (localStorage).
+  // Fresh visitors default to apiKey.
+  const [tableView, setTableView] = useState(() => {
+    try {
+      if (typeof localStorage === "undefined") return "apiKey";
+      const saved = localStorage.getItem("usage-stats:table-view");
+      return TABLE_OPTIONS.some((o) => o.value === saved) ? saved : "apiKey";
+    } catch (e) {
+      return "apiKey";
+    }
+  });
+  useEffect(() => {
+    try {
+      localStorage.setItem("usage-stats:table-view", tableView);
+    } catch (e) {
+      console.error("Failed to save usage-stats:table-view:", e);
+    }
+  }, [tableView]);
+  const [viewMode, setViewMode] = useState("tokens");
   const [providers, setProviders] = useState([]);
   const [periodLocal, setPeriodLocal] = useState("today");
   const isInitialLoad = useRef(true);
   const hasLoadedStats = useRef(false);
   const period = periodProp ?? periodLocal;
   const setPeriod = setPeriodProp ?? setPeriodLocal;
+
+  // Sort defaults follow the active tab: biggest usage first.
+  const sortBy = searchParams.get("sortBy") || (viewMode === "tokens" ? "totalTokens" : "cost");
+  const sortOrder = searchParams.get("sortOrder") || "desc";
+
+  // When the table view or tokens/costs tab changes, a sortBy from the other
+  // context is meaningless (e.g. totalTokens while looking at costs, or
+  // keyName while looking at models) — reset to that context's default so
+  // the table never looks "ngaco".
+  const BASE_SORT_FIELDS = {
+    model: ["rawModel", "provider", "requests", "lastUsed"],
+    account: ["rawModel", "provider", "accountName", "requests", "lastUsed"],
+    apiKey: ["keyName", "apiKeyKey", "rawModel", "provider", "requests", "lastUsed"],
+    endpoint: ["endpoint", "rawModel", "provider", "requests", "lastUsed"],
+  };
+  const MODE_SORT_FIELDS = {
+    tokens: ["promptTokens", "cachedTokens", "completionTokens", "totalTokens"],
+    costs: ["inputCost", "cachedCost", "outputCost", "cost", "totalCost"],
+  };
+  useEffect(() => {
+    const valid = new Set([...(BASE_SORT_FIELDS[tableView] || []), ...(MODE_SORT_FIELDS[viewMode] || [])]);
+    const currentSortBy = searchParams.get("sortBy");
+    if (currentSortBy && !valid.has(currentSortBy)) {
+      const params = new URLSearchParams(searchParams.toString());
+      params.set("sortBy", viewMode === "tokens" ? "totalTokens" : "cost");
+      params.set("sortOrder", "desc");
+      router.replace(`?${params.toString()}`, { scroll: false });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tableView, viewMode]);
 
   // Fetch connected providers once, deduplicate by provider type
   // Always include noAuth free providers (e.g. opencode) regardless of connections
@@ -261,7 +329,7 @@ export default function UsageStats({ period: periodProp, setPeriod: setPeriodPro
       setFetching(true);
     }
 
-    fetch(`/api/usage/stats?period=${period}`)
+    fetch(`/api/usage/stats?period=${period}${tzQueryParam()}`)
       .then((r) => r.ok ? r.json() : null)
       .then((data) => {
         if (data) {
@@ -289,6 +357,7 @@ export default function UsageStats({ period: periodProp, setPeriod: setPeriodPro
           return {
             ...prev,
             activeRequests: data.activeRequests,
+            activeByApiKey: data.activeByApiKey,
             recentRequests: data.recentRequests,
             errorProvider: data.errorProvider,
             pending: data.pending,
@@ -324,7 +393,7 @@ export default function UsageStats({ period: periodProp, setPeriod: setPeriodPro
         const pendingMap = stats.pending?.byModel || {};
         return {
           columns: MODEL_COLUMNS,
-          groupedData: groupDataByKey(sortData(stats.byModel, pendingMap, sortBy, sortOrder), "rawModel"),
+          groupedData: sortGroups(groupDataByKey(sortData(stats.byModel, pendingMap, sortBy, sortOrder), "rawModel"), sortBy, sortOrder),
           storageKey: "usage-stats:expanded-models",
           emptyMessage: "No usage recorded yet.",
           renderSummaryCells: (group) => (
@@ -357,7 +426,7 @@ export default function UsageStats({ period: periodProp, setPeriod: setPeriodPro
         }
         return {
           columns: ACCOUNT_COLUMNS,
-          groupedData: groupDataByKey(sortData(stats.byAccount, pendingMap, sortBy, sortOrder), "accountName"),
+          groupedData: sortGroups(groupDataByKey(sortData(stats.byAccount, pendingMap, sortBy, sortOrder), "accountName"), sortBy, sortOrder),
           storageKey: "usage-stats:expanded-accounts",
           emptyMessage: "No account-specific usage recorded yet.",
           renderSummaryCells: (group) => (
@@ -382,7 +451,7 @@ export default function UsageStats({ period: periodProp, setPeriod: setPeriodPro
       case "apiKey": {
         return {
           columns: API_KEY_COLUMNS,
-          groupedData: groupDataByKey(sortData(stats.byApiKey, {}, sortBy, sortOrder), "keyName"),
+          groupedData: sortGroups(groupDataByKey(sortData(stats.byApiKey, {}, sortBy, sortOrder), "apiKeyKey", "keyName"), sortBy, sortOrder),
           storageKey: "usage-stats:expanded-apikeys",
           emptyMessage: "No API key usage recorded yet.",
           renderSummaryCells: (group) => (
@@ -408,7 +477,7 @@ export default function UsageStats({ period: periodProp, setPeriod: setPeriodPro
       default: {
         return {
           columns: ENDPOINT_COLUMNS,
-          groupedData: groupDataByKey(sortData(stats.byEndpoint, {}, sortBy, sortOrder), "endpoint"),
+          groupedData: sortGroups(groupDataByKey(sortData(stats.byEndpoint, {}, sortBy, sortOrder), "endpoint"), sortBy, sortOrder),
           storageKey: "usage-stats:expanded-endpoints",
           emptyMessage: "No endpoint usage recorded yet.",
           renderSummaryCells: (group) => (
@@ -483,6 +552,9 @@ export default function UsageStats({ period: periodProp, setPeriod: setPeriodPro
       {/* Token / Cost chart - sync period */}
       {loading ? spinner : <UsageChart period={period} />}
 
+      {/* Live per-API-key presence (SSE-driven) */}
+      {loading ? spinner : <ActiveApiKeys active={stats.activeByApiKey || []} />}
+
       {/* Table with dropdown selector */}
       <div className="flex flex-col gap-3">
         <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
@@ -498,16 +570,16 @@ export default function UsageStats({ period: periodProp, setPeriod: setPeriodPro
           </select>
           <div className="grid grid-cols-2 items-center gap-1 rounded-lg border border-border bg-bg-subtle p-1 sm:flex">
             <button
-              onClick={() => setViewMode("costs")}
-              className={`px-3 py-1 rounded-md text-sm font-medium transition-colors ${viewMode === "costs" ? "bg-primary text-white shadow-sm" : "text-text-muted hover:text-text hover:bg-bg-hover"}`}
-            >
-              Costs
-            </button>
-            <button
               onClick={() => setViewMode("tokens")}
               className={`px-3 py-1 rounded-md text-sm font-medium transition-colors ${viewMode === "tokens" ? "bg-primary text-white shadow-sm" : "text-text-muted hover:text-text hover:bg-bg-hover"}`}
             >
               Tokens
+            </button>
+            <button
+              onClick={() => setViewMode("costs")}
+              className={`px-3 py-1 rounded-md text-sm font-medium transition-colors ${viewMode === "costs" ? "bg-primary text-white shadow-sm" : "text-text-muted hover:text-text hover:bg-bg-hover"}`}
+            >
+              Costs
             </button>
           </div>
         </div>

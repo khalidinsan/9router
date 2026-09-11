@@ -3,6 +3,7 @@
 import { useState, useEffect, useRef } from "react";
 import { Card, Button } from "@/shared/components";
 import { CONSOLE_LOG_CONFIG } from "@/shared/constants/config";
+import { formatConsoleLine, useClientTimeZone } from "@/shared/utils/datetime";
 
 const LOG_LEVEL_COLORS = {
   LOG: "text-green-400",
@@ -23,6 +24,8 @@ export default function ConsoleLogClient() {
   const [logs, setLogs] = useState([]);
   const [connected, setConnected] = useState(false);
   const logRef = useRef(null);
+  // Server log lines start with an ISO bracket; render it in client time.
+  const tz = useClientTimeZone();
 
   const handleClear = async () => {
     try {
@@ -85,7 +88,7 @@ export default function ConsoleLogClient() {
           ) : (
             <div className="space-y-0.5">
               {logs.map((line, i) => (
-                <div key={i}>{colorLine(line)}</div>
+                <div key={i}>{colorLine(formatConsoleLine(line, tz))}</div>
               ))}
             </div>
           )}

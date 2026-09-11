@@ -2,6 +2,7 @@
 
 import { cn } from "@/shared/utils/cn";
 import { formatResetTime } from "./utils";
+import { getClientTimeZone } from "@/shared/utils/datetime";
 
 // Calculate color based on remaining percentage
 const getColorClasses = (remainingPercentage) => {
@@ -32,11 +33,12 @@ const getColorClasses = (remainingPercentage) => {
   };
 };
 
-// Format reset time display
-const formatResetTimeDisplay = (resetTime) => {
+// Format reset time display in the viewer's time zone (see datetime.js).
+const formatResetTimeDisplay = (resetTime, tz) => {
   if (!resetTime) return null;
   
   try {
+    const zone = tz || getClientTimeZone() || undefined;
     const resetDate = new Date(resetTime);
     const now = new Date();
     const isToday = resetDate.toDateString() === now.toDateString();
@@ -46,6 +48,7 @@ const formatResetTimeDisplay = (resetTime) => {
       hour: "2-digit",
       minute: "2-digit",
       hour12: true,
+      ...(zone ? { timeZone: zone } : null),
     });
     
     if (isToday) return `Today, ${timeStr}`;
@@ -57,6 +60,7 @@ const formatResetTimeDisplay = (resetTime) => {
       hour: "2-digit",
       minute: "2-digit",
       hour12: true,
+      ...(zone ? { timeZone: zone } : null),
     });
   } catch {
     return null;

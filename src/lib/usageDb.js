@@ -1,7 +1,7 @@
 // Shim → re-export from new SQLite-based DB layer (src/lib/db/)
 export {
   statsEmitter, trackPendingRequest, getConnectionPendingRequests, getActiveRequests,
-  saveRequestUsage, getUsageHistory, getUsageStats, getChartData,
+  saveRequestUsage, getUsageHistory, getUsageStats, getChartData, getChartDataByApiKey,
   appendRequestLog, getRecentLogs, sumConnectionTokensSince,
   saveRequestDetail, getRequestDetails, getRequestDetailById,
 } from "@/lib/db/index.js";

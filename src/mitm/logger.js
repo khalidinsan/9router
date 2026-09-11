@@ -5,7 +5,8 @@ const { DATA_DIR } = require("./paths");
 const { LOG_BLACKLIST_URL_PARTS } = require("./config");
 
 function time() {
-  return new Date().toLocaleTimeString("en-US", { hour12: false });
+  // Full ISO instant (UTC, unambiguous) — see src/sse/utils/logger.js.
+  return new Date().toISOString();
 }
 
 const log = (msg) => console.log(`[${time()}] [MITM] ${msg}`);

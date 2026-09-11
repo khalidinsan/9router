@@ -10,7 +10,10 @@ const LOG_LEVELS = {
 const LEVEL = LOG_LEVELS[process.env.LOG_LEVEL?.toUpperCase?.()] ?? LOG_LEVELS.INFO;
 
 function formatTime() {
-  return new Date().toLocaleTimeString("en-US", { hour12: false });
+  // Full ISO instant (UTC, unambiguous). The console-log dashboard page
+  // converts the leading bracket to the viewer's time zone; journalctl
+  // keeps a sortable absolute timestamp.
+  return new Date().toISOString();
 }
 
 // Colored-dot tags to correlate request lines by session (same session → same color)

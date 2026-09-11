@@ -3,7 +3,8 @@
 const isDev = process.env.NODE_ENV !== "production";
 
 function ts() {
-  return new Date().toLocaleTimeString("en-US", { hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  // ISO instant (UTC, unambiguous) — see src/sse/utils/logger.js.
+  return new Date().toISOString();
 }
 
 export function dbg(tag, msg) {

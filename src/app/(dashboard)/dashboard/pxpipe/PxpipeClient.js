@@ -11,6 +11,7 @@ import {
   ResponsiveContainer,
 } from "recharts";
 import { Card, Button } from "@/shared/components";
+import { formatDateTime, getClientTimeZone } from "@/shared/utils/datetime";
 
 const fmtTokens = (n) => {
   if (n >= 1000000) return `${(n / 1000000).toFixed(2)}M`;
@@ -69,9 +70,12 @@ export default function PxpipeClient() {
   const refresh = useCallback(async () => {
     setLoading(true);
     try {
+      // Day windows follow the client's zone (server formats them).
+      const tz = getClientTimeZone();
+      const tzQs = tz ? `?tz=${encodeURIComponent(tz)}` : "";
       const [statusRes, statsRes, logsRes] = await Promise.all([
         fetch("/api/pxpipe/status", { headers: { "Cache-Control": "no-store" } }),
-        fetch("/api/pxpipe/stats"),
+        fetch(`/api/pxpipe/stats${tzQs}`),
         fetch("/api/pxpipe/logs?limit=50"),
       ]);
       setStatus(await statusRes.json());
@@ -222,7 +226,7 @@ export default function PxpipeClient() {
               {(stats?.recent || []).slice(0, 50).map((ev, i) => (
                 <tr key={`${ev.ts}-${i}`} className="border-b border-border/50">
                   <td className="py-1.5 pr-3 whitespace-nowrap text-text-muted">
-                    {new Date(ev.ts).toLocaleString()}
+                    {formatDateTime(ev.ts) || "—"}
                   </td>
                   <td className="py-1.5 pr-3 font-mono text-xs">{ev.provider ? `${ev.provider}/${ev.model}` : ev.model || "—"}</td>
                   <td className="py-1.5 pr-3 text-right font-mono text-xs">

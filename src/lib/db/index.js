@@ -58,7 +58,7 @@ export {
 // Usage
 export {
   statsEmitter, trackPendingRequest, getConnectionPendingRequests, getActiveRequests,
-  saveRequestUsage, getUsageHistory, getUsageStats, getChartData,
+  saveRequestUsage, getUsageHistory, getUsageStats, getChartData, getChartDataByApiKey,
   appendRequestLog, getRecentLogs, sumConnectionTokensSince,
 } from "./repos/usageRepo.js";
 

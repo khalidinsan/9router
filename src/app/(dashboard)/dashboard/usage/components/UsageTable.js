@@ -4,17 +4,18 @@ import { useState, useEffect, useCallback, useMemo, Fragment } from "react";
 import PropTypes from "prop-types";
 import Card from "@/shared/components/Card";
 import Badge from "@/shared/components/Badge";
+import { formatDate } from "@/shared/utils/datetime";
 
 const fmt = (n) => new Intl.NumberFormat().format(n || 0);
 const fmtCost = (n) => `$${(n || 0).toFixed(2)}`;
 
-function fmtTime(iso) {
+function fmtTime(iso, tz) {
   if (!iso) return "Never";
   const diffMins = Math.floor((Date.now() - new Date(iso)) / 60000);
   if (diffMins < 1) return "Just now";
   if (diffMins < 60) return `${diffMins}m ago`;
   if (diffMins < 1440) return `${Math.floor(diffMins / 60)}h ago`;
-  return new Date(iso).toLocaleDateString();
+  return formatDate(iso, tz) || "Never";
 }
 
 function SortIcon({ field, currentSort, currentOrder }) {
@@ -144,10 +145,13 @@ export default function UsageTable({
         { field: "totalTokens", label: "Total Tokens" },
       ];
     }
+    // NOTE: fields must match what ValueCells renders (inputCost/outputCost/
+    // totalCost via item.cost). Sorting by token fields here would order $ by
+    // tokens — wrong whenever $/token ratios differ per model.
     return [
-      { field: "promptTokens", label: "Input Cost" },
+      { field: "inputCost", label: "Input Cost" },
       { field: "cachedCost", label: "Cached Cost" },
-      { field: "completionTokens", label: "Output Cost" },
+      { field: "outputCost", label: "Output Cost" },
       { field: "cost", label: "Total Cost" },
     ];
   }, [viewMode]);
@@ -199,7 +203,7 @@ export default function UsageTable({
                         chevron_right
                       </span>
                       <span className={`font-medium transition-colors ${group.summary.pending > 0 ? "text-primary" : ""}`}>
-                        {group.groupKey}
+                        {group.label || group.groupKey}
                       </span>
                     </div>
                   </td>

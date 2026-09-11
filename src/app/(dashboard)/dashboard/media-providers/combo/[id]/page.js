@@ -5,6 +5,7 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { Card, Button, Input, Toggle, ModelSelectModal } from "@/shared/components";
 import ProviderIcon from "@/shared/components/ProviderIcon";
+import { getClientTimeZone } from "@/shared/utils/datetime";
 import { AI_PROVIDERS, MEDIA_PROVIDER_KINDS } from "@/shared/constants/providers";
 
 // Parse "providerId/model" or just "providerId" → { providerId, model }
@@ -64,10 +65,13 @@ export default function ComboDetailPage() {
 
   const fetchAll = async () => {
     try {
+      // Log timestamps follow the client's zone (server formats them).
+      const tz = getClientTimeZone();
+      const logsUrl = `/api/usage/logs${tz ? `?tz=${encodeURIComponent(tz)}` : ""}`;
       const [comboRes, settingsRes, logsRes, keysRes, connsRes, aliasesRes] = await Promise.all([
         fetch(`/api/combos/${id}`, { cache: "no-store" }),
         fetch("/api/settings", { cache: "no-store" }),
-        fetch("/api/usage/logs", { cache: "no-store" }),
+        fetch(logsUrl, { cache: "no-store" }),
         fetch("/api/keys", { cache: "no-store" }),
         fetch("/api/providers", { cache: "no-store" }),
         fetch("/api/models/alias", { cache: "no-store" }),

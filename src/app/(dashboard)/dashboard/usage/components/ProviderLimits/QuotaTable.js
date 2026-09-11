@@ -2,16 +2,20 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { formatResetTime, getRemainingPercentage } from "./utils";
+import { getClientTimeZone } from "@/shared/utils/datetime";
 
 const PAGE_SIZE = 10;
 
 /**
- * Format reset time display (Today, 12:00 PM)
+ * Format reset time display (Today, 12:00 PM) in the viewer's time zone.
+ * Day bucketing uses browser-local days (already client-tz); only the
+ * labels go through the central datetime module explicitly.
  */
-function formatResetTimeDisplay(resetTime) {
+function formatResetTimeDisplay(resetTime, tz) {
   if (!resetTime) return null;
 
   try {
+    const zone = tz || getClientTimeZone() || undefined;
     const date = new Date(resetTime);
     const now = new Date();
     const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
@@ -24,13 +28,14 @@ function formatResetTimeDisplay(resetTime) {
     } else if (date >= tomorrow && date < new Date(tomorrow.getTime() + 24 * 60 * 60 * 1000)) {
       dayStr = "Tomorrow";
     } else {
-      dayStr = date.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+      dayStr = date.toLocaleDateString("en-US", { month: "short", day: "numeric", ...(zone ? { timeZone: zone } : null) });
     }
 
     const timeStr = date.toLocaleTimeString("en-US", {
       hour: "numeric",
       minute: "2-digit",
       hour12: true,
+      ...(zone ? { timeZone: zone } : null),
     });
 
     return `${dayStr}, ${timeStr}`;
