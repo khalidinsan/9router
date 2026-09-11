@@ -62,6 +62,33 @@ describe("toOpenAIUsage", () => {
     expect(u.total_tokens).toBe(99);
   });
 
+  it("commandcode: exposes cachedInputTokens + reasoningTokens", () => {
+    // live /alpha/generate finish-step shape: cache on cachedInputTokens,
+    // inputTokenDetails.cacheReadTokens, and raw.prompt_cache_hit_tokens alike.
+    const u = toOpenAIUsage({
+      inputTokens: 7589,
+      inputTokenDetails: { noCacheTokens: 165, cacheReadTokens: 7424 },
+      outputTokens: 2,
+      outputTokenDetails: { textTokens: 2, reasoningTokens: 5 },
+      totalTokens: 7591,
+      raw: { prompt_cache_hit_tokens: 7424, completion_tokens_details: { reasoning_tokens: 5 } },
+      reasoningTokens: 5,
+      cachedInputTokens: 7424,
+    }, "commandcode");
+    expect(u.prompt_tokens).toBe(7589);
+    expect(u.total_tokens).toBe(7591);
+    expect(u.prompt_tokens_details.cached_tokens).toBe(7424);
+    expect(u.completion_tokens_details.reasoning_tokens).toBe(5);
+  });
+
+  it("commandcode: falls back to nested cache fields", () => {
+    const u = toOpenAIUsage({
+      inputTokens: 100, outputTokens: 2,
+      inputTokenDetails: { cacheReadTokens: 40 },
+    }, "commandcode");
+    expect(u.prompt_tokens_details.cached_tokens).toBe(40);
+  });
+
   it("unknown kind / null raw -> null", () => {
     expect(toOpenAIUsage({}, "nope")).toBeNull();
     expect(toOpenAIUsage(null, "claude")).toBeNull();
