@@ -105,8 +105,10 @@ describe("Kiro external_idp (CLIProxyAPI) import and refresh", () => {
     expect(headers.TokenType).toBe("EXTERNAL_IDP");
     expect(headers.tokentype).toBeUndefined();
 
+    // Endpoint ordering follows getOrderedBaseUrls (Q first since upstream
+    // 35b950be "route requests through current runtime surfaces").
     expect(executor.buildUrl("claude-sonnet-4.5", true, 0, credentials)).toBe(
-      "https://codewhisperer.us-east-1.amazonaws.com/generateAssistantResponse"
+      "https://q.us-east-1.amazonaws.com/generateAssistantResponse"
     );
   });
 

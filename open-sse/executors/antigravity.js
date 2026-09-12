@@ -5,7 +5,7 @@ import { OAUTH_ENDPOINTS, ANTIGRAVITY_HEADERS, INTERNAL_REQUEST_HEADER, AG_DEFAU
 import { HTTP_STATUS } from "../config/runtimeConfig.js";
 import { resolveSessionId, toNumericSessionId } from "../utils/sessionManager.js";
 import { proxyAwareFetch } from "../utils/proxyFetch.js";
-import { cleanJSONSchemaForAntigravity } from "../translator/formats/gemini.js";
+import { cleanJSONSchemaForAntigravity, normalizeGeminiContents } from "../translator/formats/gemini.js";
 import { DEFAULT_THINKING_AG_SIGNATURE } from "../config/defaultThinkingSignature.js";
 import { getGeminiThoughtSignatureSync } from "../services/thoughtSignatureStore.js";
 
@@ -209,7 +209,7 @@ export class AntigravityExecutor extends BaseExecutor {
 
     // ─── Standard (non-image) request ───
     // Fix contents for Claude models via Antigravity
-    const contents = body.request?.contents?.map(c => {
+    const rawContents = (body.request?.contents || []).map(c => {
       let role = c.role;
       // functionResponse must be role "user" for Claude models
       if (c.parts?.some(p => p.functionResponse)) {
@@ -242,19 +242,17 @@ export class AntigravityExecutor extends BaseExecutor {
         return p;
       });
 
-      const partsChanged = parts?.length !== c.parts?.length || modifiedParts?.some((p, idx) => p !== c.parts[idx]);
-      if (role !== c.role || partsChanged) {
-        return {
-          ...c, role,
-          parts: modifiedParts || parts,
-        };
-      }
-      return c;
+      return {
+        ...c,
+        role,
+        parts: modifiedParts || parts || [],
+      };
     })
     // Drop messages whose parts were stripped to empty (e.g. assistant
     // thinking-only messages with no text/toolCall). Google rejects them
     // with 400 "Request contains an invalid argument".
     ?.filter(c => (c?.parts?.length ?? 0) > 0);
+    const contents = normalizeGeminiContents(rawContents);
 
     // Sanitize tool schemas and function names before sending to Antigravity.
     let tools = body.request?.tools;

@@ -8,7 +8,7 @@ const fixtures = {
 const proxyAwareFetch = vi.fn(async (url) => {
   let body;
   if (url.includes(":loadCodeAssist")) {
-    body = { cloudaicompanionProject: "project-1", currentTier: { name: "Antigravity" } };
+    body = { cloudaicompanionProject: "project-1", currentTier: { name: "Antigravity" }, paidTier: { id: "g1-pro-tier", name: "Google AI Pro" } };
   } else if (url.includes(":retrieveUserQuotaSummary")) {
     if (fixtures.summaryThrows) throw new Error("upstream 429");
     body = fixtures.summary;
@@ -97,10 +97,13 @@ describe("Antigravity grouped quotas (agy /usage parity)", () => {
     const { getAntigravityUsage } = await import("../../open-sse/services/usage/google.js");
     const usage = await getAntigravityUsage("token", {});
 
+    // Per-model keys plus the weekly-overlay keys (upstream weekly feature).
     expect(Object.keys(usage.quotas).sort()).toEqual([
       "claude-sonnet-4-6",
+      "claude_gpt_weekly",
       "gemini-3-flash",
       "gemini-3.7-flash-tiered",
+      "gemini_weekly",
     ]);
   });
 

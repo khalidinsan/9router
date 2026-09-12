@@ -2,7 +2,7 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
 
 const proxyAwareFetch = vi.fn(async (url) => {
   const payload = url.includes(":loadCodeAssist")
-    ? { cloudaicompanionProject: "project-1", currentTier: { name: "Pro" } }
+    ? { cloudaicompanionProject: "project-1", currentTier: { name: "Pro" }, paidTier: { id: "g1-pro-tier", name: "Google AI Pro" } }
     : {
         models: {
           "gemini-3.8-flash-high": {

@@ -5,6 +5,7 @@
 import { CLIENT_METADATA, ANTIGRAVITY_HEADERS, LOAD_CODE_ASSIST_METADATA } from "../../config/appConstants.js";
 import { ANTIGRAVITY_OAUTH_CLIENT } from "../../providers/shared.js";
 import { U, parseResetTime, normalizeCloudCodeProjectId, fetchWithTimeout } from "./shared.js";
+import { fetchAntigravityWeeklyQuota } from "./antigravity-weekly.js";
 
 // Antigravity API config — urls from registry (daily host), CLI fingerprint UA.
 // MITM-verified: agy calls loadCodeAssist/fetchAvailableModels/
@@ -240,12 +241,19 @@ export async function getAntigravityUsage(accessToken, providerSpecificData, pro
       groups = Array.isArray(summaryBody.groups) ? normalizeAntigravityQuotaGroups(summaryBody) : [];
     }
 
-    // Parse model quotas (inspired by vscode-antigravity-cockpit).
+    // Detect tier: free-tier accounts only have weekly quotas (no separate 5h window).
+    // On free-tier, fetchAvailableModels returns misleading per-model quota info
+    // (missing remainingFraction defaults to 0, or reflects the weekly limit not a 5h window).
+    const paidTierId = subscriptionInfo?.paidTier?.id;
+    const isFreeTier = !paidTierId || paidTierId === "free-tier";
+
+    // Parse model quotas only for paid-tier accounts (free-tier skips this —
+    // their only meaningful quota is the weekly limit, see above).
     // NOTE: no hardcoded model filter — upstream renames models over time
     // (e.g. gemini-3.7-flash-high → gemini-3.7-flash-tiered) and a stale list
     // silently drops the models users actually call. All non-internal models
     // with quotaInfo are kept; router lookups ignore unknown keys.
-    if (modelsBody?.models) {
+    if (!isFreeTier && modelsBody?.models) {
       for (const [modelKey, info] of Object.entries(modelsBody.models)) {
         // Skip models without quota info
         if (!info.quotaInfo) {
@@ -280,6 +288,59 @@ export async function getAntigravityUsage(accessToken, providerSpecificData, pro
           displayName: info.displayName || modelKey,
         };
       }
+    }
+
+    // Best-effort weekly quota overlay — never blocks or breaks per-model results.
+    // Always the fixed consumer project (agy behavior); the per-account project
+    // reports a different pool.
+    const projectId = ANTIGRAVITY_CONSUMER_PROJECT;
+    try {
+      const weeklyQuotas = await fetchAntigravityWeeklyQuota(
+        accessToken,
+        projectId,
+        proxyOptions
+      );
+
+      // Reconcile weekly quota against model family status:
+      // If every model in a family is locked/exhausted (remainingPercentage === 0)
+      // until a future reset time, the weekly limit cannot be 100% available.
+      // On Google's Free Starter tier, retrieveUserQuotaSummary buggily reports
+      // remainingFraction: 1 even after the starter quota is depleted and all models 429.
+      const entries = Object.entries(quotas);
+      const geminiModels = entries.filter(([k]) => k.startsWith("gemini-") && !k.includes("image"));
+      const claudeModels = entries.filter(([k]) => k.startsWith("claude-"));
+
+      if (weeklyQuotas.gemini_weekly && geminiModels.length > 0) {
+        const allGeminiExhausted = geminiModels.every(([, q]) => (q.remainingPercentage ?? 0) === 0);
+        if (allGeminiExhausted && weeklyQuotas.gemini_weekly.remainingPercentage > 0) {
+          const maxResetAt = geminiModels.reduce((max, [, q]) =>
+            !max || (q.resetAt && new Date(q.resetAt) > new Date(max)) ? q.resetAt : max, null
+          );
+          weeklyQuotas.gemini_weekly.used = weeklyQuotas.gemini_weekly.total;
+          weeklyQuotas.gemini_weekly.remainingPercentage = 0;
+          if (maxResetAt) {
+            weeklyQuotas.gemini_weekly.resetAt = maxResetAt;
+          }
+        }
+      }
+
+      if (weeklyQuotas.claude_gpt_weekly && claudeModels.length > 0) {
+        const allClaudeExhausted = claudeModels.every(([, q]) => (q.remainingPercentage ?? 0) === 0);
+        if (allClaudeExhausted && weeklyQuotas.claude_gpt_weekly.remainingPercentage > 0) {
+          const maxResetAt = claudeModels.reduce((max, [, q]) =>
+            !max || (q.resetAt && new Date(q.resetAt) > new Date(max)) ? q.resetAt : max, null
+          );
+          weeklyQuotas.claude_gpt_weekly.used = weeklyQuotas.claude_gpt_weekly.total;
+          weeklyQuotas.claude_gpt_weekly.remainingPercentage = 0;
+          if (maxResetAt) {
+            weeklyQuotas.claude_gpt_weekly.resetAt = maxResetAt;
+          }
+        }
+      }
+
+      Object.assign(quotas, weeklyQuotas);
+    } catch {
+      // Silently ignore — weekly is best-effort
     }
 
     return {

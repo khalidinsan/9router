@@ -26,7 +26,11 @@ const modelsBody = {
   },
 };
 
-const subBody = { cloudaicompanionProject: "project-1", currentTier: { name: "Pro" } };
+// No groups → both weekly paths (groups + weekly overlay) are no-ops here;
+// weekly behavior is covered by antigravity-weekly-quota.test.js.
+const summaryBody = {};
+
+const subBody = { cloudaicompanionProject: "project-1", currentTier: { name: "Pro" }, paidTier: { id: "g1-pro-tier", name: "Google AI Pro" } };
 
 const proxyAwareFetch = vi.fn(async (url) => {
   // Guard: vitest's runner occasionally invokes the mock with no args after a
@@ -35,7 +39,7 @@ const proxyAwareFetch = vi.fn(async (url) => {
   if (typeof url !== "string") {
     return { ok: true, status: 200, json: async () => ({}), text: async () => "{}" };
   }
-  const body = url.includes(":loadCodeAssist") ? subBody : modelsBody;
+  const body = url.includes(":loadCodeAssist") ? subBody : url.includes(":retrieveUserQuotaSummary") ? summaryBody : modelsBody;
   const text = JSON.stringify(body);
   return { ok: true, status: 200, json: async () => body, text: async () => text };
 });
@@ -69,11 +73,13 @@ describe("Antigravity quota tracker: Gemini 3.6 Flash usage bars", () => {
       remainingPercentage: 20,
     });
 
-    // The fetcher hits daily loadCodeAssist + models + summary with the CLI UA.
+    // The fetcher hits daily loadCodeAssist + models + summary (ours) + the
+    // weekly-overlay summary read (upstream) with the CLI UA.
     const urls = proxyAwareFetch.mock.calls.map(([u]) => u).filter((u) => typeof u === "string");
     expect(urls).toEqual([
       expect.stringContaining(":loadCodeAssist"),
       expect.stringContaining(":fetchAvailableModels"),
+      expect.stringContaining(":retrieveUserQuotaSummary"),
       expect.stringContaining(":retrieveUserQuotaSummary"),
     ]);
     expect(urls.every((u) => u.startsWith("https://daily-cloudcode-pa.googleapis.com/"))).toBe(true);

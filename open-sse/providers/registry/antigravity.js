@@ -62,6 +62,7 @@ export default {
       // {"project":"aicode-consumers"}. PROD returns a different pool
       // (weekly 100% vs agy's 68%), so quota must not be read there.
       quotaApiUrl: `${ANTIGRAVITY_IDE_BASE_URL}/v1internal:fetchAvailableModels`,
+      quotaSummaryApiUrl: `${ANTIGRAVITY_IDE_BASE_URL}/v1internal:retrieveUserQuotaSummary`,
       loadProjectApiUrl: "https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist",
       tokenUrl: "https://oauth2.googleapis.com/token",
     },

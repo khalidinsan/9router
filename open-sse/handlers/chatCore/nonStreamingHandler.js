@@ -7,6 +7,7 @@ import { createErrorResult } from "../../utils/error.js";
 import { HTTP_STATUS } from "../../config/runtimeConfig.js";
 import { parseSSEToOpenAIResponse } from "./sseToJsonHandler.js";
 import { normalizeKimiToolCalls } from "../../utils/kimiToolParser.js";
+import { unwrapClineEnvelope } from "../../shared/clineEnvelope.js";
 import { buildRequestDetail, extractRequestConfig, extractUsageFromResponse, saveUsageStats, formatDoneLine } from "./requestDetail.js";
 import { appendRequestLog, saveRequestDetail } from "@/lib/usageDb.js";
 import { decloakToolNames } from "../../utils/claudeCloaking.js";
@@ -305,11 +306,10 @@ export async function handleNonStreamingResponse({ providerResponse, provider, m
     }
   }
 
-  // Cline / ClinePass wrap the OpenAI completion in `{ data: { choices: [...] }, success: true }`.
-  // Unwrap it so downstream code sees the standard OpenAI shape.
-  if ((provider === "cline" || provider === "clinepass") && responseBody?.data && responseBody?.success === true) {
-    responseBody = responseBody.data;
-  }
+  // Unwrap before any consumer reads choices/usage so non-stream clients get a
+  // bare OpenAI body and usage tracking sees data.usage. No-op unless the
+  // provider opts in via transport.quirks.clineEnvelope.
+  responseBody = unwrapClineEnvelope(responseBody, provider);
 
   reqLogger.logProviderResponse(providerResponse.status, providerResponse.statusText, providerResponse.headers, responseBody);
   if (onRequestSuccess) {

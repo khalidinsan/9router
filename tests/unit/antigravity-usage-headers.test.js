@@ -5,8 +5,10 @@ const proxyAwareFetch = vi.fn(async (url) => ({
   ok: true,
   status: 200,
   json: async () => url.includes(":loadCodeAssist")
-    ? { cloudaicompanionProject: "project-1", currentTier: { name: "Pro" } }
-    : { models: {} },
+    ? { cloudaicompanionProject: "project-1", currentTier: { name: "Pro" }, paidTier: { id: "g1-pro-tier", name: "Google AI Pro" } }
+    : url.includes(":retrieveUserQuotaSummary")
+      ? { groups: [] }
+      : { models: {} },
   text: async () => "{}",
 }));
 
@@ -24,8 +26,9 @@ describe("Antigravity usage headers", () => {
 
     await getAntigravityUsage("access-token", {});
 
-    // loadCodeAssist + fetchAvailableModels + retrieveUserQuotaSummary
-    expect(proxyAwareFetch).toHaveBeenCalledTimes(3);
+    // loadCodeAssist + fetchAvailableModels + retrieveUserQuotaSummary (ours)
+    // + the weekly-overlay summary read (upstream)
+    expect(proxyAwareFetch).toHaveBeenCalledTimes(4);
     const urls = proxyAwareFetch.mock.calls.map(([url]) => url);
     expect(urls.some((u) => u.includes(":retrieveUserQuotaSummary"))).toBe(true);
     for (const [, options] of proxyAwareFetch.mock.calls) {
