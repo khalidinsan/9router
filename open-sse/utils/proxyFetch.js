@@ -111,6 +111,36 @@ const GOOGLE_DNS_SERVERS = ["8.8.8.8", "8.8.4.4"];
 const HTTPS_PORT = 443;
 const HTTP_SUCCESS_MIN = 200;
 const HTTP_SUCCESS_MAX = 300;
+// Connect deadline for the manual MITM-bypass socket. Without it a black-holed
+// address hangs the request forever; BaseExecutor's timeoutMs cannot help
+// because no Response object exists yet for it to abort.
+const MITM_CONNECT_TIMEOUT_MS = 8000;
+// IPv4/IPv6 addresses proven dead per hostname, so the next request skips them.
+// TTL-bounded: a network change must not blacklist a family permanently.
+const DEAD_ADDRESS_TTL_MS = 5 * 60 * 1000;
+const deadAddresses = new Map(); // hostname -> { ip, expiresAt }
+
+function markAddressDead(hostname, ip) {
+  if (hostname && ip) deadAddresses.set(hostname, { ip, expiresAt: Date.now() + DEAD_ADDRESS_TTL_MS });
+}
+
+function isAddressDead(hostname, ip) {
+  const entry = deadAddresses.get(hostname);
+  if (!entry) return false;
+  if (Date.now() > entry.expiresAt) { deadAddresses.delete(hostname); return false; }
+  return entry.ip === ip;
+}
+
+// Exported for tests only
+export function _clearDeadAddresses() {
+  deadAddresses.clear();
+}
+export function _isAddressDead(hostname, ip) {
+  return isAddressDead(hostname, ip);
+}
+export function _mitmConnectTimeoutMs() {
+  return MITM_CONNECT_TIMEOUT_MS;
+}
 
 function normalizeString(value) {
   if (value === undefined || value === null) return "";
@@ -118,11 +148,15 @@ function normalizeString(value) {
 }
 
 /**
- * Resolve real IP using Google DNS (bypass system DNS)
+ * Resolve a hostname to candidate IPs, both families, in preference order.
+ *
+ * IPv6 is tried first when available: hard-coded IPv4-only resolution was the
+ * cause of multi-minute hangs — a host can have perfectly healthy AAAA records
+ * while its A records are black-holed from the current network.
  */
-async function resolveRealIP(hostname) {
+async function resolveRealIPs(hostname) {
   const cached = DNS_CACHE.get(hostname);
-  if (cached && Date.now() < cached.expiry) return cached.ip;
+  if (cached && Date.now() < cached.expiry) return cached.ips;
 
   try {
     const dns = await import("dns");
@@ -130,9 +164,25 @@ async function resolveRealIP(hostname) {
     const resolver = new dns.Resolver();
     resolver.setServers(GOOGLE_DNS_SERVERS);
     const resolve4 = promisify(resolver.resolve4.bind(resolver));
-    const addresses = await resolve4(hostname);
-    DNS_CACHE.set(hostname, { ip: addresses[0], expiry: Date.now() + MEMORY_CONFIG.dnsCacheTtlMs });
-    return addresses[0];
+    const resolve6 = promisify(resolver.resolve6.bind(resolver));
+
+    const [v4, v6] = await Promise.all([
+      resolve4(hostname).catch(() => []),
+      resolve6(hostname).catch(() => []),
+    ]);
+
+    const ips = [
+      ...(v6 || []).slice(0, 2),
+      ...(v4 || []).slice(0, 2),
+    ].filter((ip) => !isAddressDead(hostname, ip));
+
+    if (ips.length === 0) {
+      console.warn(`[ProxyFetch] no usable address for ${hostname} (all candidates known-dead)`);
+      return null;
+    }
+
+    DNS_CACHE.set(hostname, { ips, expiry: Date.now() + MEMORY_CONFIG.dnsCacheTtlMs });
+    return ips;
   } catch (error) {
     console.warn(`[ProxyFetch] DNS resolve failed for ${hostname}:`, error.message);
     return null;
@@ -234,6 +284,11 @@ async function getDispatcher(proxyUrl) {
 
 /**
  * Create HTTPS request with manual socket connection (bypass DNS)
+ *
+ * A pinned address can be unreachable while the host is perfectly healthy
+ * (observed: Google's A records time out from some networks, AAAA works in
+ * ~30ms). Every attempt therefore carries a hard connect deadline, and a
+ * dead address is remembered so the next call tries the other family first.
  */
 async function createBypassRequest(parsedUrl, realIP, options) {
   const httpsModule = await import("https");
@@ -242,10 +297,38 @@ async function createBypassRequest(parsedUrl, realIP, options) {
   const https = httpsModule.default ?? httpsModule;
   const net = netModule.default ?? netModule;
 
+  // A caller-supplied abort must also tear down the socket, not just the request.
+  const callerSignal = options?.signal;
+  if (callerSignal?.aborted) throw callerSignal.reason ?? new Error("Aborted");
+
   return new Promise((resolve, reject) => {
     const socket = new net.Socket();
+    let settled = false;
+
+    const fail = (error) => {
+      if (settled) return;
+      settled = true;
+      try { socket.destroy(); } catch { /* ignore */ }
+      reject(error);
+    };
+
+    // Hard deadline: without this a black-holed address hangs the request
+    // forever (the request-level timeoutMs in BaseExecutor never fires because
+    // no response object exists yet to abort).
+    const connectTimer = setTimeout(
+      () => fail(new Error(`connect timeout after ${MITM_CONNECT_TIMEOUT_MS}ms to ${realIP}`)),
+      MITM_CONNECT_TIMEOUT_MS
+    );
+    const onAbort = () => fail(callerSignal?.reason ?? new Error("Aborted"));
+    callerSignal?.addEventListener?.("abort", onAbort, { once: true });
+
+    const cleanup = () => {
+      clearTimeout(connectTimer);
+      callerSignal?.removeEventListener?.("abort", onAbort);
+    };
 
     socket.connect(HTTPS_PORT, realIP, () => {
+      clearTimeout(connectTimer);
       const reqOptions = {
         socket,
         // SNI + cert hostname are validated against the hostname the caller
@@ -264,6 +347,9 @@ async function createBypassRequest(parsedUrl, realIP, options) {
       };
 
       const req = https.request(reqOptions, (res) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
         const response = {
           ok: res.statusCode >= HTTP_SUCCESS_MIN && res.statusCode < HTTP_SUCCESS_MAX,
           status: res.statusCode,
@@ -280,14 +366,14 @@ async function createBypassRequest(parsedUrl, realIP, options) {
         resolve(response);
       });
 
-      req.on("error", reject);
+      req.on("error", (e) => { cleanup(); fail(e); });
       if (options.body) {
         req.write(typeof options.body === "string" ? options.body : JSON.stringify(options.body));
       }
       req.end();
     });
 
-    socket.on("error", reject);
+    socket.on("error", (e) => { cleanup(); fail(e); });
   });
 }
 
@@ -324,13 +410,29 @@ export async function proxyAwareFetch(url, options = {}, proxyOptions = null) {
         console.warn(`[ProxyFetch] Proxy failed, falling back to direct bypass: ${proxyError.message}`);
       }
     }
-    // No proxy — manually resolve real IP to bypass DNS spoof
-    try {
-      const parsedUrl = new URL(targetUrl);
-      const realIP = await resolveRealIP(parsedUrl.hostname);
-      if (realIP) return await createBypassRequest(parsedUrl, realIP, options);
-    } catch (error) {
-      console.warn(`[ProxyFetch] MITM bypass failed: ${error.message}`);
+    // No proxy — manually resolve real IP to bypass DNS spoof.
+    // Try each candidate address in turn; a dead family must not hang the request.
+    const parsedUrl = new URL(targetUrl);
+    const ips = await resolveRealIPs(parsedUrl.hostname);
+    if (ips?.length) {
+      let lastError = null;
+      for (const ip of ips) {
+        try {
+          return await createBypassRequest(parsedUrl, ip, options);
+        } catch (error) {
+          lastError = error;
+          // A connect timeout / refused connection proves this address is
+          // unreachable; remember it so the next request starts elsewhere.
+          if (/connect timeout|ECONNREFUSED|EHOSTUNREACH|ENETUNREACH|ETIMEDOUT/i.test(error.message)) {
+            markAddressDead(parsedUrl.hostname, ip);
+            console.warn(`[ProxyFetch] MITM bypass: ${ip} unreachable (${error.message}); trying next address`);
+            continue;
+          }
+          console.warn(`[ProxyFetch] MITM bypass failed: ${error.message}`);
+          break;
+        }
+      }
+      if (lastError) console.warn(`[ProxyFetch] MITM bypass exhausted for ${parsedUrl.hostname}: ${lastError.message}`);
     }
   }
 
