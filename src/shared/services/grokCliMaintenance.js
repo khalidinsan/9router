@@ -10,6 +10,7 @@
 import {
   getProviderConnections,
   updateProviderConnection,
+  deleteProviderConnection,
 } from "@/lib/localDb";
 import {
   shouldRefreshCredentials,
@@ -25,6 +26,12 @@ import {
 } from "open-sse/services/usage/grok-cli.js";
 import { sumConnectionTokensSince } from "@/lib/usageDb";
 import { resolveConnectionProxyConfig } from "@/lib/network/connectionProxy";
+import {
+  probeGrokCliAccountQuality,
+  GROK_CLI_QUALITY_PROBE_NUMBER,
+  GROK_CLI_QUALITY_PROBE_PROMPT,
+  GROK_CLI_DEGRADED_STATUS,
+} from "@/shared/services/grokCliQuality";
 
 const g = (global.__grokCliMaintenance ??= {
   interval: null,
@@ -196,6 +203,107 @@ async function billingSnapshotOne(conn) {
   }
 }
 
+/**
+ * Sweep connections for the 407 degradation and act on the verdict.
+ *
+ * `deleteProviderConnection` is only ever called for definitively degraded
+ * accounts (HTTP 200 + wrong digits). Accounts that merely errored, timed out,
+ * or were unreachable are left alone — they may recover, and the quality probe
+ * cannot prove they are bad.
+ *
+ * Disabled by default: this spends real inference quota and deletes rows. Turn
+ * it on with GROK_CLI_QUALITY_SWEEP=1.
+ *
+ * @param {{ limit?: number, dryRun?: boolean, purge?: boolean, log?: Console }} [options]
+ */
+export async function sweepGrokCliAccountQuality(options = {}) {
+  const { limit = 3, dryRun = false, purge = false, log = console } = options;
+  const connections = (await getProviderConnections({ provider: "grok-cli", isActive: true }))
+    .filter((c) => c.accessToken)
+    .slice(0, limit);
+
+  const summary = {
+    probed: 0,
+    ok: 0,
+    degraded: 0,
+    inconclusive: 0,
+    blocked: 0,
+    deleted: 0,
+    degradedEmails: [],
+  };
+
+  for (const conn of connections) {
+    const probe = await probeGrokCliAccountQuality(conn);
+    summary.probed += 1;
+
+    if (probe.ok) {
+      summary.ok += 1;
+      continue;
+    }
+
+    // One observation is never enough to delete an account. A degraded account
+    // must reproduce the wrong number on a second, independent turn.
+    if (!probe.wrong) {
+      summary.inconclusive += 1;
+      log.warn(
+        `[GrokMaint] quality inconclusive ${conn.email || conn.id}: ${probe.error || `digits=${probe.digits}`}`
+      );
+      continue;
+    }
+
+    const confirm = await probeGrokCliAccountQuality(conn);
+    if (!confirm.wrong || confirm.digits !== probe.digits) {
+      summary.inconclusive += 1;
+      log.warn(
+        `[GrokMaint] quality inconclusive ${conn.email || conn.id}: `
+          + `first=${probe.digits} confirm=${confirm.digits || "none"}`
+      );
+      continue;
+    }
+
+    summary.degraded += 1;
+    summary.degradedEmails.push(conn.email || conn.id);
+    log.warn(
+      `[GrokMaint] DEGRADED ${conn.email || conn.id}: print ${GROK_CLI_QUALITY_PROBE_NUMBER} -> ${probe.digits}`
+    );
+
+    if (dryRun) continue;
+
+    if (purge) {
+      try {
+        await deleteProviderConnection(conn.id);
+        summary.deleted += 1;
+      } catch (e) {
+        log.error(`[GrokMaint] delete failed ${conn.email || conn.id}: ${e.message}`);
+      }
+      continue;
+    }
+
+    // Without purge, block the account instead of deleting it. The basic reprobe
+    // only checks reachability, which a degraded account passes — so without this
+    // flag it would be silently re-enabled.
+    try {
+      await updateProviderConnection(conn.id, {
+        isActive: false,
+        testStatus: GROK_CLI_DEGRADED_STATUS,
+        lastError: `degraded account: ${GROK_CLI_QUALITY_PROBE_PROMPT} -> ${probe.digits}`,
+        lastErrorAt: new Date().toISOString(),
+        providerSpecificData: {
+          ...(conn.providerSpecificData || {}),
+          degradedAccount: true,
+          degradedAt: new Date().toISOString(),
+          degradedProbeDigits: probe.digits,
+        },
+      });
+      summary.blocked += 1;
+    } catch (e) {
+      log.error(`[GrokMaint] block failed ${conn.email || conn.id}: ${e.message}`);
+    }
+  }
+
+  return summary;
+}
+
 export async function runGrokCliMaintenanceTick() {
   if (g.running) return;
   g.running = true;
@@ -250,11 +358,23 @@ export async function runGrokCliMaintenanceTick() {
       if (r.ok) billed += 1;
     }
 
-    // Background auto re-probe is OFF — use dashboard "Reprobe disabled" (pick model + one-by-one).
-    // Uncomment later if needed; concurrent auto-probe + live traffic caused pin/fallback chaos.
-    if (refreshed || billed) {
+    // Quality sweep: only when explicitly enabled, and bounded per tick. The
+    // canary script (scripts/grok-cli-canary.mjs) remains the bulk tool; this
+    // exists so the pool self-heals between manual runs.
+    let quality = null;
+    if (process.env.GROK_CLI_QUALITY_SWEEP === "1") {
+      const purge = process.env.GROK_CLI_QUALITY_PURGE === "1";
+      const limit = Number(process.env.GROK_CLI_QUALITY_SWEEP_LIMIT) || 3;
+      quality = await sweepGrokCliAccountQuality({ limit, purge, dryRun: !purge });
+    }
+
+    if (refreshed || billed || quality?.probed) {
+      const qualityNote = quality
+        ? ` quality=${quality.ok}ok/${quality.degraded}degraded/${quality.inconclusive}inconclusive`
+          + (quality.deleted ? ` deleted=${quality.deleted}` : "")
+        : "";
       console.log(
-        `[GrokMaint] tick: refreshed=${refreshed} billingSnapshots=${billed} pool=${stillActive.length}`
+        `[GrokMaint] tick: refreshed=${refreshed} billingSnapshots=${billed} pool=${stillActive.length}${qualityNote}`
       );
     }
   } catch (e) {

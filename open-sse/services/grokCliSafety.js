@@ -103,7 +103,10 @@ export function checkGrokCli402Circuit(now = Date.now()) {
 export function isGrokCliHardBlocked(conn) {
   const psd = conn?.providerSpecificData || {};
   return psd.reauthRequired === true || psd.quotaExhausted === true ||
-    ["quota_exhausted", "permission_denied", "reauth_required"].includes(conn?.testStatus);
+    // Reachable but answers `print 407` with the wrong digits (see grokCliQuality).
+    psd.degradedAccount === true ||
+    ["quota_exhausted", "permission_denied", "reauth_required", "degraded_account"]
+      .includes(conn?.testStatus);
 }
 
 function cleanProviderData(conn, extra = {}) {

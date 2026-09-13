@@ -202,12 +202,22 @@ async function gradeAccount(account) {
   const number = CANARY_NUMBER;
 
   const echo = await callUpstream(account, baseBody(userMessage(`print ${number}`)));
-  const echoDigits = echo.text.replace(/\D/g, "");
+  // Take the FIRST integer in the reply, not every digit squashed together.
+  // Healthy accounts sometimes leak a trailing system-prompt fragment
+  // ("407\n\\confidence{100}"); concatenating all digits made that "407100" and
+  // wrongly flagged a good account as degraded.
+  const echoDigits = (echo.text.match(/\d+/) || [""])[0];
   const echoOk = echo.status === 200 && echoDigits === number;
+
   // A definitive defect: upstream answered 200 with real digits, but the wrong
-  // ones. Distinguishes a degraded account from a merely unreachable one — only
-  // this state is eligible for --purge.
-  const echoWrong = echo.status === 200 && echoDigits.length > 0 && echoDigits !== number;
+  // ones. One observation is not enough to delete an account — a degraded
+  // account must reproduce the wrong digit on a second, independent turn.
+  let echoWrong = false;
+  if (echo.status === 200 && echoDigits.length > 0 && echoDigits !== number) {
+    const confirm = await callUpstream(account, baseBody(userMessage(`print ${number}`)));
+    const confirmDigits = (confirm.text.match(/\d+/) || [""])[0];
+    echoWrong = confirm.status === 200 && confirmDigits === echoDigits;
+  }
 
   // Tool calling is flaky per-attempt; grade on how often a real function_call
   // lands. A text description of the call ("call tool X with …") counts as fail.

@@ -22,6 +22,7 @@ import {
   GROK_CLI_PROBE_REFRESHED_CREDENTIALS,
   probeGrokCliConnection,
 } from "@/shared/services/grokCliProbe";
+import { GROK_CLI_DEGRADED_STATUS } from "@/shared/services/grokCliQuality";
 import {
   buildGrokCliAuthoritativeQuotaExhaustedUpdate,
   buildGrokCliManualEnableUpdate,
@@ -56,6 +57,16 @@ export function isGrokCliReprobeCandidate(conn) {
   if (!conn.accessToken && !conn.refreshToken) return false;
   if (conn.providerSpecificData?.reauthRequired === true) return false;
   if (conn.testStatus === "reauth_required") return false;
+
+  // Degraded accounts (wrong digits on `print 407`) pass the reachability probe,
+  // so re-probing them here would silently re-enable a bad account. They are
+  // only cleared by a passing quality probe, never by the reprobe path.
+  if (
+    conn.providerSpecificData?.degradedAccount === true ||
+    conn.testStatus === GROK_CLI_DEGRADED_STATUS
+  ) {
+    return false;
+  }
 
   const st = String(conn.testStatus || "");
   // Auto-disabled by 402/403/quota path
