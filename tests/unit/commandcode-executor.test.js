@@ -132,6 +132,61 @@ describe("inspectAndWrapCommandCodeResponse", () => {
     expect(text).toContain("Hello from Laguna");
     expect(text).toContain("data: [DONE]");
   });
+
+  it("preserves all tool call events and deltas when packed in a single network chunk", async () => {
+    // Pack start, tool-input-start, and multiple tool-input-delta lines into ONE single chunk
+    const singlePacket = [
+      JSON.stringify({ type: "start" }),
+      JSON.stringify({ type: "tool-input-start", id: "call_00_123", toolName: "bash" }),
+      JSON.stringify({ type: "tool-input-delta", id: "call_00_123", delta: "{\"command\": \"cd /Users/khalid" }),
+      JSON.stringify({ type: "tool-input-delta", id: "call_00_123", delta: "/Documents/Code\"}" }),
+      JSON.stringify({ type: "tool-input-end", id: "call_00_123" }),
+      JSON.stringify({ type: "finish", finishReason: "tool-calls" }),
+    ].join("\n") + "\n";
+
+    const ndjsonBody = createNdjsonStream([singlePacket]);
+    const fakeResponse = new Response(ndjsonBody, {
+      status: 200,
+      headers: { "Content-Type": "text/event-stream" },
+    });
+
+    const result = await inspectAndWrapCommandCodeResponse(fakeResponse, "deepseek/deepseek-v4.1-flash");
+    expect(result.ok).toBe(true);
+
+    const text = await result.text();
+    // Must contain the tool call function name
+    expect(text).toContain("bash");
+    // Must contain both parts of the command argument without truncation
+    expect(text).toContain('\\"command\\": \\"cd /Users/khalid');
+    expect(text).toContain('/Documents/Code\\"');
+    expect(text).toContain("data: [DONE]");
+  });
+
+  it("preserves reasoning deltas and tool calls when arriving in the same packet", async () => {
+    const singlePacket = [
+      JSON.stringify({ type: "start" }),
+      JSON.stringify({ type: "reasoning-delta", id: "r1", text: "The" }),
+      JSON.stringify({ type: "reasoning-delta", id: "r1", text: " plan is to run tests" }),
+      JSON.stringify({ type: "tool-input-start", id: "call_00_456", toolName: "bash" }),
+      JSON.stringify({ type: "tool-input-delta", id: "call_00_456", delta: "{\"command\": \"echo hi\"}" }),
+      JSON.stringify({ type: "finish" }),
+    ].join("\n") + "\n";
+
+    const ndjsonBody = createNdjsonStream([singlePacket]);
+    const fakeResponse = new Response(ndjsonBody, {
+      status: 200,
+      headers: { "Content-Type": "text/event-stream" },
+    });
+
+    const result = await inspectAndWrapCommandCodeResponse(fakeResponse, "deepseek/deepseek-v4.1-flash");
+    expect(result.ok).toBe(true);
+
+    const text = await result.text();
+    expect(text).toContain("The");
+    expect(text).toContain(" plan is to run tests");
+    expect(text).toContain("bash");
+    expect(text).toContain("echo hi");
+  });
 });
 
 describe("CommandCode in Combo Fallback", () => {
