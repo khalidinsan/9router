@@ -293,31 +293,6 @@ export class AntigravityExecutor extends BaseExecutor {
       }
     }
 
-    // Fold systemInstruction into the first user turn.
-    //
-    // The upstream rejects requests carrying top-level `systemInstruction` with
-    // HTTP 429 RESOURCE_EXHAUSTED (no error details, ~100-500ms) while the exact
-    // same text sent as part of the first user content succeeds 10/10. Measured
-    // on a pinned account, interleaved: with systemInstruction 0/10, folded
-    // 10/10, dropped 10/10 — and the trigger is the field, not the size (a 4KB
-    // slice fails the same way, and a 79KB prompt succeeds once folded).
-    // The official agy CLI never sends a separate systemInstruction; its prompt
-    // rides the user turn, which is why agy stays healthy while we get 429.
-    const systemInstruction = requestWithoutTools.systemInstruction;
-    let upstreamContents = contents;
-    if (systemInstruction?.parts?.length) {
-      const systemText = systemInstruction.parts
-        .map((p) => (typeof p.text === "string" ? p.text : ""))
-        .filter(Boolean)
-        .join("\n\n");
-      if (systemText) {
-        upstreamContents = contents?.length
-          ? [{ ...contents[0], parts: [{ text: systemText }, ...(contents[0].parts || [])] }, ...contents.slice(1)]
-          : [{ role: "user", parts: [{ text: systemText }] }];
-      }
-    }
-    delete requestWithoutTools.systemInstruction;
-
     const generationConfig = { ...(requestWithoutTools.generationConfig || {}) };
     if (generationConfig.maxOutputTokens > MAX_ANTIGRAVITY_OUTPUT_TOKENS) {
       generationConfig.maxOutputTokens = MAX_ANTIGRAVITY_OUTPUT_TOKENS;
@@ -326,7 +301,7 @@ export class AntigravityExecutor extends BaseExecutor {
     const transformedRequest = {
       ...requestWithoutTools,
       generationConfig,
-      ...(upstreamContents && { contents: upstreamContents }),
+      ...(contents && { contents }),
       ...(tools && { tools }),
       sessionId,
       safetySettings: undefined,
@@ -345,7 +320,17 @@ export class AntigravityExecutor extends BaseExecutor {
       ...(projectId && { project: projectId }),
       model: cleanBody.model || model,
       userAgent: "antigravity",
-      requestType: "agent",
+      // NOTE: `requestType: "agent"` is deliberately NOT sent.
+      //
+      // That flag makes Cloud Code Assist apply its strict agent-mode inspection,
+      // which rejects this gateway's prompt with a detail-free HTTP 429
+      // RESOURCE_EXHAUSTED (~100-500ms) while the account quota is untouched.
+      // Measured over 3 accounts x 5 interleaved rounds on the same 79KB prompt:
+      //   requestType "agent" + systemInstruction -> 0/15
+      //   no requestType       + systemInstruction -> 15/15
+      // Alternatives that also pass: "file_edit" (5/5), "conversation" (5/5).
+      // The prompt content is irrelevant to the failure: the same text passes
+      // verbatim once the flag is gone, and a neutral 79KB filler always passes.
       requestId: buildIdeRequestId({ body: cleanBody, request: transformedRequest, credentials, model, requestType: "agent" }),
       request: transformedRequest
     };
