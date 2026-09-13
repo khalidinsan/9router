@@ -7,20 +7,32 @@
  * Each account is graded on three axes, because a grok-cli account can answer
  * text while being useless for agent work:
  *   1. reachability — HTTP status (402 spending-limit, 403 denied, 429 quota…)
- *   2. instruction following — "print <n>" must echo the digits back
+ *   2. instruction following — `print 407` must echo back "407"
  *   3. tool calling — a dummy tool must produce real function_call items;
  *      grok-4.6 often *describes* the call as text instead, and it is flaky per
  *      attempt, so the probe repeats (--attempts) and scores the hit ratio
  *
- * `print 407` is NOT usable as a canary: xAI's tokenizer substitutes 407 -> 202
- * on every account (verified across farmed + real accounts, two egress IPs and
- * two models), so it fails even on healthy accounts. Use CONTROL_NUMBERS.
+ * `print 407` is THE account-quality discriminator, and it is exact: degraded
+ * accounts answer "202" instead of "407", deterministically, on every attempt.
+ * Verified 2026-09-13 over 108 farmed accounts at effort=xhigh —
+ *   407 -> 407  11 accounts  (always accompanied by a reasoning output item)
+ *   407 -> 202  93 accounts  (never emit a reasoning item)
+ * The correlation is perfect and stable across repeated trials, so a wrong
+ * digit here is a real account defect, not sampling noise. An earlier note in
+ * this file claimed the substitution was universal; that was inferred from a
+ * biased sample of 8 degraded accounts and is wrong.
+ *
+ * Deletion is opt-in and deliberately narrow: --purge removes accounts that
+ * answered with a *definitively wrong digit* (HTTP 200 + wrong number).
+ * Accounts that merely errored, timed out, or were unreachable are never
+ * deleted.
  *
  * Usage:
  *   node scripts/grok-cli-canary.mjs [--limit 10] [--model grok-4.6]
  *                                    [--effort high] [--attempts 3]
  *                                    [--concurrency 4] [--timeout 90]
  *                                    [--include-inactive] [--json]
+ *                                    [--purge]
  *
  * --json streams one NDJSON verdict per line as accounts finish, so a long scan
  * can be tailed live and killing it never discards collected results.
@@ -52,12 +64,15 @@ const attempts = Math.max(1, Math.min(10, Number(value("--attempts", "3")) || 3)
 const concurrency = Math.max(1, Math.min(12, Number(value("--concurrency", "4")) || 4));
 const includeInactive = args.includes("--include-inactive");
 const asJson = args.includes("--json");
+const purge = args.includes("--purge");
 
 const DB_PATH = process.env.NINEROUTER_DB
   || path.join(os.homedir(), ".9router", "db", "data.sqlite");
 const ENDPOINT = "https://cli-chat-proxy.grok.com/v1/responses";
-// Control numbers verified to survive tokenization (unlike 407 -> 202).
-const CONTROL_NUMBERS = ["512", "777", "913"];
+// The one number that separates healthy accounts from degraded ones: degraded
+// accounts deterministically answer "202" instead of "407" (see the header).
+// Non-degraded numbers behave identically on both, so they cannot discriminate.
+const CANARY_NUMBER = "407";
 
 function loadAccounts() {
   const where = includeInactive ? "" : " AND isActive=1";
@@ -184,11 +199,15 @@ const ECHO_TOOL = [{
 }];
 
 async function gradeAccount(account) {
-  const number = CONTROL_NUMBERS[Math.floor(Math.random() * CONTROL_NUMBERS.length)];
+  const number = CANARY_NUMBER;
 
   const echo = await callUpstream(account, baseBody(userMessage(`print ${number}`)));
   const echoDigits = echo.text.replace(/\D/g, "");
   const echoOk = echo.status === 200 && echoDigits === number;
+  // A definitive defect: upstream answered 200 with real digits, but the wrong
+  // ones. Distinguishes a degraded account from a merely unreachable one — only
+  // this state is eligible for --purge.
+  const echoWrong = echo.status === 200 && echoDigits.length > 0 && echoDigits !== number;
 
   // Tool calling is flaky per-attempt; grade on how often a real function_call
   // lands. A text description of the call ("call tool X with …") counts as fail.
@@ -227,7 +246,7 @@ async function gradeAccount(account) {
     account: account.label,
     id: account.id,
     verdict,
-    echo: { ok: echoOk, want: number, got: echo.text.slice(0, 40), status: echo.status, ms: echo.ms, error: echo.error },
+    echo: { ok: echoOk, wrong: echoWrong, want: number, got: echo.text.slice(0, 40), status: echo.status, ms: echo.ms, error: echo.error },
     tools: { hits: toolHits, attempts, rate: toolRate, status: toolStatus, ms: toolMs, error: toolError, observed: observed.slice(0, 2) },
   };
 }
@@ -279,4 +298,36 @@ if (asJson) process.exit(0);
 const tally = results.reduce((acc, r) => { acc[r.verdict] = (acc[r.verdict] || 0) + 1; return acc; }, {});
 console.log(`\nHEALTHY=${tally.HEALTHY || 0} FLAKY=${tally.FLAKY || 0} NO_TOOLS=${tally.NO_TOOLS || 0} DUMB=${tally.DUMB || 0} DEAD=${tally.DEAD || 0}`);
 console.log(`Each account consumed ${1 + attempts} inference calls of real quota.`);
-console.log("Verdicts: HEALTHY = tool calls land >=2/3 · FLAKY = sometimes · NO_TOOLS = never · DUMB = cannot echo a control number · DEAD = upstream refused.");
+console.log("Verdicts: HEALTHY = tool calls land >=2/3 · FLAKY = sometimes · NO_TOOLS = never · DUMB = cannot echo 407 · DEAD = upstream refused.");
+
+if (purge) {
+  // Only definitively-wrong accounts are deleted: 200 + wrong digits. A DEAD
+  // account (402/403/429/timeout) may recover and is left alone.
+  const doomed = results.filter((r) => r.echo.wrong);
+  if (!doomed.length) {
+    console.log("\nPurge: nothing to remove.");
+  } else if (!args.includes("--yes")) {
+    console.log(`\nPurge dry-run — ${doomed.length} account(s) would be deleted. Re-run with --purge --yes to apply:`);
+    for (const r of doomed) console.log(`  ${r.id}  ${r.account}  (print ${r.echo.want} -> ${JSON.stringify(r.echo.got)})`);
+  } else {
+    const backup = `${DB_PATH}.pre-purge-${Date.now()}.bak`;
+    execFileSync("sqlite3", [DB_PATH, `.backup '${backup}'`]);
+    const ids = doomed.map((r) => `'${r.id.replace(/'/g, "''")}'`).join(",");
+    // Renumber priorities afterwards so the pool keeps a contiguous order,
+    // matching deleteProviderConnection()'s reorderInTx behaviour.
+    execFileSync("sqlite3", [DB_PATH, `
+      BEGIN;
+      DELETE FROM providerConnections WHERE id IN (${ids});
+      UPDATE providerConnections SET priority = (
+        SELECT COUNT(*) FROM providerConnections AS p2
+        WHERE p2.provider = providerConnections.provider
+          AND (p2.priority < providerConnections.priority
+               OR (p2.priority = providerConnections.priority
+                   AND p2.updatedAt > providerConnections.updatedAt))
+      ) + 1 WHERE provider = 'grok-cli';
+      COMMIT;
+    `]);
+    console.log(`\nPurge: deleted ${doomed.length} account(s); backup at ${backup}`);
+    for (const r of doomed) console.log(`  ${r.id}  ${r.account}`);
+  }
+}
