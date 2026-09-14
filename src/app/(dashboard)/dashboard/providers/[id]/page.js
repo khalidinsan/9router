@@ -1328,8 +1328,85 @@ export default function ProviderDetailPage() {
     }
   };
 
+  /**
+   * Turn a model on/off for one connection.
+   *
+   * Stores the ALLOWED set in providerSpecificData.enabledModels. Absent/empty
+   * means unrestricted, so a connection that has never been configured keeps
+   * serving every model — and clearing the last remaining "off" toggle restores
+   * that default rather than pinning the account to a one-model list.
+   */
+  const handleToggleAccountModel = async (connectionId, modelId, enabled) => {
+    const conn = connections.find((c) => c.id === connectionId);
+    if (!conn) return;
+
+    const allIds = accountTestModels.map((m) => m.id);
+    const current = Array.isArray(conn.providerSpecificData?.enabledModels)
+      && conn.providerSpecificData.enabledModels.length > 0
+      ? conn.providerSpecificData.enabledModels.filter((id) => allIds.includes(id))
+      : allIds;
+
+    const nextAllowed = enabled
+      ? Array.from(new Set([...current, modelId]))
+      : current.filter((id) => id !== modelId);
+
+    // Every model off is indistinguishable from "unrestricted" in the backend,
+    // which would silently re-enable the whole list. Refuse instead of
+    // pretending it worked.
+    if (nextAllowed.length === 0) {
+      setAccountModelSummary((prev) => ({
+        ...prev,
+        [connectionId]: "Keep at least one model enabled on this account.",
+      }));
+      return;
+    }
+
+    // Optimistic: reflect the toggle immediately, then persist.
+    setConnections((prev) => prev.map((c) => (
+      c.id === connectionId
+        ? { ...c, providerSpecificData: { ...(c.providerSpecificData || {}), enabledModels: nextAllowed } }
+        : c
+    )));
+
+    try {
+      const res = await fetch(`/api/providers/${connectionId}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          providerSpecificData: { enabledModels: nextAllowed },
+        }),
+      });
+      if (!res.ok) throw new Error("Failed to save");
+      await refreshConnectionsQuiet();
+    } catch (e) {
+      setAccountModelSummary((prev) => ({
+        ...prev,
+        [connectionId]: e.message || "Failed to update model access",
+      }));
+      await refreshConnectionsQuiet();
+    }
+  };
+
   const handleAccountTestAllModels = async (connectionId) => {
     if (accountModelTestingAll[connectionId]) return;
+
+    // Only test models this account may actually serve. Testing a model the
+    // user switched off can only produce a misleading failure.
+    const conn = connections.find((c) => c.id === connectionId);
+    const allowed = conn?.providerSpecificData?.enabledModels;
+    const restricted = Array.isArray(allowed) && allowed.length > 0;
+    const testable = restricted
+      ? accountTestModels.filter((m) => allowed.includes(m.id))
+      : accountTestModels;
+
+    if (testable.length === 0) {
+      setAccountModelSummary((prev) => ({
+        ...prev,
+        [connectionId]: "No models are enabled on this account.",
+      }));
+      return;
+    }
+
     setAccountModelTestingAll((prev) => ({ ...prev, [connectionId]: true }));
     setAccountModelSummary((prev) => ({ ...prev, [connectionId]: "" }));
     try {
@@ -1337,7 +1414,7 @@ export default function ProviderDetailPage() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          models: accountTestModels.map((m) => m.id),
+          models: testable.map((m) => m.id),
           concurrency: 3,
         }),
       });
@@ -1408,7 +1485,16 @@ export default function ProviderDetailPage() {
                 } : null}
                 modelTestPanel={{
                   open: accountModelTestOpenId === conn.id,
-                  models: accountTestModels,
+                  // Mark each model with whether THIS connection may serve it,
+                  // so the panel can render the per-account toggle. Absent
+                  // enabledModels means unrestricted → everything on.
+                  models: (() => {
+                    const allowed = conn.providerSpecificData?.enabledModels;
+                    const restricted = Array.isArray(allowed) && allowed.length > 0;
+                    return restricted
+                      ? accountTestModels.map((m) => ({ ...m, enabled: allowed.includes(m.id) }))
+                      : accountTestModels.map((m) => ({ ...m, enabled: true }));
+                  })(),
                   results: accountModelResults[conn.id] || {},
                   testing: accountModelTesting[conn.id] || {},
                   testingAll: !!accountModelTestingAll[conn.id],
@@ -1419,6 +1505,8 @@ export default function ProviderDetailPage() {
                     ),
                   onTestModel: (modelId) => handleAccountTestModel(conn.id, modelId),
                   onTestAll: () => handleAccountTestAllModels(conn.id),
+                  onToggleModel: (modelId, enabled) =>
+                    handleToggleAccountModel(conn.id, modelId, enabled),
                 }}
                 onUpdateProxy={async (proxyPoolId) => {
                   try {

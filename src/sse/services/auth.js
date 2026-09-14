@@ -11,6 +11,7 @@ import {
   formatRetryAfter,
   checkFallbackError,
   isModelLockActive,
+  isModelAllowedOnConnection,
   buildModelLockUpdate,
   getEarliestModelLockUntil,
   isGrokCliChatPermissionDenied,
@@ -171,9 +172,17 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
     // pick like any other active account; only drop after real request errors
     // (403 chat, quota, reauth).
     let skippedHard = 0;
+    let skippedByAllowlist = 0;
     const availableConnections = connections.filter((c) => {
       if (excludeSet.has(c.id)) return false;
       if (isModelLockActive(c, model)) return false;
+      // Standing per-account restriction ("this account is DeepSeek only").
+      // Rotating to another account that also allows the model still works —
+      // this only skips accounts the user has excluded for that model.
+      if (!isModelAllowedOnConnection(c, model)) {
+        skippedByAllowlist += 1;
+        return false;
+      }
       const psd = c.providerSpecificData || {};
       if (isGrokCli && !useAllForReprobe && isGrokCliHardBlocked(c)) {
         skippedHard += 1;
@@ -238,6 +247,7 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
       // Helpful reason when rows exist but all hard-filtered (quota/reauth/etc.)
       const reasons = [];
       if (skippedHard > 0) reasons.push(`${skippedHard} reauth/quota/denied`);
+      if (skippedByAllowlist > 0) reasons.push(`${skippedByAllowlist} model-not-allowed`);
       const lockedN = connections.filter((c) => isModelLockActive(c, model)).length;
       if (lockedN > 0) reasons.push(`${lockedN} model-locked`);
       log.warn(

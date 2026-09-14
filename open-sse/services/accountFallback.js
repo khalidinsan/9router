@@ -459,11 +459,39 @@ export function isModelLockActive(connection, model) {
 }
 
 /**
+ * Is `model` permitted on this connection?
+ *
+ * This is the user's standing preference — "account A is for DeepSeek only" —
+ * and is distinct from a model lock, which the router sets itself as a
+ * temporary cooldown after an upstream error. Both must be satisfied to pick an
+ * account.
+ *
+ * Allowlist semantics, and absent means unrestricted:
+ *   - no `enabledModels` field at all  → every model allowed (default for a
+ *     connection that has never been configured)
+ *   - `enabledModels: []`              → also unrestricted, so that turning
+ *     every toggle off cannot silently strand an account with no models
+ *   - `enabledModels: [...]`           → only those ids
+ *
+ * Storing the ALLOWED set (rather than the blocked one) means a model added
+ * upstream later is usable everywhere by default, instead of being silently
+ * enabled on accounts the user never intended to grant it to.
+ *
+ * Callers that pass no model (a bare connectivity probe) are never filtered —
+ * the restriction is about which model may run, not whether the account works.
+ */
+export function isModelAllowedOnConnection(connection, model) {
+  if (!model) return true;
+  const enabled = connection?.providerSpecificData?.enabledModels;
+  if (!Array.isArray(enabled) || enabled.length === 0) return true;
+  return enabled.includes(model);
+}
+
+/**
  * Get earliest active model lock expiry across all modelLock_* fields.
  * Used for UI cooldown display.
  */
 export function getEarliestModelLockUntil(connection) {
-  if (!connection) return null;
   let earliest = null;
   const now = Date.now();
   for (const [key, val] of Object.entries(connection)) {

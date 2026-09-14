@@ -365,7 +365,9 @@ export default function ConnectionRow({
               return (
                 <div
                   key={m.id}
-                  className="flex min-w-0 items-center gap-2 rounded-md px-1.5 py-1 hover:bg-black/[0.03] dark:hover:bg-white/[0.03]"
+                  className={`flex min-w-0 items-center gap-2 rounded-md px-1.5 py-1 hover:bg-black/[0.03] dark:hover:bg-white/[0.03] ${
+                    m.enabled === false ? "opacity-50" : ""
+                  }`}
                 >
                   <span className={`material-symbols-outlined shrink-0 text-[16px] ${statusColor}`}>
                     {testing
@@ -399,6 +401,20 @@ export default function ConnectionRow({
                   >
                     Test
                   </button>
+                  {/* Per-account model restriction: off means the router will
+                      not select this account for that model. Default is on. */}
+                  {modelTestPanel.onToggleModel && (
+                    <Toggle
+                      size="sm"
+                      checked={m.enabled !== false}
+                      onChange={(next) => modelTestPanel.onToggleModel(m.id, next)}
+                      title={
+                        m.enabled !== false
+                          ? `Disable "${m.id}" on this account`
+                          : `Enable "${m.id}" on this account`
+                      }
+                    />
+                  )}
                 </div>
               );
             })}
