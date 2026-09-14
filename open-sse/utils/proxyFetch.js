@@ -118,25 +118,63 @@ const MITM_CONNECT_TIMEOUT_MS = 8000;
 // IPv4/IPv6 addresses proven dead per hostname, so the next request skips them.
 // TTL-bounded: a network change must not blacklist a family permanently.
 const DEAD_ADDRESS_TTL_MS = 5 * 60 * 1000;
-const deadAddresses = new Map(); // hostname -> { ip, expiresAt }
+const deadAddresses = new Map(); // hostname -> Map(ip -> expiresAt)
+// Family-level routing failures, tracked separately from per-address ones.
+// EHOSTUNREACH/ENETUNREACH means there is no route to ANY address of that
+// family, so trying a second address from it only burns another connect
+// deadline — while a timeout on one IPv4 address says nothing about the next.
+const deadFamilies = new Map(); // hostname -> Map(6|4 -> expiresAt)
+
+function ipFamily(ip) {
+  return String(ip).includes(":") ? 6 : 4;
+}
 
 function markAddressDead(hostname, ip) {
-  if (hostname && ip) deadAddresses.set(hostname, { ip, expiresAt: Date.now() + DEAD_ADDRESS_TTL_MS });
+  if (!hostname || !ip) return;
+  let perHost = deadAddresses.get(hostname);
+  if (!perHost) { perHost = new Map(); deadAddresses.set(hostname, perHost); }
+  perHost.set(ip, Date.now() + DEAD_ADDRESS_TTL_MS);
+}
+
+function markFamilyDead(hostname, ip) {
+  if (!hostname || !ip) return;
+  let perHost = deadFamilies.get(hostname);
+  if (!perHost) { perHost = new Map(); deadFamilies.set(hostname, perHost); }
+  perHost.set(ipFamily(ip), Date.now() + DEAD_ADDRESS_TTL_MS);
+}
+
+function isFamilyDead(hostname, family) {
+  const perHost = deadFamilies.get(hostname);
+  if (!perHost) return false;
+  const expiry = perHost.get(family);
+  if (!expiry) return false;
+  if (Date.now() > expiry) { perHost.delete(family); return false; }
+  return true;
 }
 
 function isAddressDead(hostname, ip) {
-  const entry = deadAddresses.get(hostname);
-  if (!entry) return false;
-  if (Date.now() > entry.expiresAt) { deadAddresses.delete(hostname); return false; }
-  return entry.ip === ip;
+  if (isFamilyDead(hostname, ipFamily(ip))) return true;
+  const perHost = deadAddresses.get(hostname);
+  if (!perHost) return false;
+  const expiry = perHost.get(ip);
+  if (!expiry) return false;
+  if (Date.now() > expiry) { perHost.delete(ip); return false; }
+  return true;
 }
 
 // Exported for tests only
 export function _clearDeadAddresses() {
   deadAddresses.clear();
+  deadFamilies.clear();
 }
 export function _isAddressDead(hostname, ip) {
   return isAddressDead(hostname, ip);
+}
+export function _markFamilyDead(hostname, ip) {
+  markFamilyDead(hostname, ip);
+}
+export function _isFamilyDead(hostname, family) {
+  return isFamilyDead(hostname, family);
 }
 export function _mitmConnectTimeoutMs() {
   return MITM_CONNECT_TIMEOUT_MS;
@@ -150,9 +188,12 @@ function normalizeString(value) {
 /**
  * Resolve a hostname to candidate IPs, both families, in preference order.
  *
- * IPv6 is tried first when available: hard-coded IPv4-only resolution was the
- * cause of multi-minute hangs — a host can have perfectly healthy AAAA records
- * while its A records are black-holed from the current network.
+ * IPv4 leads. An earlier version put IPv6 first on the theory that a
+ * black-holed A record could take the provider down — but the far more common
+ * shape is a host with no IPv6 route at all (EHOSTUNREACH on every AAAA),
+ * which costs a full connect deadline per address before IPv4 is even tried.
+ * A timeout on an IPv4 address still falls through to IPv6, so a genuinely
+ * black-holed A record is handled either way.
  */
 async function resolveRealIPs(hostname) {
   const cached = DNS_CACHE.get(hostname);
@@ -172,8 +213,8 @@ async function resolveRealIPs(hostname) {
     ]);
 
     const ips = [
-      ...(v6 || []).slice(0, 2),
       ...(v4 || []).slice(0, 2),
+      ...(v6 || []).slice(0, 2),
     ].filter((ip) => !isAddressDead(hostname, ip));
 
     if (ips.length === 0) {
@@ -421,14 +462,24 @@ export async function proxyAwareFetch(url, options = {}, proxyOptions = null) {
           return await createBypassRequest(parsedUrl, ip, options);
         } catch (error) {
           lastError = error;
-          // A connect timeout / refused connection proves this address is
-          // unreachable; remember it so the next request starts elsewhere.
-          if (/connect timeout|ECONNREFUSED|EHOSTUNREACH|ENETUNREACH|ETIMEDOUT/i.test(error.message)) {
+          const msg = String(error?.message || "");
+          // EHOSTUNREACH/ENETUNREACH is a routing verdict: this host has no
+          // route to that whole family, so the next address from it will fail
+          // identically. Remember the family and skip the rest of it.
+          if (/EHOSTUNREACH|ENETUNREACH|EAFNOSUPPORT|EADDRNOTAVAIL/i.test(msg)) {
+            markFamilyDead(parsedUrl.hostname, ip);
             markAddressDead(parsedUrl.hostname, ip);
-            console.warn(`[ProxyFetch] MITM bypass: ${ip} unreachable (${error.message}); trying next address`);
+            console.warn(`[ProxyFetch] MITM bypass: ${ip} unreachable (no route for IPv${ipFamily(ip)}); skipping family`);
             continue;
           }
-          console.warn(`[ProxyFetch] MITM bypass failed: ${error.message}`);
+          // A connect timeout / refused connection proves only THIS address
+          // unreachable — a sibling from the same family may still work.
+          if (/connect timeout|ECONNREFUSED|ETIMEDOUT/i.test(msg)) {
+            markAddressDead(parsedUrl.hostname, ip);
+            console.warn(`[ProxyFetch] MITM bypass: ${ip} unreachable (${msg}); trying next address`);
+            continue;
+          }
+          console.warn(`[ProxyFetch] MITM bypass failed: ${msg}`);
           break;
         }
       }

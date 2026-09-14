@@ -10,6 +10,8 @@ import net from "net";
 import {
   _clearDeadAddresses,
   _isAddressDead,
+  _isFamilyDead,
+  _markFamilyDead,
   _mitmConnectTimeoutMs,
 } from "../../open-sse/utils/proxyFetch.js";
 
@@ -63,5 +65,31 @@ describe("proxyFetch MITM bypass address handling", () => {
     // consulted, a black-holed A record would take the whole provider down.
     expect(v4.length).toBeGreaterThan(0);
     expect(v6.length).toBeGreaterThan(0);
+  });
+
+  // A host with no IPv6 route fails EVERY AAAA with EHOSTUNREACH. Trying a
+  // second AAAA after that only burns another connect deadline, so the whole
+  // family is retired at once.
+  it("retires a whole family after a routing failure, not just one address", () => {
+    expect(_isFamilyDead(HOST, 6)).toBe(false);
+    _markFamilyDead(HOST, "2001:4860:4841:400::");
+    expect(_isFamilyDead(HOST, 6)).toBe(true);
+    // A sibling IPv6 address is now skipped too — this is the point.
+    expect(_isAddressDead(HOST, "2001:4860:4847:400::")).toBe(true);
+    // IPv4 is untouched: a dead IPv6 route says nothing about IPv4.
+    expect(_isFamilyDead(HOST, 4)).toBe(false);
+    expect(_isAddressDead(HOST, "172.217.112.4")).toBe(false);
+  });
+
+  it("scopes family failures per host", () => {
+    _markFamilyDead(HOST, "2001:4860:4841:400::");
+    expect(_isFamilyDead(HOST, 6)).toBe(true);
+    expect(_isFamilyDead("other.example.com", 6)).toBe(false);
+  });
+
+  it("clears family state along with addresses", () => {
+    _markFamilyDead(HOST, "2001:4860:4841:400::");
+    _clearDeadAddresses();
+    expect(_isFamilyDead(HOST, 6)).toBe(false);
   });
 });
