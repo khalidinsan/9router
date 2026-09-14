@@ -216,15 +216,25 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
 
   // Request line: one correlated summary (fmt + thinking + counts + account)
   if (log?.line) {
-    const clientModel = clientRawRequest?.body?.model || `${provider}/${model}`;
     const msgN = translatedBody.messages?.length || translatedBody.input?.length || translatedBody.contents?.length || body.messages?.length || body.input?.length || 0;
     const toolN = translatedBody.tools?.length || body.tools?.length || 0;
     const fmtStr = passthrough ? `FMT: ${sourceFormat} (passthrough)` : `FMT: ${sourceFormat}→${targetFormat}`;
     const showThinking = provider !== "grok-cli" || supportsGrokCliReasoningEffort(model);
     const think = showThinking ? log.fmtThink?.(extractThinking(translatedBody)) : null;
     const acc = credentials?.connectionName || credentials?.connectionId?.slice(0, 8) || "-";
+    // "A → B" only when the model ACTUALLY changed; otherwise echo what the
+    // client sent, so the short id the user typed (`wb/...`, `cmc/...`) is what
+    // shows up rather than its canonical expansion (`workbuddy/...`).
+    //
+    // `requestedModel` is set by getModelInfo on a routing hit and nowhere else,
+    // so it is the exact signal. Do NOT infer routing from clientRawRequest:
+    // that holds the raw client string, which differs from the canonical form
+    // for every aliased provider, so comparing them painted a plain alias
+    // expansion as if it were a remap.
     const parts = [
-      `POST ${clientModel} → ${provider}/${model}`,
+      requestedModel
+        ? `POST ${requestedModel} → ${PROVIDER_ID_TO_ALIAS[provider] || provider}/${model}`
+        : `POST ${clientRawRequest?.body?.model || `${provider}/${model}`}`,
       fmtStr,
       stream ? "STREAM" : "JSON",
       `${msgN} MSG`,
