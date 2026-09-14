@@ -100,6 +100,7 @@ import p97 from "./xiaomi-tokenplan.js";
 import p98 from "./youcom.js";
 import p99 from "./alims-intl.js";
 import p100 from "./codebuddy-intl.js";
+import p127 from "./workbuddy.js";
 import p103 from "./zed.js";
 import p105 from "./api-airforce.js";
 import p106 from "./baidu.js";
@@ -249,4 +250,5 @@ export default [
   p123,
   p124,
   p126,
+  p127,
 ];

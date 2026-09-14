@@ -25,11 +25,15 @@ export default {
     forceStream: true,
     // CodeBuddy intl speaks the same unified OpenAI reasoning_effort shape as CN.
     thinkingFormat: "openai",
+    // Fingerprint captured from the CodeBuddy CLI that WorkBuddy 5.5.2 bundles
+    // (CLI/2.137.1). The gateway accepts the older IDE fingerprint too — both
+    // were verified 200 — but the CLI identity is the one this token was minted
+    // for, so prefer it.
     headers: {
-      "User-Agent": "IDE/2.108.1 CodeBuddy/2.108.1",
+      "User-Agent": "CLI/2.137.1 WorkBuddy AI/2.137.1",
       "X-Product": "SaaS",
-      "X-IDE-Type": "IDE",
-      "X-IDE-Name": "IDE",
+      "X-IDE-Type": "CLI",
+      "X-IDE-Name": "CLI",
       "x-requested-with": "XMLHttpRequest",
       "x-codebuddy-request": "1",
     },
@@ -43,23 +47,38 @@ export default {
       url: "https://www.codebuddy.ai/v2/billing/meter/get-user-resource",
     },
   },
-  // Same model lineup exposed by the CN gateway — intl backend is the same catalog.
+  // Catalog from the WorkBuddy 5.5.2 product config (Tencent ships the same
+  // CodeBuddy backend for workbuddy.ai and codebuddy.ai). The alias tier
+  // (fast/balanced/primary/deep/default) is what the CLI itself sends; the
+  // concrete ids below are the named models the same gateway accepts.
+  // Probed live against /v2/chat/completions: all listed ids stream EXCEPT
+  // gpt-5.6-* (11134 provider unavailable) and hy4-preview (14003 rate limit),
+  // which stay listed because availability is per-account and transient.
   models: [
+    // Alias tier — resolved server-side; stable across catalog changes.
+    { id: "fast-model", name: "Fast (alias)" },
+    { id: "balanced-model", name: "Balanced (alias)" },
+    { id: "primary-model", name: "Primary (alias)" },
+    { id: "deep-model", name: "Deep (alias)" },
+    { id: "default-model", name: "Default (alias)" },
+
+    { id: "gpt-5.5", name: "GPT-5.5" },
+    { id: "gpt-5.4", name: "GPT-5.4" },
+    { id: "gpt-5.3-codex", name: "GPT-5.3 Codex" },
+    { id: "gpt-5.6-sol", name: "GPT-5.6 Sol" },
+    { id: "gpt-5.6-terra", name: "GPT-5.6 Terra" },
+    { id: "gpt-5.6-luna", name: "GPT-5.6 Luna" },
+    { id: "gpt-6-astra", name: "GPT-6 Astra" },
+    { id: "gemini-3.5-flash", name: "Gemini 3.5 Flash" },
+    { id: "glm-5.3", name: "GLM-5.3" },
     { id: "glm-5.2", name: "GLM-5.2" },
-    { id: "glm-5.1", name: "GLM-5.1" },
-    { id: "glm-5.0", name: "GLM-5.0" },
-    { id: "glm-5.0-turbo", name: "GLM-5.0-Turbo" },
-    { id: "glm-5v-turbo", name: "GLM-5v-Turbo" },
-    { id: "glm-4.7", name: "GLM-4.7" },
-    { id: "minimax-m3", name: "MiniMax-M3" },
-    { id: "minimax-m2.7", name: "MiniMax-M2.7" },
-    { id: "kimi-k2.7", name: "Kimi-K2.7-Code" },
-    { id: "kimi-k2.6", name: "Kimi-K2.6" },
-    { id: "kimi-k2.5", name: "Kimi-K2.5" },
-    { id: "hy3-preview", name: "Hy3 Preview" },
-    { id: "deepseek-v4-pro", name: "DeepSeek-V4-Pro" },
-    { id: "deepseek-v4-flash", name: "DeepSeek-V4-Flash" },
-    { id: "deepseek-v3-2-volc", name: "DeepSeek-V3.2" },
+    { id: "kimi-k3", name: "Kimi K3" },
+    { id: "kimi-k2.6", name: "Kimi K2.6" },
+    { id: "deepseek-v4.1-flash", name: "DeepSeek V4.1 Flash" },
+    { id: "deepseek-v3-2-volc", name: "DeepSeek V3.2" },
+    { id: "hy3", name: "Hunyuan 3" },
+    { id: "hy4-preview", name: "Hunyuan 4 Preview" },
+    { id: "hy4-preview-f", name: "Hunyuan 4 Preview F" },
   ],
   oauth: {
     baseUrl: "https://www.codebuddy.ai",
