@@ -16,7 +16,7 @@ export {
   getModelAliases, setModelAlias, deleteModelAlias,
   getCustomModels, addCustomModel, deleteCustomModel,
   getMitmAlias, setMitmAliasAll,
-  getModelRoutes, resolveModelRoute, setModelRoute, deleteModelRoute,
+  getModelRoutes, resolveModelRoute, setModelRoute, setModelRouteEnabled, deleteModelRoute,
   getPricing, getPricingForModel, updatePricing, resetPricing, resetAllPricing,
   exportDb, importDb,
 } from "@/lib/db/index.js";

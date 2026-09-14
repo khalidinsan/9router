@@ -14,22 +14,59 @@ const routeKv = makeKv("modelRoutes");
  * Lookup happens before parseModel (see src/sse/services/model.js), so a hit
  * replaces the request string entirely and every downstream consumer — executor,
  * usage history, request details — sees the routed model.
+ *
+ * Stored value is `{ target, enabled }`. Older rows are a bare string (the
+ * target); normalizeRoute() accepts both so an existing KV survives the upgrade
+ * without a migration step.
  */
 
-/** All routes: { "<requestedModel>": "<routedModel>" } */
-export async function getModelRoutes() {
-  return await routeKv.getAll();
+function normalizeRoute(value) {
+  if (typeof value === "string") {
+    const target = value.trim();
+    return target ? { target, enabled: true } : null;
+  }
+  if (value && typeof value === "object") {
+    const target = typeof value.target === "string" ? value.target.trim() : "";
+    if (!target) return null;
+    // Absent `enabled` means an older row: treat as on, matching prior behavior.
+    return { target, enabled: value.enabled !== false };
+  }
+  return null;
 }
 
-/** The routed target for a requested model, or null. Exact match, no parsing. */
+/** All routes: { "<requestedModel>": { target, enabled } } */
+export async function getModelRoutes() {
+  const raw = await routeKv.getAll();
+  const out = {};
+  for (const [from, value] of Object.entries(raw || {})) {
+    const route = normalizeRoute(value);
+    if (route) out[from] = route;
+  }
+  return out;
+}
+
+/**
+ * The routed target for a requested model, or null.
+ * Returns null for a disabled route so callers need no extra check.
+ * Exact match, no parsing.
+ */
 export async function resolveModelRoute(modelStr) {
   if (!modelStr || typeof modelStr !== "string") return null;
-  const value = await routeKv.get(modelStr);
-  return typeof value === "string" && value.trim() ? value.trim() : null;
+  const route = normalizeRoute(await routeKv.get(modelStr));
+  if (!route || !route.enabled) return null;
+  return route.target;
 }
 
-export async function setModelRoute(from, to) {
-  await routeKv.set(from, to);
+export async function setModelRoute(from, to, enabled = true) {
+  await routeKv.set(from, { target: to, enabled: enabled !== false });
+}
+
+/** Flip a route on/off without touching its target. */
+export async function setModelRouteEnabled(from, enabled) {
+  const route = normalizeRoute(await routeKv.get(from));
+  if (!route) return false;
+  await routeKv.set(from, { target: route.target, enabled: enabled !== false });
+  return true;
 }
 
 export async function deleteModelRoute(from) {

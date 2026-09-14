@@ -11,6 +11,7 @@ import {
   Modal,
   ModelSelectModal,
   SegmentedControl,
+  Toggle,
 } from "@/shared/components";
 import { useNotificationStore } from "@/store/notificationStore";
 import { useCopyToClipboard } from "@/shared/hooks/useCopyToClipboard";
@@ -73,7 +74,14 @@ export default function RoutingPage() {
   const routeEntries = useMemo(
     () =>
       Object.entries(routes || {})
-        .map(([source, target]) => ({ source, target }))
+        // Stored value is { target, enabled }; tolerate a bare string from an
+        // older row so the page renders before any route is re-saved.
+        .map(([source, value]) => ({
+          source,
+          target: typeof value === "string" ? value : value?.target || "",
+          enabled: typeof value === "string" ? true : value?.enabled !== false,
+        }))
+        .filter((r) => r.target)
         .sort((a, b) => a.source.localeCompare(b.source)),
     [routes]
   );
@@ -118,6 +126,27 @@ export default function RoutingPage() {
       setRouteError(e.message);
     } finally {
       setSaving(false);
+    }
+  };
+
+  const handleToggleRoute = async (source, enabled) => {
+    // Optimistic: flip immediately so the switch feels instant, then reconcile.
+    setRoutes((prev) => ({ ...prev, [source]: { ...prev[source], enabled } }));
+    try {
+      const res = await fetch("/api/models/routing", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ from: source, enabled }),
+      });
+      if (!res.ok) throw new Error("Failed to toggle route");
+      addNotification({
+        type: "success",
+        message: enabled ? `Route "${source}" enabled` : `Route "${source}" disabled`,
+      });
+    } catch (e) {
+      addNotification({ type: "error", message: e.message });
+    } finally {
+      await loadData();
     }
   };
 
@@ -287,29 +316,31 @@ export default function RoutingPage() {
                             arrow_forward
                           </span>
                           <code
-                            className="max-w-[280px] truncate rounded-md border border-primary/20 bg-primary/10 px-2.5 py-1 font-mono text-xs font-semibold text-primary"
+                            className={`max-w-[280px] truncate rounded-md border px-2.5 py-1 font-mono text-xs font-semibold ${
+                              item.enabled !== false
+                                ? "border-primary/20 bg-primary/10 text-primary"
+                                : "border-border-subtle bg-surface-2 text-text-muted line-through"
+                            }`}
                             title={item.target}
                           >
                             {item.target}
                           </code>
-                          <Badge variant="success" size="sm" dot>
-                            Active
-                          </Badge>
                         </div>
                         <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-text-muted">
                           <span>
                             Request: <code className="font-mono text-[11px] text-text-main">{item.source}</code> &rarr; Runs: <code className="font-mono text-[11px] text-primary">{item.target}</code>
-                          </span>
-                          <span className="hidden text-text-muted/40 sm:inline">&bull;</span>
-                          <span className="flex items-center gap-0.5 text-[11px] text-emerald-600 dark:text-emerald-400">
-                            <span className="material-symbols-outlined text-[13px]">verified_user</span>
-                            Auto-fallback on target failure
                           </span>
                         </div>
                       </div>
                     </div>
 
                     <div className="flex shrink-0 items-center gap-1 self-end sm:self-center">
+                      <Toggle
+                        size="sm"
+                        checked={item.enabled !== false}
+                        onChange={(next) => handleToggleRoute(item.source, next)}
+                        title={item.enabled !== false ? "Disable route" : "Enable route"}
+                      />
                       <button
                         onClick={() => copy(item.source, `src-${item.source}`)}
                         className="rounded p-1.5 text-text-muted transition-colors hover:bg-surface-2 hover:text-primary"
@@ -502,11 +533,6 @@ export default function RoutingPage() {
             <p className="mt-1 text-[11px] text-text-muted">
               The model 9Router will actually run and record usage for.
             </p>
-          </div>
-
-          <div className="flex items-start gap-2 rounded-lg border border-primary/20 bg-primary/5 p-2.5 text-xs text-text-muted">
-            <span className="material-symbols-outlined mt-0.5 shrink-0 text-[16px] text-primary">verified_user</span>
-            <span>If the target model fails, 9Router automatically falls back to the original source model.</span>
           </div>
 
           {routeError && (

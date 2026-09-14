@@ -1,0 +1,59 @@
+- generic [ref=f13e2]:
+  - group [ref=f13e5]:
+    - generic "languages" [ref=f13e6] [cursor=pointer]: Intl - English
+  - generic [ref=f13e11]:
+    - banner [ref=f13e12]:
+      - heading [level=1]
+      - link [ref=f13e13] [cursor=pointer]:
+        - /url: /
+        - img "CodeBuddy" [ref=f13e14]
+    - generic [ref=f13e15]:
+      - generic [ref=f13e18]:
+        - generic [ref=f13e19]:
+          - generic [ref=f13e20] [cursor=pointer]: Sign up
+          - generic [ref=f13e21] [cursor=pointer]: Log in
+        - generic [ref=f13e22]:
+          - list [ref=f13e24]:
+            - listitem [ref=f13e25]:
+              - link "Log in with Google" [ref=f13e26] [cursor=pointer]:
+                - /url: https://www.codebuddy.ai/auth/realms/copilot/broker/google/login?client_id=console&tab_id=PZbsSvHl6v4&client_data=eyJydSI6Imh0dHBzOi8vd3d3LmNvZGVidWRkeS5haS9jb25zb2xlL2FjY291bnRzLy5hcGlzaXgvcmVkaXJlY3QiLCJydCI6ImNvZGUiLCJzdCI6IjYxMTg4Mjg5N2M1ZmI3MmQyZDk2MWE4YTE1MzE2NDBkIn0&session_code=ZsUlAlu3Af_xgHsfPEc9KwicAQyTW8OtoDbmaQXw9v4&product=codebuddy
+            - listitem [ref=f13e29]:
+              - link "Log in with GitHub" [ref=f13e30] [cursor=pointer]:
+                - /url: https://www.codebuddy.ai/auth/realms/copilot/broker/github/login?client_id=console&tab_id=PZbsSvHl6v4&client_data=eyJydSI6Imh0dHBzOi8vd3d3LmNvZGVidWRkeS5haS9jb25zb2xlL2FjY291bnRzLy5hcGlzaXgvcmVkaXJlY3QiLCJydCI6ImNvZGUiLCJzdCI6IjYxMTg4Mjg5N2M1ZmI3MmQyZDk2MWE4YTE1MzE2NDBkIn0&session_code=ZsUlAlu3Af_xgHsfPEc9KwicAQyTW8OtoDbmaQXw9v4&product=codebuddy
+            - listitem [ref=f13e33]:
+              - link "Log in with X" [ref=f13e34] [cursor=pointer]:
+                - /url: https://www.codebuddy.ai/auth/realms/copilot/broker/twitter/login?client_id=console&tab_id=PZbsSvHl6v4&client_data=eyJydSI6Imh0dHBzOi8vd3d3LmNvZGVidWRkeS5haS9jb25zb2xlL2FjY291bnRzLy5hcGlzaXgvcmVkaXJlY3QiLCJydCI6ImNvZGUiLCJzdCI6IjYxMTg4Mjg5N2M1ZmI3MmQyZDk2MWE4YTE1MzE2NDBkIn0&session_code=ZsUlAlu3Af_xgHsfPEc9KwicAQyTW8OtoDbmaQXw9v4&product=codebuddy
+          - link "Log in with Tencent OneID Enterprise only" [ref=f13e38] [cursor=pointer]:
+            - /url: javascript:void(0)
+            - generic [ref=f13e40]: Log in with Tencent OneID
+            - generic [ref=f13e41]: Enterprise only
+          - generic [ref=f13e42]: or
+          - generic [ref=f13e43]:
+            - generic [ref=f13e44] [cursor=pointer]: Email Login
+            - generic [ref=f13e45] [cursor=pointer]: SSO Enterprise Login
+          - generic [ref=f13e47]:
+            - textbox [ref=f13e53]:
+              - /placeholder: Username or email
+            - textbox [ref=f13e59]:
+              - /placeholder: Password
+            - generic [ref=f13e61]: Remember me
+            - button "GET STARTED" [disabled] [ref=f13e69]
+            - generic [ref=f13e70]:
+              - generic [ref=f13e75]:
+                - text: I have read and agree to the
+                - link "Tencent Cloud CodeBuddy Service Agreement" [ref=f13e76] [cursor=pointer]:
+                  - /url: /document/term
+                - text: ","
+                - link "Data Processing and Security Agreement" [ref=f13e77] [cursor=pointer]:
+                  - /url: /document/dpsa
+              - generic [ref=f13e82]:
+                - text: I have read and acknowledge the
+                - link "Privacy Policy" [ref=f13e83] [cursor=pointer]:
+                  - /url: /document/privacy-policy
+                - text: and
+                - link "Acceptable Use Policy" [ref=f13e84] [cursor=pointer]:
+                  - /url: /document/acceptable-use-policy
+      - generic [ref=f13e85]:
+        - text: Need help?
+        - link "Contact support" [ref=f13e86] [cursor=pointer]:
+          - /url: mailto:codebuddy@tencent.com

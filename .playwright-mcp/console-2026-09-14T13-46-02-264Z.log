@@ -1,0 +1,22 @@
+[    1135ms] [LOG] %c🚀 CodeBuddy IDE %c
+%c📅 构建时间: %c%s
+%c📝 提交时间: %c%s
+%c🌿 Git 分支: %c%s
+%c🔖 Git Commit: %c%s color: #6366f1; font-size: 14px; font-weight: bold;  color: #94a3b8; font-weight: bold; color: #22c55e; 2026/09/05 11:19:16 color: #94a3b8; font-weight: bold; color: #22c55e; 2026/09/05 11:13:37 color: #94a3b8; font-weight: bold; color: #f59e0b; main color: #94a3b8; font-weight: bold; color: #f59e0b; ca01c3571600 @ https://download.codebuddy.ai/web/ide/ca01c3571600eb9641eb4a3226b6d3bbb5e35469/assets/js/main-C5W6Beje.js:1
+[    1236ms] [LOG] init Analytics @ https://download.codebuddy.ai/web/ide/ca01c3571600eb9641eb4a3226b6d3bbb5e35469/assets/js/main-C5W6Beje.js:358
+[    1238ms] [WARNING] onRecoverableError Error: Minified React error #424; visit https://reactjs.org/docs/error-decoder.html?invariant=424 for the full message or use the non-minified dev environment for full errors and additional helpful warnings.
+    at EI (https://download.codebuddy.ai/web/ide/ca01c3571600eb9641eb4a3226b6d3bbb5e35469/assets/js/vender-Q-NQ16CF.js:40:45353)
+    at _I (https://download.codebuddy.ai/web/ide/ca01c3571600eb9641eb4a3226b6d3bbb5e35469/assets/js/vender-Q-NQ16CF.js:40:39790)
+    at cG (https://download.codebuddy.ai/web/ide/ca01c3571600eb9641eb4a3226b6d3bbb5e35469/assets/js/vender-Q-NQ16CF.js:40:39718)
+    at t2 (https://download.codebuddy.ai/web/ide/ca01c3571600eb9641eb4a3226b6d3bbb5e35469/assets/js/vender-Q-NQ16CF.js:40:39570)
+    at yI (https://download.codebuddy.ai/web/ide/ca01c3571600eb9641eb4a3226b6d3bbb5e35469/assets/js/vender-Q-NQ16CF.js:40:34647)
+    at _ (https://download.codebuddy.ai/web/ide/ca01c3571600eb9641eb4a3226b6d3bbb5e35469/assets/js/vender-Q-NQ16CF.js:25:1569)
+    at MessagePort.P (https://download.codebuddy.ai/web/ide/ca01c3571600eb9641eb4a3226b6d3bbb5e35469/assets/js/vender-Q-NQ16CF.js:25:1932) {componentStack: , digest: null} @ https://download.codebuddy.ai/web/ide/ca01c3571600eb9641eb4a3226b6d3bbb5e35469/assets/js/main-C5W6Beje.js:2515
+[    5039ms] [ERROR] Failed to load resource: net::ERR_FAILED @ chrome-extension://invalid/:0
+[    5039ms] [ERROR] Failed to load resource: net::ERR_FAILED @ chrome-extension://invalid/:0
+[    5062ms] [WARNING] current domain not supported by beacon! @ https://dscache-intl.cloudcachetci.com/ecache/qcstat/qcloud/qcloudStatApi.js:3
+[    5911ms] [WARNING] [useAuth] accounts is empty, user authenticated but no accounts available @ https://download.codebuddy.ai/web/ide/ca01c3571600eb9641eb4a3226b6d3bbb5e35469/assets/js/main-C5W6Beje.js:358
+[    5911ms] [LOG] login check failed @ https://download.codebuddy.ai/web/ide/ca01c3571600eb9641eb4a3226b6d3bbb5e35469/assets/js/main-C5W6Beje.js:358
+[    6128ms] [LOG] [Maintenance Notice] Not in display time range @ https://www.codebuddy.ai/auth/realms/copilot/protocol/openid-connect/auth?client_id=console&response_type=code&redirect_uri=https%3A%2F%2Fwww.codebuddy.ai%2Flogin%2Fselect%3Fredirect_uri%3Dhttps%253A%252F%252Fwww.codebuddy.ai%252Fregister%252Fuser%252Fcomplete&v=2210&product=codebuddy:1687
+[    6267ms] [LOG] [Login] Iframe URL changed: https://www.codebuddy.ai/auth/realms/copilot/protocol/openid-connect/auth?client_id=console&response_type=code&redirect_uri=https%3A%2F%2Fwww.codebuddy.ai%2Flogin%2Fselect%3Fredirect_uri%3Dhttps%253A%252F%252Fwww.codebuddy.ai%252Fregister%252Fuser%252Fcomplete&v=2210&product=codebuddy --- https://www.codebuddy.ai/register/user/complete @ https://download.codebuddy.ai/web/ide/ca01c3571600eb9641eb4a3226b6d3bbb5e35469/assets/js/main-C5W6Beje.js:358
+[    8733ms] [ERROR] Failed to load resource: the server responded with a status of 501 (Not Implemented) @ https://tgalileo.com/collect:0

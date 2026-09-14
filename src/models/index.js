@@ -33,6 +33,7 @@ export {
   getModelRoutes,
   resolveModelRoute,
   setModelRoute,
+  setModelRouteEnabled,
   deleteModelRoute,
   getApiKeys,
   createApiKey,

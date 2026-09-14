@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { getModelRoutes, setModelRoute, deleteModelRoute } from "@/models";
+import { getModelRoutes, setModelRoute, setModelRouteEnabled, deleteModelRoute } from "@/models";
 import { getModelInfo } from "@/sse/services/model.js";
 import { isValidModel } from "@/shared/constants/models";
 import { getProviderByAlias } from "@/shared/constants/providers";
@@ -103,6 +103,30 @@ export async function PUT(request) {
   } catch (error) {
     console.log("Error updating model route:", error);
     return NextResponse.json({ error: "Failed to update model route" }, { status: 500 });
+  }
+}
+
+// PATCH /api/models/routing - Enable/disable a route without editing it
+// Body: { from: "...", enabled: true|false }
+export async function PATCH(request) {
+  try {
+    const body = await request.json();
+    const from = typeof body?.from === "string" ? body.from.trim() : "";
+    if (!from) {
+      return NextResponse.json({ error: "Query param 'from' is required" }, { status: 400 });
+    }
+    if (typeof body?.enabled !== "boolean") {
+      return NextResponse.json({ error: "'enabled' must be a boolean" }, { status: 400 });
+    }
+
+    const ok = await setModelRouteEnabled(from, body.enabled);
+    if (!ok) {
+      return NextResponse.json({ error: `Route "${from}" not found` }, { status: 404 });
+    }
+    return NextResponse.json({ success: true, from, enabled: body.enabled });
+  } catch (error) {
+    console.log("Error toggling model route:", error);
+    return NextResponse.json({ error: "Failed to toggle model route" }, { status: 500 });
   }
 }
 

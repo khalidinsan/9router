@@ -10,6 +10,8 @@ export default function Toggle({
   disabled = false,
   size = "md",
   className,
+  title,
+  ...props
 }) {
   const sizes = {
     sm: { track: "w-8 h-4", thumb: "size-3", translate: "translate-x-4" },
@@ -35,6 +37,8 @@ export default function Toggle({
         aria-checked={checked}
         disabled={disabled}
         onClick={handleClick}
+        title={title}
+        {...props}
         className={cn(
           "relative inline-flex shrink-0 cursor-pointer rounded-full",
           "transition-colors duration-200 ease-in-out",

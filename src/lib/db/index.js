@@ -47,7 +47,7 @@ export {
 
 // Model routing (remap an existing model to another existing model)
 export {
-  getModelRoutes, resolveModelRoute, setModelRoute, deleteModelRoute,
+  getModelRoutes, resolveModelRoute, setModelRoute, setModelRouteEnabled, deleteModelRoute,
 } from "./repos/routingRepo.js";
 
 // Pricing

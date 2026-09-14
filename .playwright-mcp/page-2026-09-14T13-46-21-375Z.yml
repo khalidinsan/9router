@@ -1,0 +1,44 @@
+- generic [ref=f4e2]:
+  - group [ref=f4e5]:
+    - generic "languages" [ref=f4e6] [cursor=pointer]: Intl - English
+  - generic [ref=f4e11]:
+    - banner [ref=f4e12]:
+      - heading [level=1]
+      - link [ref=f4e13] [cursor=pointer]:
+        - /url: /
+        - img "CodeBuddy" [ref=f4e14]
+    - generic [ref=f4e15]:
+      - generic [ref=f4e18]:
+        - generic [ref=f4e19]:
+          - generic [ref=f4e20] [cursor=pointer]: Sign up
+          - generic [ref=f4e21] [cursor=pointer]: Log in
+        - generic [ref=f4e22]:
+          - list [ref=f4e24]:
+            - listitem [ref=f4e25]:
+              - link "Sign up with Google" [ref=f4e26] [cursor=pointer]:
+                - /url: https://www.codebuddy.ai/auth/realms/copilot/broker/google/login?client_id=console&tab_id=hJe2FWj8xKY&client_data=eyJydSI6Imh0dHBzOi8vd3d3LmNvZGVidWRkeS5haS9sb2dpbi9zZWxlY3Q_cmVkaXJlY3RfdXJpPWh0dHBzJTNBJTJGJTJGd3d3LmNvZGVidWRkeS5haSUyRnJlZ2lzdGVyJTJGdXNlciUyRmNvbXBsZXRlIiwicnQiOiJjb2RlIn0&session_code=cLa3wencXLHQcpOzrRoXstaZ7Z7Z5jrj6Qh7Xkeuo70&product=codebuddy
+            - listitem [ref=f4e29]:
+              - link "Sign up with GitHub" [ref=f4e30] [cursor=pointer]:
+                - /url: https://www.codebuddy.ai/auth/realms/copilot/broker/github/login?client_id=console&tab_id=hJe2FWj8xKY&client_data=eyJydSI6Imh0dHBzOi8vd3d3LmNvZGVidWRkeS5haS9sb2dpbi9zZWxlY3Q_cmVkaXJlY3RfdXJpPWh0dHBzJTNBJTJGJTJGd3d3LmNvZGVidWRkeS5haSUyRnJlZ2lzdGVyJTJGdXNlciUyRmNvbXBsZXRlIiwicnQiOiJjb2RlIn0&session_code=cLa3wencXLHQcpOzrRoXstaZ7Z7Z5jrj6Qh7Xkeuo70&product=codebuddy
+            - listitem [ref=f4e33]:
+              - link "Sign up with X" [ref=f4e34] [cursor=pointer]:
+                - /url: https://www.codebuddy.ai/auth/realms/copilot/broker/twitter/login?client_id=console&tab_id=hJe2FWj8xKY&client_data=eyJydSI6Imh0dHBzOi8vd3d3LmNvZGVidWRkeS5haS9sb2dpbi9zZWxlY3Q_cmVkaXJlY3RfdXJpPWh0dHBzJTNBJTJGJTJGd3d3LmNvZGVidWRkeS5haSUyRnJlZ2lzdGVyJTJGdXNlciUyRmNvbXBsZXRlIiwicnQiOiJjb2RlIn0&session_code=cLa3wencXLHQcpOzrRoXstaZ7Z7Z5jrj6Qh7Xkeuo70&product=codebuddy
+          - generic [ref=f4e37]:
+            - generic [ref=f4e42]:
+              - text: I have read and agree to the
+              - link "Tencent Cloud CodeBuddy Service Agreement" [ref=f4e43] [cursor=pointer]:
+                - /url: /document/term
+              - text: ","
+              - link "Data Processing and Security Agreement" [ref=f4e44] [cursor=pointer]:
+                - /url: /document/dpsa
+            - generic [ref=f4e49]:
+              - text: I have read and acknowledge the
+              - link "Privacy Policy" [ref=f4e50] [cursor=pointer]:
+                - /url: /document/privacy-policy
+              - text: and
+              - link "Acceptable Use Policy" [ref=f4e51] [cursor=pointer]:
+                - /url: /document/acceptable-use-policy
+      - generic [ref=f4e52]:
+        - text: Need help?
+        - link "Contact support" [ref=f4e53] [cursor=pointer]:
+          - /url: mailto:codebuddy@tencent.com
