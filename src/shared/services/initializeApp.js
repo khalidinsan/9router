@@ -2,7 +2,7 @@ import os from "os";
 import { fileURLToPath } from "url";
 import { dirname, join } from "path";
 import { existsSync } from "fs";
-import { cleanupProviderConnections, getSettings, updateSettings, getApiKeys } from "@/lib/localDb";
+import { cleanupProviderConnections, getSettings, updateSettings } from "@/lib/localDb";
 import {
   enableTunnel, enableTailscale,
   isTunnelManuallyDisabled, isTunnelReconnecting, isTailscaleReconnecting,
@@ -13,8 +13,7 @@ import {
   RESTART_COOLDOWN_MS, NETWORK_SETTLE_MS,
   WATCHDOG_INTERVAL_MS, NETWORK_CHECK_INTERVAL_MS, VIRTUAL_IFACE_REGEX,
 } from "@/lib/tunnel";
-import { getMitmStatus, startMitm, loadEncryptedPassword, initDbHooks, restoreToolDNS, removeAllDNSEntriesSync } from "@/mitm/manager";
-import { syncToJson as syncMitmAliasCache } from "@/lib/mitmAliasCache";
+import { getMitmStatus, initDbHooks, removeAllDNSEntriesSync } from "@/mitm/manager";
 import { killAllBridges } from "@/lib/mcp/stdioSseBridge";
 
 // Inject correct paths and DB hooks into manager.js (CJS) from ESM context
@@ -99,11 +98,37 @@ async function runHeavyStartup() {
 
   if (settings.tunnelEnabled) ensureCloudflared().catch(() => {});
 
+  // MITM is intentionally NOT auto-started.
+  //
+  // It was auto-started whenever `settings.mitmEnabled` was true, and
+  // `startServer()` set that flag itself — so enabling MITM once made it
+  // permanent across every restart. That is dangerous here because the child
+  // is spawned via sudo as a separate process: when 9Router restarts, the
+  // child dies without receiving SIGTERM, so its shutdown hook (which strips
+  // the /etc/hosts entries) never runs. The host stays pointed at 127.0.0.1
+  // with nothing listening, which breaks every request to it — including
+  // 9Router's own, since the MITM DNS bypass fails in that state.
+  //
+  // MITM remains available on demand from the dashboard. Only start it
+  // explicitly, never as a side effect of boot.
   if (settings.mitmEnabled) {
-    // Sync mitmAlias DB → JSON cache so standalone MITM server can read it.
-    syncMitmAliasCache().catch(() => {});
-    autoStartMitm(settings);
+    console.log("[InitApp] MITM was enabled previously — NOT auto-starting (start it from the dashboard if needed)");
   }
+
+  // Startup reconciliation: a previous run may have died without running its
+  // exit hooks (SIGKILL from `launchctl kickstart -k` cannot be caught), leaving
+  // /etc/hosts pointing these hosts at 127.0.0.1 with nothing listening. That
+  // poisons every request to them until someone clears it by hand.
+  //
+  // Runs unconditionally and cheaply: if no entry is present this is a no-op.
+  // Doing it at boot — rather than only on exit — is what makes the state
+  // self-healing regardless of how the previous process ended.
+  try {
+    const status = await getMitmStatus();
+    if (!status?.running) {
+      removeAllDNSEntriesSync();
+    }
+  } catch { /* best effort — never block startup */ }
 
   configureTunnelMonitoring(settings);
 
@@ -124,38 +149,8 @@ function hasQuotaAutoPingEnabled(settings) {
     .some((config) => Object.values(config?.connections || {}).some(Boolean));
 }
 
-async function autoStartMitm(settings) {
-  if (g.mitmStartInProgress) return;
-  g.mitmStartInProgress = true;
-  try {
-    if (!settings.mitmEnabled) return;
-    const mitmStatus = await getMitmStatus();
-    if (mitmStatus.running) return;
-
-    const password = await loadEncryptedPassword();
-    if (!password && process.platform !== "win32") {
-      console.log("[InitApp] MITM was enabled but no saved password found, skipping auto-start");
-      return;
-    }
-
-    const keys = await getApiKeys();
-    const activeKey = keys.find(k => k.isActive !== false);
-
-    console.log("[InitApp] MITM was enabled, auto-starting...");
-    await startMitm(activeKey?.key || "sk_9router", password);
-    console.log("[InitApp] MITM auto-started");
-    try {
-      await restoreToolDNS(password);
-      console.log("[InitApp] DNS restored from saved state");
-    } catch (e) {
-      console.log("[InitApp] DNS restore failed:", e.message);
-    }
-  } catch (err) {
-    console.log("[InitApp] MITM auto-start failed:", err.message);
-  } finally {
-    g.mitmStartInProgress = false;
-  }
-}
+// autoStartMitm() was removed deliberately — see the comment in initializeApp().
+// MITM must only ever start from an explicit dashboard action.
 
 // Cooldown only applies to repeating watchdog ticks (anti hammer-loop).
 // Network/exit events are one-shot transitions → bypass to recover fast.
