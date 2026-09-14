@@ -37,6 +37,9 @@ const g = (global.__grokCliMaintenance ??= {
   interval: null,
   running: false,
   lastTickAt: 0,
+  // Id of the last account probed by the quality sweep, so successive ticks
+  // walk the whole pool instead of re-probing the same first N every time.
+  qualitySweepCursor: null,
 });
 
 const TICK_MS = 5 * 60 * 1000; // 5 minutes
@@ -204,6 +207,45 @@ async function billingSnapshotOne(conn) {
 }
 
 /**
+ * Pick the next `limit` accounts to probe, continuing from where the previous
+ * sweep stopped and wrapping around the end.
+ *
+ * Without this the sweep re-probed the same first `limit` rows forever:
+ * `getProviderConnections` sorts by priority, so `.slice(0, limit)` always
+ * returned accounts 1..N and the rest of the pool was never validated — the
+ * exact opposite of the self-healing the sweep exists to provide. It only
+ * advanced when one of those first rows was blocked or deleted.
+ *
+ * The cursor is the id of the last probed account, not an index: accounts get
+ * blocked, deleted or reordered between ticks, so an index would drift onto the
+ * wrong row. If the cursor account is gone, start from the top.
+ *
+ * @param {Array} connections priority-sorted pool
+ * @param {number} limit how many to take
+ * @param {string|null} cursor id of the last account probed
+ * @returns {{ picked: Array, nextCursor: string|null }}
+ */
+export function pickSweepWindow(connections, limit, cursor) {
+  const pool = Array.isArray(connections) ? connections : [];
+  if (pool.length === 0) return { picked: [], nextCursor: null };
+  const size = Math.max(1, Math.min(Number(limit) || 1, pool.length));
+
+  let start = 0;
+  if (cursor) {
+    const lastIndex = pool.findIndex((c) => c.id === cursor);
+    // Not found (deleted/blocked/deactivated) → restart from the top.
+    if (lastIndex !== -1) start = (lastIndex + 1) % pool.length;
+  }
+
+  const picked = [];
+  for (let i = 0; i < size; i += 1) {
+    picked.push(pool[(start + i) % pool.length]);
+  }
+
+  return { picked, nextCursor: picked[picked.length - 1]?.id ?? null };
+}
+
+/**
  * Sweep connections for the 407 degradation and act on the verdict.
  *
  * `deleteProviderConnection` is only ever called for definitively degraded
@@ -218,9 +260,11 @@ async function billingSnapshotOne(conn) {
  */
 export async function sweepGrokCliAccountQuality(options = {}) {
   const { limit = 3, dryRun = false, purge = false, log = console } = options;
-  const connections = (await getProviderConnections({ provider: "grok-cli", isActive: true }))
-    .filter((c) => c.accessToken)
-    .slice(0, limit);
+  const pool = (await getProviderConnections({ provider: "grok-cli", isActive: true }))
+    .filter((c) => c.accessToken);
+  // Walk the pool across ticks instead of re-probing the same leading rows.
+  const { picked: connections, nextCursor } = pickSweepWindow(pool, limit, g.qualitySweepCursor);
+  g.qualitySweepCursor = nextCursor;
 
   const summary = {
     probed: 0,
@@ -230,6 +274,9 @@ export async function sweepGrokCliAccountQuality(options = {}) {
     blocked: 0,
     deleted: 0,
     degradedEmails: [],
+    // Which slice of the pool this tick covered, so a caller can see the walk.
+    poolSize: pool.length,
+    probedIds: connections.map((c) => c.id),
   };
 
   for (const conn of connections) {
@@ -372,6 +419,7 @@ export async function runGrokCliMaintenanceTick() {
       const qualityNote = quality
         ? ` quality=${quality.ok}ok/${quality.degraded}degraded/${quality.inconclusive}inconclusive`
           + (quality.deleted ? ` deleted=${quality.deleted}` : "")
+          + (quality.poolSize ? ` walked=${quality.probed}/${quality.poolSize}` : "")
         : "";
       console.log(
         `[GrokMaint] tick: refreshed=${refreshed} billingSnapshots=${billed} pool=${stillActive.length}${qualityNote}`
