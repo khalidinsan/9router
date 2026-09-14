@@ -9,11 +9,83 @@ const TABS = [
   { value: "routing", label: "Routing", icon: "alt_route" },
 ];
 
+// ── Shared pieces ──────────────────────────────────────────────
+
+/** Centered empty state. The old cards rendered a bare sentence pinned to the
+ *  top-left of a padding-less card, which read as a rendering glitch. */
+function EmptyState({ icon, title, hint }) {
+  return (
+    <div className="flex flex-col items-center justify-center px-6 py-12 text-center">
+      <div className="mb-3 flex size-11 items-center justify-center rounded-full bg-surface-2">
+        <span className="material-symbols-outlined text-[22px] text-text-muted">{icon}</span>
+      </div>
+      <p className="text-sm font-medium text-text-main">{title}</p>
+      {hint && <p className="mt-1 max-w-xs text-xs text-text-muted">{hint}</p>}
+    </div>
+  );
+}
+
+/** A "from → to" row used by both tabs. Alias rows lead with the alias chip;
+ *  routing rows lead with the full source id. */
+function MappingRow({ lead, leadVariant = "chip", target, onDelete }) {
+  return (
+    <div className="group flex items-center gap-3 px-5 py-3.5 transition-colors hover:bg-surface-2/60">
+      {leadVariant === "chip" ? (
+        <Badge variant="primary" size="md" className="shrink-0">
+          {lead}
+        </Badge>
+      ) : (
+        <span className="min-w-0 flex-1 truncate font-mono text-xs text-text-main">{lead}</span>
+      )}
+      <span className="material-symbols-outlined shrink-0 text-[16px] text-text-muted">arrow_forward</span>
+      <span className="min-w-0 flex-1 truncate font-mono text-xs text-text-muted">{target}</span>
+      <button
+        onClick={onDelete}
+        title="Delete"
+        className="shrink-0 rounded-lg p-1.5 text-text-muted opacity-0 transition-all hover:bg-red-500/10 hover:text-red-500 focus:opacity-100 group-hover:opacity-100"
+      >
+        <span className="material-symbols-outlined text-[18px]">delete</span>
+      </button>
+    </div>
+  );
+}
+
+/** Model id field with a picker button. Mirrors the Input label styling so the
+ *  two columns line up when the fields sit side by side. */
+function ModelField({ label, value, onChange, onPick, placeholder }) {
+  return (
+    <div className="min-w-0 flex-1">
+      <label className="mb-1.5 block text-sm font-medium text-text-main">{label}</label>
+      <div className="flex gap-2">
+        <Input
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          placeholder={placeholder}
+          className="flex-1"
+        />
+        <Button variant="secondary" onClick={onPick} title="Pick a model">
+          <span className="material-symbols-outlined text-[18px]">search</span>
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+function CardHeader({ count, children }) {
+  return (
+    <div className="flex items-center justify-between gap-3 border-b border-border-subtle px-5 py-3.5">
+      <div className="flex items-center gap-2">
+        <span className="text-sm font-semibold text-text-main">{children}</span>
+        <Badge variant="default" size="sm">{count}</Badge>
+      </div>
+    </div>
+  );
+}
+
 // ── Alias tab ──────────────────────────────────────────────────
 // A short freetext name (no "/") that resolves to a real model.
-// Existing behaviour, surfaced here so both features live in one place.
 
-function AliasTab({ aliases, activeProviders, modelAliases, onChanged }) {
+function AliasTab({ aliases, activeProviders, onChanged }) {
   const addNotification = useNotificationStore((s) => s.addNotification);
   const [alias, setAlias] = useState("");
   const [model, setModel] = useState("");
@@ -22,11 +94,11 @@ function AliasTab({ aliases, activeProviders, modelAliases, onChanged }) {
   const [pendingDelete, setPendingDelete] = useState(null);
   const [error, setError] = useState("");
 
-  const rows = useMemo(() => {
-    return Object.entries(aliases || {})
-      .map(([name, target]) => ({ name, target }))
-      .sort((a, b) => a.name.localeCompare(b.name));
-  }, [aliases]);
+  const rows = useMemo(
+    () => Object.entries(aliases || {}).map(([name, target]) => ({ name, target }))
+      .sort((a, b) => a.name.localeCompare(b.name)),
+    [aliases]
+  );
 
   const handleSave = async () => {
     const name = alias.trim();
@@ -78,56 +150,62 @@ function AliasTab({ aliases, activeProviders, modelAliases, onChanged }) {
 
   return (
     <div className="space-y-4">
-      <Card title="Create Alias" subtitle="A short name you can use anywhere a model id is accepted">
-        <div className="space-y-3">
-          <div className="flex flex-col sm:flex-row gap-3 items-end">
+      <Card
+        title="Create alias"
+        subtitle="A short name you can use anywhere a model id is accepted"
+        icon="label"
+      >
+        <div className="space-y-4">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
             <Input
               label="Alias"
               value={alias}
               onChange={(e) => setAlias(e.target.value)}
               placeholder="e.g. deepseek"
-              className="sm:w-56"
+              className="sm:w-56 sm:shrink-0"
             />
-            <div className="flex-1 w-full">
-              <label className="block text-sm font-medium text-text-main mb-1.5">Target model</label>
-              <div className="flex gap-2">
-                <Input
-                  value={model}
-                  onChange={(e) => setModel(e.target.value)}
-                  placeholder="e.g. wb/deepseek-v4.1-flash"
-                  className="flex-1"
-                />
-                <Button variant="secondary" onClick={() => setShowPicker(true)}>
-                  <span className="material-symbols-outlined text-[18px]">search</span>
-                </Button>
-              </div>
-            </div>
+            <ModelField
+              label="Target model"
+              value={model}
+              onChange={setModel}
+              onPick={() => setShowPicker(true)}
+              placeholder="e.g. wb/deepseek-v4.1-flash"
+            />
           </div>
-          {error && <p className="text-xs text-error">{error}</p>}
-          <Button onClick={handleSave} disabled={saving}>
-            {saving ? "Saving…" : "Save Alias"}
+          {error && (
+            <p className="flex items-center gap-1.5 text-xs text-red-500">
+              <span className="material-symbols-outlined text-[14px]">error</span>
+              {error}
+            </p>
+          )}
+          <Button onClick={handleSave} disabled={saving} loading={saving} icon="add">
+            {saving ? "Saving…" : "Save alias"}
           </Button>
         </div>
       </Card>
 
-      <Card title={`Aliases (${rows.length})`} padding="none">
+      <div className="overflow-hidden rounded-[14px] border border-border-subtle bg-surface shadow-[var(--shadow-soft)]">
+        <CardHeader count={rows.length}>Aliases</CardHeader>
         {rows.length === 0 ? (
-          <p className="p-6 text-sm text-text-muted">No aliases yet.</p>
+          <EmptyState
+            icon="label"
+            title="No aliases yet"
+            hint="Create one above to give a model a short, memorable name."
+          />
         ) : (
           <div className="divide-y divide-border-subtle">
             {rows.map((row) => (
-              <div key={row.name} className="flex items-center gap-3 p-4">
-                <Badge variant="primary">{row.name}</Badge>
-                <span className="material-symbols-outlined text-[16px] text-text-muted">arrow_forward</span>
-                <span className="font-mono text-xs text-text-main truncate flex-1">{row.target}</span>
-                <Button variant="ghost" size="sm" onClick={() => setPendingDelete(row.name)}>
-                  <span className="material-symbols-outlined text-[18px]">delete</span>
-                </Button>
-              </div>
+              <MappingRow
+                key={row.name}
+                lead={row.name}
+                leadVariant="chip"
+                target={row.target}
+                onDelete={() => setPendingDelete(row.name)}
+              />
             ))}
           </div>
         )}
-      </Card>
+      </div>
 
       <ModelSelectModal
         isOpen={showPicker}
@@ -135,7 +213,7 @@ function AliasTab({ aliases, activeProviders, modelAliases, onChanged }) {
         onSelect={(m) => setModel(m?.value || "")}
         activeProviders={activeProviders}
         title="Select Target Model"
-        modelAliases={modelAliases}
+        modelAliases={aliases}
       />
 
       <ConfirmModal
@@ -164,11 +242,11 @@ function RoutingTab({ routes, activeProviders, modelAliases, onChanged }) {
   const [pendingDelete, setPendingDelete] = useState(null);
   const [error, setError] = useState("");
 
-  const rows = useMemo(() => {
-    return Object.entries(routes || {})
-      .map(([source, target]) => ({ source, target }))
-      .sort((a, b) => a.source.localeCompare(b.source));
-  }, [routes]);
+  const rows = useMemo(
+    () => Object.entries(routes || {}).map(([source, target]) => ({ source, target }))
+      .sort((a, b) => a.source.localeCompare(b.source)),
+    [routes]
+  );
 
   const handleSave = async () => {
     const src = from.trim();
@@ -218,67 +296,70 @@ function RoutingTab({ routes, activeProviders, modelAliases, onChanged }) {
 
   return (
     <div className="space-y-4">
-      <Card title="Create Route" subtitle="Send requests for one model to another — the client keeps using the original id">
-        <div className="space-y-3">
-          <div className="flex flex-col sm:flex-row gap-3">
-            <div className="flex-1">
-              <label className="block text-sm font-medium text-text-main mb-1.5">When a request asks for</label>
-              <div className="flex gap-2">
-                <Input
-                  value={from}
-                  onChange={(e) => setFrom(e.target.value)}
-                  placeholder="e.g. cmc/deepseek/deepseek-v4.1-flash"
-                  className="flex-1"
-                />
-                <Button variant="secondary" onClick={() => setPickerFor("from")}>
-                  <span className="material-symbols-outlined text-[18px]">search</span>
-                </Button>
-              </div>
+      <Card
+        title="Create route"
+        subtitle="Requests for one model are served by another — the client keeps using the original id"
+        icon="alt_route"
+      >
+        <div className="space-y-4">
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-end">
+            <ModelField
+              label="When a request asks for"
+              value={from}
+              onChange={setFrom}
+              onPick={() => setPickerFor("from")}
+              placeholder="e.g. cmc/deepseek/deepseek-v4.1-flash"
+            />
+            <div className="hidden shrink-0 items-center justify-center pb-2 lg:flex">
+              <span className="material-symbols-outlined text-[20px] text-text-muted">arrow_forward</span>
             </div>
-            <div className="flex-1">
-              <label className="block text-sm font-medium text-text-main mb-1.5">Run instead</label>
-              <div className="flex gap-2">
-                <Input
-                  value={to}
-                  onChange={(e) => setTo(e.target.value)}
-                  placeholder="e.g. wb/deepseek-v4.1-flash"
-                  className="flex-1"
-                />
-                <Button variant="secondary" onClick={() => setPickerFor("to")}>
-                  <span className="material-symbols-outlined text-[18px]">search</span>
-                </Button>
-              </div>
-            </div>
+            <ModelField
+              label="Run instead"
+              value={to}
+              onChange={setTo}
+              onPick={() => setPickerFor("to")}
+              placeholder="e.g. wb/deepseek-v4.1-flash"
+            />
           </div>
-          {error && <p className="text-xs text-error">{error}</p>}
-          <Button onClick={handleSave} disabled={saving}>
-            {saving ? "Saving…" : "Save Route"}
-          </Button>
-          <p className="text-xs text-text-muted">
-            Both models must already exist. Usage history records the target model; the original
-            request id is kept on the request detail as <span className="font-mono">requestedModel</span>.
-          </p>
+          {error && (
+            <p className="flex items-center gap-1.5 text-xs text-red-500">
+              <span className="material-symbols-outlined text-[14px]">error</span>
+              {error}
+            </p>
+          )}
+          <div className="flex flex-wrap items-center gap-3">
+            <Button onClick={handleSave} disabled={saving} loading={saving} icon="add">
+              {saving ? "Saving…" : "Save route"}
+            </Button>
+            <p className="text-xs text-text-muted">
+              Both models must already exist. Usage is recorded against the target.
+            </p>
+          </div>
         </div>
       </Card>
 
-      <Card title={`Routes (${rows.length})`} padding="none">
+      <div className="overflow-hidden rounded-[14px] border border-border-subtle bg-surface shadow-[var(--shadow-soft)]">
+        <CardHeader count={rows.length}>Routes</CardHeader>
         {rows.length === 0 ? (
-          <p className="p-6 text-sm text-text-muted">No routes yet.</p>
+          <EmptyState
+            icon="alt_route"
+            title="No routes yet"
+            hint="Add one above to silently serve a model with a different one."
+          />
         ) : (
           <div className="divide-y divide-border-subtle">
             {rows.map((row) => (
-              <div key={row.source} className="flex items-center gap-3 p-4">
-                <span className="font-mono text-xs text-text-main truncate flex-1">{row.source}</span>
-                <span className="material-symbols-outlined text-[16px] text-text-muted">arrow_forward</span>
-                <span className="font-mono text-xs text-text-main truncate flex-1">{row.target}</span>
-                <Button variant="ghost" size="sm" onClick={() => setPendingDelete(row.source)}>
-                  <span className="material-symbols-outlined text-[18px]">delete</span>
-                </Button>
-              </div>
+              <MappingRow
+                key={row.source}
+                lead={row.source}
+                leadVariant="text"
+                target={row.target}
+                onDelete={() => setPendingDelete(row.source)}
+              />
             ))}
           </div>
         )}
-      </Card>
+      </div>
 
       <ModelSelectModal
         isOpen={!!pickerFor}
@@ -341,22 +422,24 @@ export default function RoutingPage() {
   if (loading) return <CardSkeleton />;
 
   return (
-    <div className="max-w-4xl mx-auto space-y-6">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h1 className="text-xl font-semibold text-text-main">Alias &amp; Routing</h1>
-          <p className="text-sm text-text-muted mt-1">
-            Give a model a short name, or send requests for one model to another.
-          </p>
+    <div className="mx-auto flex w-full max-w-4xl flex-col gap-4 px-1 sm:gap-6 sm:px-0">
+      {/* Title and tabs share one row so the control centres against the
+          heading itself. Centring it against the heading+subtitle block (the
+          previous layout) left it floating between the two lines. */}
+      <div className="flex flex-col gap-2">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <h1 className="text-xl font-semibold text-text-main sm:text-2xl">Alias &amp; Routing</h1>
+          <SegmentedControl options={TABS} value={tab} onChange={setTab} className="shrink-0" />
         </div>
-        <SegmentedControl options={TABS} value={tab} onChange={setTab} />
+        <p className="text-sm text-text-muted">
+          Give a model a short name, or quietly serve it with a different one.
+        </p>
       </div>
 
       {tab === "alias" ? (
         <AliasTab
           aliases={aliases}
           activeProviders={activeProviders}
-          modelAliases={aliases}
           onChanged={loadData}
         />
       ) : (
