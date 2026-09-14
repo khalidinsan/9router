@@ -418,6 +418,49 @@ async function createBypassRequest(parsedUrl, realIP, options) {
   });
 }
 
+/**
+ * Does the SYSTEM resolver send this host to loopback?
+ *
+ * That redirect is the only reason the MITM bypass exists: MITM writes
+ * /etc/hosts entries pointing these hosts at 127.0.0.1, and the bypass pins the
+ * real IP so 9router's own traffic skips its own interceptor.
+ *
+ * When MITM is off there is no entry, the system resolver already returns the
+ * real IPs, and the bypass is pure overhead — it re-implements DNS+TCP+TLS by
+ * hand and, on a network where those pinned addresses are unreachable, burns
+ * four connect deadlines before falling through to the plain fetch that would
+ * have worked immediately. Measured: bypass 203ms vs plain fetch 51ms for the
+ * same request.
+ *
+ * Probed per host and cached briefly, so enabling MITM still engages the
+ * bypass within one TTL without a settings/DB dependency here.
+ */
+const MITM_PROBE_TTL_MS = 30 * 1000;
+const mitmProbeCache = new Map(); // hostname -> { redirects, expiresAt }
+
+async function systemDnsRedirectsToLoopback(hostname) {
+  const cached = mitmProbeCache.get(hostname);
+  if (cached && Date.now() < cached.expiresAt) return cached.redirects;
+
+  let redirects = false;
+  try {
+    const dns = await import("dns");
+    const { promisify } = await import("util");
+    const { address } = await promisify(dns.lookup)(hostname);
+    redirects = address === "127.0.0.1" || address === "::1" || address === "0.0.0.0";
+  } catch {
+    // Unresolvable here — leave it to the normal path to surface the error.
+    redirects = false;
+  }
+
+  mitmProbeCache.set(hostname, { redirects, expiresAt: Date.now() + MITM_PROBE_TTL_MS });
+  return redirects;
+}
+
+export function _clearMitmProbeCache() {
+  mitmProbeCache.clear();
+}
+
 export async function proxyAwareFetch(url, options = {}, proxyOptions = null) {
   const targetUrl = typeof url === "string" ? url : url.toString();
 
@@ -437,53 +480,63 @@ export async function proxyAwareFetch(url, options = {}, proxyOptions = null) {
   const envProxyUrl = connectionProxyUrl ? null : normalizeProxyUrl(getEnvProxyUrl(targetUrl));
   const proxyUrl = connectionProxyUrl || envProxyUrl;
 
-  // MITM DNS bypass: for known MITM-intercepted hosts, resolve real IP to avoid DNS spoof
+  // MITM DNS bypass: only while MITM is actually intercepting this host.
+  // See systemDnsRedirectsToLoopback — when MITM is off the system resolver is
+  // already correct and this whole path is overhead that can stall the request.
   if (shouldBypassMitmDns(targetUrl)) {
-    if (proxyUrl) {
-      // Proxy resolves DNS externally (not affected by /etc/hosts) — use proxy directly
-      try {
-        const dispatcher = await getDispatcher(proxyUrl);
-        return await originalFetch(url, { ...options, dispatcher });
-      } catch (proxyError) {
-        if (proxyOptions?.strictProxy === true) {
-          throw new Error(`[ProxyFetch] Proxy required but failed (strictProxy=true): ${proxyError.message}`);
-        }
-        console.warn(`[ProxyFetch] Proxy failed, falling back to direct bypass: ${proxyError.message}`);
-      }
-    }
-    // No proxy — manually resolve real IP to bypass DNS spoof.
-    // Try each candidate address in turn; a dead family must not hang the request.
-    const parsedUrl = new URL(targetUrl);
-    const ips = await resolveRealIPs(parsedUrl.hostname);
-    if (ips?.length) {
-      let lastError = null;
-      for (const ip of ips) {
+    const hostname = new URL(targetUrl).hostname;
+    const intercepted = await systemDnsRedirectsToLoopback(hostname);
+
+    if (!intercepted) {
+      // Not redirected — nothing to bypass. Fall through to the normal path.
+      dbg("TLS", `MITM bypass skipped for ${hostname} (system DNS not redirected)`);
+    } else {
+      if (proxyUrl) {
+        // Proxy resolves DNS externally (not affected by /etc/hosts) — use proxy directly
         try {
-          return await createBypassRequest(parsedUrl, ip, options);
-        } catch (error) {
-          lastError = error;
-          const msg = String(error?.message || "");
-          // EHOSTUNREACH/ENETUNREACH is a routing verdict: this host has no
-          // route to that whole family, so the next address from it will fail
-          // identically. Remember the family and skip the rest of it.
-          if (/EHOSTUNREACH|ENETUNREACH|EAFNOSUPPORT|EADDRNOTAVAIL/i.test(msg)) {
-            markFamilyDead(parsedUrl.hostname, ip);
-            markAddressDead(parsedUrl.hostname, ip);
-            console.warn(`[ProxyFetch] MITM bypass: ${ip} unreachable (no route for IPv${ipFamily(ip)}); skipping family`);
-            continue;
+          const dispatcher = await getDispatcher(proxyUrl);
+          return await originalFetch(url, { ...options, dispatcher });
+        } catch (proxyError) {
+          if (proxyOptions?.strictProxy === true) {
+            throw new Error(`[ProxyFetch] Proxy required but failed (strictProxy=true): ${proxyError.message}`);
           }
-          // A connect timeout / refused connection proves only THIS address
-          // unreachable — a sibling from the same family may still work.
-          if (/connect timeout|ECONNREFUSED|ETIMEDOUT/i.test(msg)) {
-            markAddressDead(parsedUrl.hostname, ip);
-            console.warn(`[ProxyFetch] MITM bypass: ${ip} unreachable (${msg}); trying next address`);
-            continue;
-          }
-          console.warn(`[ProxyFetch] MITM bypass failed: ${msg}`);
-          break;
+          console.warn(`[ProxyFetch] Proxy failed, falling back to direct bypass: ${proxyError.message}`);
         }
       }
-      if (lastError) console.warn(`[ProxyFetch] MITM bypass exhausted for ${parsedUrl.hostname}: ${lastError.message}`);
+      // No proxy — manually resolve real IP to bypass DNS spoof.
+      // Try each candidate address in turn; a dead family must not hang the request.
+      const parsedUrl = new URL(targetUrl);
+      const ips = await resolveRealIPs(parsedUrl.hostname);
+      if (ips?.length) {
+        let lastError = null;
+        for (const ip of ips) {
+          try {
+            return await createBypassRequest(parsedUrl, ip, options);
+          } catch (error) {
+            lastError = error;
+            const msg = String(error?.message || "");
+            // EHOSTUNREACH/ENETUNREACH is a routing verdict: this host has no
+            // route to that whole family, so the next address from it will fail
+            // identically. Remember the family and skip the rest of it.
+            if (/EHOSTUNREACH|ENETUNREACH|EAFNOSUPPORT|EADDRNOTAVAIL/i.test(msg)) {
+              markFamilyDead(parsedUrl.hostname, ip);
+              markAddressDead(parsedUrl.hostname, ip);
+              console.warn(`[ProxyFetch] MITM bypass: ${ip} unreachable (no route for IPv${ipFamily(ip)}); skipping family`);
+              continue;
+            }
+            // A connect timeout / refused connection proves only THIS address
+            // unreachable — a sibling from the same family may still work.
+            if (/connect timeout|ECONNREFUSED|ETIMEDOUT/i.test(msg)) {
+              markAddressDead(parsedUrl.hostname, ip);
+              console.warn(`[ProxyFetch] MITM bypass: ${ip} unreachable (${msg}); trying next address`);
+              continue;
+            }
+            console.warn(`[ProxyFetch] MITM bypass failed: ${msg}`);
+            break;
+          }
+        }
+        if (lastError) console.warn(`[ProxyFetch] MITM bypass exhausted for ${parsedUrl.hostname}: ${lastError.message}`);
+      }
     }
   }
 

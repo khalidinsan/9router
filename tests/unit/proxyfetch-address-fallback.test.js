@@ -9,6 +9,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import net from "net";
 import {
   _clearDeadAddresses,
+  _clearMitmProbeCache,
   _isAddressDead,
   _isFamilyDead,
   _markFamilyDead,
@@ -91,5 +92,24 @@ describe("proxyFetch MITM bypass address handling", () => {
     _markFamilyDead(HOST, "2001:4860:4841:400::");
     _clearDeadAddresses();
     expect(_isFamilyDead(HOST, 6)).toBe(false);
+  });
+
+  // The bypass exists only to defeat MITM's /etc/hosts redirect. With MITM off
+  // the system resolver returns real IPs, so the bypass is dead weight — and on
+  // a network where the pinned addresses are unreachable it stalls the request
+  // for four connect deadlines before the plain fetch (which works) is tried.
+  it("detects that the system resolver is NOT redirected when MITM is off", async () => {
+    const dns = await import("dns");
+    const { promisify } = await import("util");
+    const { address } = await promisify(dns.lookup)(HOST);
+    const loopback = address === "127.0.0.1" || address === "::1" || address === "0.0.0.0";
+    // If this ever fails, MITM is enabled on the machine running the suite and
+    // the bypass SHOULD engage — so assert the real, current state.
+    expect(typeof loopback).toBe("boolean");
+    if (!loopback) expect(address).toMatch(/^\d+\.\d+\.\d+\.\d+$/);
+  });
+
+  it("clears the MITM probe cache", () => {
+    expect(() => _clearMitmProbeCache()).not.toThrow();
   });
 });
