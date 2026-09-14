@@ -23,6 +23,7 @@ const navItems = [
   { href: "/dashboard/add-account", label: "Add Account", icon: "person_add" },
   // { href: "/dashboard/basic-chat", label: "Basic Chat", icon: "chat" }, // Hidden
   { href: "/dashboard/combos", label: "Combo & Vision Adapter", icon: "layers" },
+  { href: "/dashboard/routing", label: "Alias & Routing", icon: "alt_route" },
   { href: "/dashboard/usage", label: "Usage", icon: "bar_chart" },
   { href: "/dashboard/quota", label: "Quota Tracker", icon: "data_usage" },
   { href: "/dashboard/token-saver", label: "Token Saver", icon: "savings" },

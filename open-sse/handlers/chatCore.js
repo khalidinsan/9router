@@ -59,7 +59,7 @@ export function stripContinuityFields(body) {
 }
 
 export async function handleChatCore({ body, modelInfo, credentials, log, onCredentialsRefreshed, onRequestSuccess, onDisconnect, clientRawRequest, connectionId, userAgent, apiKey, ccFilterNaming, rtkEnabled, headroomEnabled, headroomUrl, headroomCompressUserMessages, headroomTimeoutMs, cavemanEnabled, cavemanLevel, ponytailEnabled, ponytailLevel, pxpipeEnabled, pxpipeMinChars, pxpipeTimeoutMs, pxpipeTransform, onPxpipeEvent, sourceFormatOverride, providerThinking }) {
-  const { provider, model } = modelInfo;
+  const { provider, model, requestedModel } = modelInfo;
   const requestStartTime = Date.now();
   // Stable per-session color so all lines of one CLI conversation share a tag
   const sessionSeed = (() => {
@@ -216,15 +216,25 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
 
   // Request line: one correlated summary (fmt + thinking + counts + account)
   if (log?.line) {
-    const clientModel = clientRawRequest?.body?.model || `${provider}/${model}`;
     const msgN = translatedBody.messages?.length || translatedBody.input?.length || translatedBody.contents?.length || body.messages?.length || body.input?.length || 0;
     const toolN = translatedBody.tools?.length || body.tools?.length || 0;
     const fmtStr = passthrough ? `FMT: ${sourceFormat} (passthrough)` : `FMT: ${sourceFormat}→${targetFormat}`;
     const showThinking = provider !== "grok-cli" || supportsGrokCliReasoningEffort(model);
     const think = showThinking ? log.fmtThink?.(extractThinking(translatedBody)) : null;
     const acc = credentials?.connectionName || credentials?.connectionId?.slice(0, 8) || "-";
+    // "A → B" only when the model ACTUALLY changed; otherwise echo what the
+    // client sent, so the short id the user typed (`wb/...`, `cmc/...`) is what
+    // shows up rather than its canonical expansion (`workbuddy/...`).
+    //
+    // `requestedModel` is set by getModelInfo on a routing hit and nowhere else,
+    // so it is the exact signal. Do NOT infer routing from clientRawRequest:
+    // that holds the raw client string, which differs from the canonical form
+    // for every aliased provider, so comparing them painted a plain alias
+    // expansion as if it were a remap.
     const parts = [
-      `POST ${clientModel} → ${provider}/${model}`,
+      requestedModel
+        ? `POST ${requestedModel} → ${PROVIDER_ID_TO_ALIAS[provider] || provider}/${model}`
+        : `POST ${clientRawRequest?.body?.model || `${provider}/${model}`}`,
       fmtStr,
       stream ? "STREAM" : "JSON",
       `${msgN} MSG`,
@@ -381,7 +391,7 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
     trackPendingRequest(model, provider, connectionId, false, true, apiKey);
     appendRequestLog({ model, provider, connectionId, status: `FAILED ${error.name === "AbortError" ? 499 : HTTP_STATUS.BAD_GATEWAY}` }).catch(() => { });
     saveRequestDetail(buildRequestDetail({
-      provider, model, connectionId,
+      provider, model, requestedModel, connectionId,
       latency: { ttft: 0, total: Date.now() - requestStartTime },
       tokens: { prompt_tokens: 0, completion_tokens: 0 },
       request: extractRequestConfig(body, stream),
@@ -455,7 +465,7 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
     const { statusCode, message, resetsAtMs } = await parseUpstreamError(providerResponse, executor);
     appendRequestLog({ model, provider, connectionId, status: `FAILED ${statusCode}` }).catch(() => { });
     saveRequestDetail(buildRequestDetail({
-      provider, model, connectionId,
+      provider, model, requestedModel, connectionId,
       latency: { ttft: 0, total: Date.now() - requestStartTime },
       tokens: { prompt_tokens: 0, completion_tokens: 0 },
       request: extractRequestConfig(body, stream),
@@ -474,7 +484,7 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
     return createErrorResult(statusCode, errMsg, resetsAtMs);
   }
 
-  const sharedCtx = { provider, model, body, stream, translatedBody, finalBody, requestStartTime, connectionId, apiKey, clientRawRequest, onRequestSuccess, pxpipe: pxpipeSummary, reqTag, log };
+  const sharedCtx = { provider, model, requestedModel, body, stream, translatedBody, finalBody, requestStartTime, connectionId, apiKey, clientRawRequest, onRequestSuccess, pxpipe: pxpipeSummary, reqTag, log };
   const appendLog = (extra) => appendRequestLog({ model, provider, connectionId, ...extra }).catch(() => { });
   const trackDone = () => trackPendingRequest(model, provider, connectionId, false, false, apiKey);
 

@@ -45,6 +45,11 @@ export {
   getMitmAlias, setMitmAliasAll,
 } from "./repos/aliasRepo.js";
 
+// Model routing (remap an existing model to another existing model)
+export {
+  getModelRoutes, resolveModelRoute, setModelRoute, deleteModelRoute,
+} from "./repos/routingRepo.js";
+
 // Pricing
 export {
   getPricing, getPricingForModel, updatePricing, resetPricing, resetAllPricing,

@@ -172,9 +172,44 @@ export async function handleChat(request, clientRawRequest = null) {
 /**
  * Handle single model chat request
  */
-async function handleSingleModelChat(body, modelStr, clientRawRequest = null, request = null, apiKey = null) {
-  const modelInfo = await getModelInfo(modelStr);
+async function handleSingleModelChat(body, modelStr, clientRawRequest = null, request = null, apiKey = null, options = {}) {
+  const modelInfo = await getModelInfo(modelStr, options);
 
+  // If this request was routed from another model (see routingRepo), attempt
+  // the routed target first. If the target model fails (all accounts exhausted,
+  // provider down, 5xx/4xx error response, or thrown exception), cleanly fall back
+  // to the original requested model with { skipRouting: true } so the client's
+  // request succeeds instead of failing.
+  const preferredConnectionId = request?.headers?.get("x-connection-id") || null;
+  if (modelInfo.routedFrom && !options.skipRouting && !preferredConnectionId) {
+    let resultResponse = null;
+    let thrownError = null;
+    try {
+      resultResponse = await executeSingleModelChat(body, modelInfo, modelStr, clientRawRequest, request, apiKey);
+    } catch (err) {
+      thrownError = err;
+    }
+
+    if (resultResponse && resultResponse.ok) {
+      return resultResponse;
+    }
+
+    const failureStatus = resultResponse?.status || (thrownError ? 500 : "unknown");
+    log.warn(
+      "FALLBACK",
+      `[ROUTE] Target "${modelInfo.provider}/${modelInfo.model}" failed (${failureStatus}${thrownError ? `: ${thrownError.message}` : ""}) → falling back to original model "${modelInfo.routedFrom}"`
+    );
+
+    return handleSingleModelChat(body, modelInfo.routedFrom, clientRawRequest, request, apiKey, {
+      ...options,
+      skipRouting: true,
+    });
+  }
+
+  return executeSingleModelChat(body, modelInfo, modelStr, clientRawRequest, request, apiKey);
+}
+
+async function executeSingleModelChat(body, modelInfo, modelStr, clientRawRequest = null, request = null, apiKey = null) {
   // If provider is null, this might be a combo name - check and handle
   if (!modelInfo.provider) {
     const comboModels = await getComboModels(modelStr);
@@ -227,14 +262,14 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
     return errorResponse(HTTP_STATUS.BAD_REQUEST, "Invalid model format");
   }
 
-  const { provider, model } = modelInfo;
+  const { provider, model, requestedModel } = modelInfo;
 
   // Routing shown in the unified "▶" line (client model → provider/model)
 
   // Extract userAgent from request
   const userAgent = request?.headers?.get("user-agent") || "";
   // Pin to a specific connection (per-account model test / media-style pin)
-  const preferredConnectionId = request.headers.get("x-connection-id") || null;
+  const preferredConnectionId = request?.headers?.get("x-connection-id") || null;
   // Allow probing disabled accounts (re-probe quota/403 — not public clients)
   const requestedInactivePin =
     request.headers.get("x-9r-allow-inactive") === "1" ||
@@ -340,7 +375,7 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
     try {
       result = await handleChatCore({
         body: { ...body, model: `${provider}/${model}` },
-        modelInfo: { provider, model },
+        modelInfo: { provider, model, requestedModel },
         credentials: refreshedCredentials,
         log,
         clientRawRequest,

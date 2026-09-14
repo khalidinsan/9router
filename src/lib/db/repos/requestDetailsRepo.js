@@ -106,6 +106,11 @@ async function flushToDatabase() {
             id: item.id,
             provider: item.provider || null,
             model: item.model || null,
+            // Set when a model route remapped this request (see routingRepo).
+            // This record is an explicit whitelist — anything not named here is
+            // dropped before the JSON blob is written, so a field added to
+            // buildRequestDetail still needs to be listed here to survive.
+            requestedModel: item.requestedModel || undefined,
             connectionId: item.connectionId || null,
             timestamp: item.timestamp,
             status: item.status || null,

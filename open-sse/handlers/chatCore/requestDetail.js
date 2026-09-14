@@ -68,6 +68,10 @@ export function buildRequestDetail(base, overrides = {}) {
   return {
     provider: base.provider || "unknown",
     model: base.model || "unknown",
+    // When the request was remapped by a model route (see routingRepo), `model`
+    // is the routed target and this holds the id the client actually asked for.
+    // Kept so the dashboard can show "asked for A, ran B" without losing either.
+    requestedModel: base.requestedModel || undefined,
     connectionId: base.connectionId || undefined,
     timestamp: new Date().toISOString(),
     latency: base.latency || { ttft: 0, total: 0 },
