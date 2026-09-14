@@ -1,5 +1,5 @@
 // Re-export from open-sse with localDb integration
-import { getModelAliases, getComboByName, getProviderNodes } from "@/lib/localDb";
+import { getModelAliases, getComboByName, getProviderNodes, resolveModelRoute } from "@/lib/localDb";
 import { parseModel as parseModelCore, resolveModelAliasFromMap, getModelInfoCore } from "open-sse/services/model.js";
 import REGISTRY from "open-sse/providers/registry/index.js";
 
@@ -34,8 +34,36 @@ export async function resolveModelAlias(alias) {
 
 /**
  * Get full model info (parse or resolve)
+ *
+ * @param {string} modelStr
+ * @param {{ skipRouting?: boolean }} [options] — skipRouting is for the routing
+ *   admin API itself. Validating a route by calling the routing-aware resolver
+ *   would be circular: it would resolve the source through the very route being
+ *   validated (or through an existing one) and report the target back.
  */
-export async function getModelInfo(modelStr) {
+export async function getModelInfo(modelStr, options = {}) {
+  // Model routing (remap) runs FIRST, on the raw request string.
+  //
+  // A routing key is a full model id and usually contains slashes
+  // ("cmc/deepseek/deepseek-v4.1-flash"). parseModel() splits on the FIRST
+  // slash, so a key would already be mangled by the time any later stage could
+  // match it — the lookup must happen here, on the untouched string.
+  //
+  // On a hit the request string is replaced entirely, so the executor, usage
+  // history and request details all see the routed model. The original is
+  // carried on `requestedModel` so the audit trail survives.
+  if (!options.skipRouting) {
+    const routed = await resolveModelRoute(modelStr);
+    if (routed) {
+      const routedInfo = await getModelInfoResolved(routed);
+      return { ...routedInfo, requestedModel: modelStr, routedFrom: modelStr };
+    }
+  }
+  return getModelInfoResolved(modelStr);
+}
+
+/** Alias/parse resolution, with no routing applied. */
+async function getModelInfoResolved(modelStr) {
   const parsed = parseModel(modelStr);
 
   if (!parsed.isAlias) {

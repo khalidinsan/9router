@@ -227,7 +227,7 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
     return errorResponse(HTTP_STATUS.BAD_REQUEST, "Invalid model format");
   }
 
-  const { provider, model } = modelInfo;
+  const { provider, model, requestedModel } = modelInfo;
 
   // Routing shown in the unified "▶" line (client model → provider/model)
 
@@ -340,7 +340,7 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
     try {
       result = await handleChatCore({
         body: { ...body, model: `${provider}/${model}` },
-        modelInfo: { provider, model },
+        modelInfo: { provider, model, requestedModel },
         credentials: refreshedCredentials,
         log,
         clientRawRequest,

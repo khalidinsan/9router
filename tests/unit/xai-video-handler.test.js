@@ -33,6 +33,8 @@ vi.mock("@/lib/localDb", () => ({
   getComboByName: vi.fn(async () => null),
   getModelAliases: vi.fn(async () => ({})),
   getProviderNodes: vi.fn(async () => []),
+  // Model routing: no route configured in these tests, so the resolver is a no-op.
+  resolveModelRoute: vi.fn(async () => null),
 }));
 vi.mock("@/sse/utils/logger.js", () => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() }));
 
