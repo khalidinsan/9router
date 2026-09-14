@@ -304,10 +304,17 @@ export function createSSEStream(options = {}) {
             }
           }
 
+          // The client may hang up the instant it sees the sentinel — OMP does
+          // exactly that — which cancels this stream so flush() never runs and
+          // the usage below is lost. Usage is already complete by the time the
+          // sentinel arrives (it rides the last chunk before it), so finalize
+          // here instead of waiting for a flush that may never come.
+          const isDoneSentinel = trimmed.startsWith("data:") && trimmed.slice(5).trim() === "[DONE]";
+
           reqLogger?.appendConvertedChunk?.(output);
           controller.enqueue(sharedEncoder.encode(output));
           // Responses clients (codex CLI) close on response.completed instead of [DONE]
-          if (responsesTerminal) finalizeStream();
+          if (responsesTerminal || isDoneSentinel) finalizeStream();
           continue;
         }
 
@@ -347,6 +354,9 @@ export function createSSEStream(options = {}) {
           }
           streamDoneSent = true;
           if (keepsOpenAIResponsesFormat) openAIResponsesDoneSent = true;
+          // Same reason as the passthrough branch: a client that hangs up on the
+          // sentinel cancels this stream before flush() can run, losing the usage.
+          finalizeStream();
           continue;
         }
 
