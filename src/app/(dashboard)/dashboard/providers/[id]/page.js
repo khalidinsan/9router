@@ -1014,14 +1014,19 @@ export default function ProviderDetailPage() {
 
   // Models available for per-account test (same catalog as Models section, llm only)
   const accountTestModels = (() => {
+    // Exclude models disabled in "Available Models". This panel answers "which
+    // models work on THIS account", so offering ones the provider has switched
+    // off is misleading — testing them can only fail, and it contradicted the
+    // list directly above it.
+    const disabledSet = new Set(disabledModelIds);
     const builtIn = (models || [])
       .filter((m) => {
         const k = getModelKind(m);
-        return !k || k === "llm";
+        return (!k || k === "llm") && !disabledSet.has(m.id);
       })
       .map((m) => ({ id: m.id, name: m.name || m.id }));
     const freeExtra = (kiloFreeModels || [])
-      .filter((fm) => !builtIn.some((m) => m.id === fm.id))
+      .filter((fm) => !builtIn.some((m) => m.id === fm.id) && !disabledSet.has(fm.id))
       .map((m) => ({ id: m.id, name: m.name || m.id }));
     const customRows = getProviderCustomModelRows({
       customModels,
@@ -1029,7 +1034,9 @@ export default function ProviderDetailPage() {
       providerAlias: providerStorageAlias,
       builtInModels: models || [],
       type: "llm",
-    }).map((m) => ({ id: m.id, name: m.name || m.id }));
+    })
+      .filter((m) => !disabledSet.has(m.id))
+      .map((m) => ({ id: m.id, name: m.name || m.id }));
     const seen = new Set();
     const out = [];
     for (const m of [...customRows, ...builtIn, ...freeExtra]) {
