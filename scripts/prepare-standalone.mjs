@@ -52,6 +52,45 @@ if (fs.existsSync(camoufoxDataSrc)) {
   console.log("[prepare-standalone] copied camoufox data-files/");
 }
 
+// The MITM server is spawned as a child process and `require`s its own module
+// tree at runtime (`./logger`, `./config`, `./handlers/*`, `./cert/*`, `./dns/*`).
+// Next.js tracing only follows the entry file — `server.js` lands in the
+// standalone output while every sibling it requires does not, so starting MITM
+// from a production build died with "Cannot find module './logger'".
+const mitmSrc = path.join(root, "src", "mitm");
+const mitmDest = path.join(standalone, "src", "mitm");
+if (fs.existsSync(mitmSrc)) {
+  copyDir(mitmSrc, mitmDest);
+  console.log("[prepare-standalone] copied src/mitm/");
+}
+
+// ...and the few modules OUTSIDE src/mitm/ that its child process requires.
+// These are plain `require()` calls from a script that is never bundled, so
+// tracing does not see them. Keep this list in sync with
+// `grep -rn 'require("\.\./\.\./' src/mitm/`.
+const mitmExtraFiles = [
+  path.join("src", "shared", "constants", "mitmToolHosts.js"),
+];
+for (const rel of mitmExtraFiles) {
+  const src = path.join(root, rel);
+  const dest = path.join(standalone, rel);
+  if (!fs.existsSync(src)) continue;
+  fs.mkdirSync(path.dirname(dest), { recursive: true });
+  fs.copyFileSync(src, dest);
+}
+console.log("[prepare-standalone] copied MITM helper modules");
+
+// Packages the MITM child process requires directly (cert generation, machine
+// id). Tracing misses them for the same reason as above.
+for (const pkg of ["node-forge", "node-machine-id"]) {
+  const src = path.join(root, "node_modules", pkg);
+  const dest = path.join(standalone, "node_modules", pkg);
+  if (fs.existsSync(src)) {
+    copyDir(src, dest);
+    console.log(`[prepare-standalone] copied ${pkg}`);
+  }
+}
+
 // Never ship better-sqlite3 in the portable standalone output. Its native
 // binary is tied to the Node ABI used during install/build and may not match the
 // Node runtime that starts the server. The DB driver will fall back to node:sqlite
