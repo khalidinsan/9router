@@ -103,6 +103,9 @@ function getGroupKey(item, keyField) {
     // Stable id = FULL raw key (apiKeyKey). Never group by display keyName or
     // masked prefix: masked prefixes collide across keys on one server.
     case "apiKeyKey": return item.apiKeyKey || item.keyName || "Unknown Key";
+    // keyId = key identity WITHOUT model/provider: one accordion per key,
+    // per-model rows inside. Falls back to apiKeyKey for stale payloads.
+    case "keyId": return item.keyId || item.apiKeyKey || item.keyName || "Unknown Key";
     case "keyName": return item.apiKeyKey || item.keyName || "Unknown Key";
     case "endpoint": return item.endpoint || "Unknown Endpoint";
     default: return item[keyField] || "Unknown";
@@ -451,7 +454,7 @@ export default function UsageStats({ period: periodProp, setPeriod: setPeriodPro
       case "apiKey": {
         return {
           columns: API_KEY_COLUMNS,
-          groupedData: sortGroups(groupDataByKey(sortData(stats.byApiKey, {}, sortBy, sortOrder), "apiKeyKey", "keyName"), sortBy, sortOrder),
+          groupedData: sortGroups(groupDataByKey(sortData(stats.byApiKey, {}, sortBy, sortOrder), "keyId", "keyName"), sortBy, sortOrder),
           storageKey: "usage-stats:expanded-apikeys",
           emptyMessage: "No API key usage recorded yet.",
           renderSummaryCells: (group) => (
