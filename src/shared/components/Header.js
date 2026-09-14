@@ -141,6 +141,13 @@ const getPageInfo = (pathname) => {
       icon: "extension",
       breadcrumbs: [],
     };
+  if (pathname.includes("/routing"))
+    return {
+      title: "Alias & Routing",
+      description: "Model aliases and transparent request routing with automatic fallback",
+      icon: "alt_route",
+      breadcrumbs: [],
+    };
   if (pathname.includes("/endpoint"))
     return {
       title: "Endpoint",
