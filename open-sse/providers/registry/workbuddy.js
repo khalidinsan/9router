@@ -38,8 +38,10 @@ export default {
   priority: 91,
   display: {
     name: "WorkBuddy AI",
-    icon: "work",
-    color: "#0A7CFF",
+    icon: "smart_toy",
+    // Brand green, sampled from the official app icon.
+    color: "#01C886",
+    textIcon: "WB",
     website: "https://www.workbuddy.ai",
     notice: {
       signupUrl: "https://www.workbuddy.ai",

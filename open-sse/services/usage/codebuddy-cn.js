@@ -43,7 +43,7 @@ function refillCadence(acc) {
   return "Monthly";
 }
 
-async function getCodeBuddyUsage(providerId, accessToken, apiKey, providerSpecificData, proxyOptions = null) {
+export async function getCodeBuddyUsage(providerId, accessToken, apiKey, providerSpecificData, proxyOptions = null) {
   const token = accessToken || apiKey;
   if (!token) {
     return { message: `CodeBuddy (${providerId}) credential not available.` };
@@ -143,8 +143,4 @@ export async function getCodeBuddyCnUsage(accessToken, apiKey, providerSpecificD
 
 export async function getCodeBuddyIntlUsage(accessToken, apiKey, providerSpecificData, proxyOptions = null) {
   return getCodeBuddyUsage("codebuddy-intl", accessToken, apiKey, providerSpecificData, proxyOptions);
-}
-
-export async function getWorkBuddyUsage(accessToken, apiKey, providerSpecificData, proxyOptions = null) {
-  return getCodeBuddyUsage("workbuddy", accessToken, apiKey, providerSpecificData, proxyOptions);
 }
