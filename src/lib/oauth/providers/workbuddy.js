@@ -13,7 +13,31 @@ import {
  *
  * Requests carry X-No-Authorization / X-No-User-Id so the gateway treats the
  * auth handshake as public.
+ *
+ * The access token is a Keycloak JWT minted by the workbuddy.ai realm and
+ * carries the account identity:
+ *   sub                → account id the gateway wants echoed in x-user-id
+ *   preferred_username → the human handle the official CLI displays
+ *   email              → verified address (also what the UI lists)
+ *
+ * Anything unparseable yields {} so login still succeeds on an opaque token.
  */
+function decodeWorkbuddyClaims(accessToken) {
+  if (typeof accessToken !== "string") return {};
+  const parts = accessToken.split(".");
+  if (parts.length !== 3) return {};
+  try {
+    const payload = JSON.parse(Buffer.from(parts[1], "base64url").toString("utf8"));
+    return {
+      sub: payload.sub || null,
+      email: payload.email || null,
+      preferredUsername: payload.preferred_username || null,
+    };
+  } catch {
+    return {};
+  }
+}
+
 const workbuddy = {
   config: WORKBUDDY_OAUTH_CONFIG,
   flowType: "device_code",
@@ -71,23 +95,23 @@ const workbuddy = {
     return { ok: false, data: { error: data.msg || "unknown_error" } };
   },
   mapTokens: (tokens) => {
-    // The access token is a Keycloak JWT; its `sub` is the account id the
-    // gateway wants echoed back in x-user-id.
-    let userId = tokens._userId || null;
-    if (!userId && typeof tokens.access_token === "string") {
-      try {
-        const payload = JSON.parse(
-          Buffer.from(tokens.access_token.split(".")[1], "base64url").toString("utf8")
-        );
-        userId = payload.sub || null;
-      } catch {
-        userId = null;
-      }
-    }
+    // The access token is a Keycloak JWT carrying the account identity. Decode
+    // once and reuse: `sub` is the account id the gateway wants echoed back in
+    // x-user-id, while `preferred_username`/`email` name the connection so the
+    // UI shows a real account handle instead of "Account 1".
+    const claims = decodeWorkbuddyClaims(tokens.access_token);
+    const userId = tokens._userId || claims.sub || null;
+    // preferred_username is the handle the official CLI shows; email is the
+    // fallback for realms that only populate the verified address.
+    const accountName = claims.preferredUsername || claims.email || null;
     return {
       accessToken: tokens.access_token,
       refreshToken: tokens.refresh_token,
       expiresIn: tokens.expires_in || 86400,
+      // createProviderConnection names OAuth rows from `name`, and falls back
+      // to `Account <n>` when it is missing.
+      ...(accountName ? { name: accountName, displayName: accountName } : {}),
+      ...(claims.email ? { email: claims.email } : {}),
       providerSpecificData: userId ? { userId } : {},
     };
   },
