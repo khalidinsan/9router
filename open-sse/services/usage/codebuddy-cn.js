@@ -31,10 +31,31 @@ function num(precise, plain) {
   return Number.isFinite(n) ? n : 0;
 }
 
+/**
+ * Parse Tencent's `YYYY-MM-DD HH:mm:ss` timestamps.
+ *
+ * These are wall-clock in the upstream's timezone (UTC+8), with no offset in
+ * the string. `new Date(str)` therefore reads them in the *server's* zone —
+ * on a WIB host that lands 1 hour off, and on a UTC host 8 hours off. Verified
+ * against the paired epoch fields: `CycleEndTime "2026-09-21 18:28:41"` is
+ * exactly `DeductionEndTime 1789986521000` = 2026-09-21T10:28:41Z, i.e. UTC+8.
+ *
+ * Pinning the offset keeps reset times correct regardless of where the server
+ * runs. Anything that already carries an offset, or is an epoch, is passed
+ * through to the shared parser untouched.
+ */
+const UPSTREAM_UTC_OFFSET = "+08:00";
+function parseTencentTime(value) {
+  if (typeof value !== "string") return parseResetTime(value);
+  const m = value.trim().match(/^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2})$/);
+  if (!m) return parseResetTime(value);
+  return parseResetTime(`${m[1]}T${m[2]}${UPSTREAM_UTC_OFFSET}`);
+}
+
 // Label a refill pack by its cycle length (Monthly is the common CodeBuddy case).
 function refillCadence(acc) {
-  const start = parseResetTime(acc.CycleStartTime);
-  const end = parseResetTime(acc.CycleEndTime);
+  const start = parseTencentTime(acc.CycleStartTime);
+  const end = parseTencentTime(acc.CycleEndTime);
   if (start && end) {
     const days = (new Date(end).getTime() - new Date(start).getTime()) / 86400000;
     if (days <= 1.5) return "Daily";
@@ -80,16 +101,37 @@ export async function getCodeBuddyUsage(providerId, accessToken, apiKey, provide
     }
 
     const cycleEndMs = (acc) => {
-      const r = parseResetTime(acc.CycleEndTime);
+      const r = parseTencentTime(acc.CycleEndTime);
       return r ? new Date(r).getTime() : Number.POSITIVE_INFINITY;
     };
-    // Refill packs roll into a new cycle before the resource expires; bonus packs
-    // end exactly at expiry. >2d gap between cycle end and validity end = refill.
-    const REFILL_GAP_MS = 2 * 24 * 60 * 60 * 1000;
+
+    /**
+     * Is this a recurring subscription, or a one-shot bonus grant?
+     *
+     * The previous test compared DeductionEndTime against CycleEndTime and
+     * called anything with a <2-day gap a bonus pack. That heuristic does not
+     * hold: a "Pro Plan Trial Subscription" reports a 0-day gap, exactly like a
+     * bonus pack, so every subscription was misclassified as a bonus — and
+     * bonus rows read the plain Capacity fields, which are 0, instead of the
+     * Cycle fields that carry the real number. Result: 0/500 shown where the
+     * upstream reported 0.54/500.
+     *
+     * Two upstream signals identify the type directly, and both agree on every
+     * package observed (10/10):
+     *   - SubProductCode ends with `_bonus_pack`
+     *   - CapacityType is 1 for bonus, 4 for subscriptions
+     * Prefer SubProductCode; fall back to CapacityType; only then to the old
+     * timing heuristic, so an unfamiliar package still classifies sensibly.
+     */
     const isRefill = (acc) => {
+      const sub = String(acc.SubProductCode || "");
+      if (sub) return !/_bonus_pack/i.test(sub);
+      if (acc.CapacityType !== undefined && acc.CapacityType !== null) {
+        return Number(acc.CapacityType) !== 1;
+      }
       const ce = cycleEndMs(acc);
       const de = Number(acc.DeductionEndTime);
-      return Number.isFinite(ce) && Number.isFinite(de) && de - ce > REFILL_GAP_MS;
+      return Number.isFinite(ce) && Number.isFinite(de) && de - ce > 2 * 24 * 60 * 60 * 1000;
     };
     const byExpiry = (a, b) => cycleEndMs(a) - cycleEndMs(b);
 
@@ -107,7 +149,7 @@ export async function getCodeBuddyUsage(providerId, accessToken, apiKey, provide
       quotas[name] = {
         used: num(acc.CycleCapacityUsedPrecise, acc.CycleCapacityUsed),
         total: num(acc.CycleCapacitySizePrecise, acc.CycleCapacitySize),
-        resetAt: parseResetTime(acc.CycleEndTime),
+        resetAt: parseTencentTime(acc.CycleEndTime),
         unlimited: false,
         // Recurring allowance: the CycleEndTime is the next refresh, not the
         // final expiry. The UI must show "Resets in", not "Expires in".
@@ -122,7 +164,7 @@ export async function getCodeBuddyUsage(providerId, accessToken, apiKey, provide
       quotas[`Bonus Pack ${i + 1}`] = {
         used: num(acc.CapacityUsedPrecise, acc.CapacityUsed),
         total: num(acc.CapacitySizePrecise, acc.CapacitySize),
-        resetAt: parseResetTime(acc.CycleEndTime),
+        resetAt: parseTencentTime(acc.CycleEndTime),
         unlimited: false,
         recurring: false,
       };
