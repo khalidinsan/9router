@@ -1,3 +1,0 @@
-[     140ms] [LOG] [Maintenance Notice] Not in display time range @ https://www.codebuddy.ai/auth/realms/copilot/protocol/openid-connect/auth?scope=openid%20offline_access&client_id=console&redirect_uri=https%3A%2F%2Fwww.codebuddy.ai%2Fconsole%2Faccounts%2F.apisix%2Fredirect&state=611882897c5fb72d2d961a8a1531640d&response_type=code:1687
-[    7353ms] [ERROR] Failed to load resource: the server responded with a status of 400 (Bad Request) @ https://www.codebuddy.ai/console/auth/risk-context?platform=usercenter:0
-[   36240ms] [ERROR] Failed to load resource: the server responded with a status of 403 (Forbidden) @ https://www.codebuddy.ai/v2/chat/completions:0

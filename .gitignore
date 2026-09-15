@@ -101,3 +101,6 @@ graphify-out/*
 .start-dev.ps1
 start-dev-silent.cjs
 debug.log
+
+# Playwright MCP session artifacts (console logs, page snapshots)
+.playwright-mcp/
