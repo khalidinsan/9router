@@ -86,10 +86,14 @@
       "503": {
         "attempts": 1,
         "delayMs": 1000
+      },
+      "504": {
+        "attempts": 0
       }
     },
     "usage": {
       "quotaApiUrl": "https://daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels",
+      "quotaSummaryApiUrl": "https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary",
       "loadProjectApiUrl": "https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist",
       "tokenUrl": "https://oauth2.googleapis.com/token"
     },
@@ -177,6 +181,9 @@
       "HTTP-Referer": "https://cline.bot",
       "X-Title": "Cline"
     },
+    "quirks": {
+      "clineEnvelope": true
+    },
     "tokenUrl": "https://api.cline.bot/api/v1/auth/token",
     "refreshUrl": "https://api.cline.bot/api/v1/auth/refresh",
     "auth": {
@@ -194,6 +201,9 @@
     "headers": {
       "HTTP-Referer": "https://cline.bot",
       "X-Title": "Cline"
+    },
+    "quirks": {
+      "clineEnvelope": true
     },
     "auth": {
       "combined": true,
@@ -290,6 +300,12 @@
     "validateUrl": "https://api.deepseek.com/models",
     "reasoningInject": {
       "scope": "all"
+    },
+    "quirks": {
+      "claudeSupportedToolTypes": [
+        "web_search_20250305",
+        "web_search_20260209"
+      ]
     },
     "format": "openai",
     "transports": [
@@ -631,7 +647,8 @@
       "Anthropic-Beta": "claude-code-20250219,interleaved-thinking-2025-05-14"
     },
     "quirks": {
-      "dropOutputConfig": true
+      "dropOutputConfig": true,
+      "requireClaudeToolType": true
     },
     "reasoningInject": {
       "scope": "all"
@@ -682,7 +699,8 @@
       "Anthropic-Beta": "claude-code-20250219,interleaved-thinking-2025-05-14"
     },
     "quirks": {
-      "dropOutputConfig": true
+      "dropOutputConfig": true,
+      "requireClaudeToolType": true
     },
     "reasoningInject": {
       "scope": "all"
@@ -1012,6 +1030,7 @@
       "HTTP-Referer": "https://endpoint-proxy.local",
       "X-Title": "Endpoint Proxy"
     },
+    "forceStream": true,
     "format": "openai"
   },
   "baidu": {
@@ -1086,6 +1105,38 @@
   "genspark": {
     "baseUrl": "https://www.genspark.ai/api/llm_proxy/v1/chat/completions",
     "validateUrl": "https://www.genspark.ai/api/llm_proxy/v1/models",
+    "format": "openai"
+  },
+  "workbuddy": {
+    "baseUrl": "https://www.workbuddy.ai/v2/chat/completions",
+    "forceStream": true,
+    "thinkingFormat": "openai",
+    "headers": {
+      "User-Agent": "CLI/2.137.1 WorkBuddy AI/2.137.1",
+      "X-Product": "SaaS",
+      "X-IDE-Type": "CLI",
+      "X-IDE-Name": "CLI",
+      "X-IDE-Version": "2.137.1",
+      "x-requested-with": "XMLHttpRequest",
+      "x-codebuddy-request": "1",
+      "X-Domain": "www.workbuddy.ai"
+    },
+    "auth": {
+      "combined": true,
+      "header": "Authorization",
+      "scheme": "bearer"
+    },
+    "usage": {
+      "url": "https://www.workbuddy.ai/v2/billing/meter/get-user-resource"
+    },
+    "clientVersion": "2.137.1",
+    "productName": "WorkBuddy AI",
+    "format": "openai",
+    "tokenUrl": "https://www.workbuddy.ai/v2/plugin/auth/token"
+  },
+  "atria": {
+    "baseUrl": "https://api.atria-asi.ai/v1/chat/completions",
+    "validateUrl": "https://api.atria-asi.ai/v1/models",
     "format": "openai"
   }
 }

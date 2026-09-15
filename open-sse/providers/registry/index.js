@@ -124,6 +124,7 @@ import p122 from "./alitp-intl.js";
 import p123 from "./bai.js";
 import p124 from "./genspark.js";
 import p126 from "./xquik.js";
+import p128 from "./atria.js";
 export default [
   agentrouter,
   p0,
@@ -251,4 +252,5 @@ export default [
   p124,
   p126,
   p127,
+  p128,
 ];
