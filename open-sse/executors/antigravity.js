@@ -21,6 +21,13 @@ const MAX_RETRY_AFTER_MS = 5000;
 // Cap transient retries (e.g. 503 capacity) at 3s so intermittent Opus
 // unavailability cannot stall a request for tens of seconds.
 const ANTIGRAVITY_TRANSIENT_RETRY_MAX_MS = 3000;
+// Large streamed payloads need more upstream prefill before response headers.
+// Scale only that deadline: 10s more for each 256KiB above the first 256KiB,
+// capped at 60s.
+const ANTIGRAVITY_HEADER_TIMEOUT_FREE_BYTES = 256 * 1024;
+const ANTIGRAVITY_HEADER_TIMEOUT_STEP_BYTES = 256 * 1024;
+const ANTIGRAVITY_HEADER_TIMEOUT_STEP_MS = 10_000;
+const ANTIGRAVITY_HEADER_TIMEOUT_MAX_MS = 60_000;
 // Raised from fork's 16k to match upstream model ceilings for long outputs.
 const MAX_ANTIGRAVITY_OUTPUT_TOKENS = 64000;
 const ANTIGRAVITY_IDE_REQUEST_ID_RE = /^agent\/[^/]+\/\d+\/[^/]+\/\d+$/;
@@ -119,6 +126,20 @@ function parseImageConfig(model) {
 export class AntigravityExecutor extends BaseExecutor {
   constructor() {
     super("antigravity", PROVIDERS.antigravity);
+  }
+
+  getHeaderTimeoutMs({ model, stream = false, requestBytes = 0 } = {}) {
+    const base = super.getHeaderTimeoutMs();
+    if (!stream || isImageModel(model) || !Number.isFinite(requestBytes) || requestBytes <= ANTIGRAVITY_HEADER_TIMEOUT_FREE_BYTES) {
+      return base;
+    }
+    const extraSteps = Math.ceil(
+      (requestBytes - ANTIGRAVITY_HEADER_TIMEOUT_FREE_BYTES) / ANTIGRAVITY_HEADER_TIMEOUT_STEP_BYTES
+    );
+    return Math.min(
+      ANTIGRAVITY_HEADER_TIMEOUT_MAX_MS,
+      base + extraSteps * ANTIGRAVITY_HEADER_TIMEOUT_STEP_MS
+    );
   }
 
   buildUrl(model, stream, urlIndex = 0) {

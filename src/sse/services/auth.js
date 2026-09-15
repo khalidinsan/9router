@@ -443,14 +443,33 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
  * @param {string} errorText
  * @param {string|null} provider
  * @param {string|null} model - The specific model that triggered the error
+ * @param {object} [options]
+ * @param {boolean} [options.transientUpstreamTimeout] - Record a no-response timeout without locking the account.
  * @returns {{ shouldFallback: boolean, cooldownMs: number }}
  */
-export async function markAccountUnavailable(connectionId, status, errorText, provider = null, model = null, resetsAtMs = null) {
+export async function markAccountUnavailable(connectionId, status, errorText, provider = null, model = null, resetsAtMs = null, options = {}) {
   if (!connectionId || connectionId === "noauth") return { shouldFallback: false, cooldownMs: 0 };
   const connections = await getProviderConnections({ provider });
   const conn = connections.find(c => c.id === connectionId);
   const backoffLevel = conn?.backoffLevel || 0;
   const connName = conn?.displayName || conn?.name || conn?.email || connectionId.slice(0, 8);
+
+  // A timeout before upstream headers says the request got no response. Keep
+  // the diagnostic trail, but do not lock an account that may simply be slow.
+  if (options?.transientUpstreamTimeout) {
+    const reason = typeof errorText === "string" ? errorText.slice(0, 200) : "Upstream header timeout";
+    try {
+      await updateProviderConnection(connectionId, {
+        lastError: reason,
+        errorCode: status,
+        lastErrorAt: new Date().toISOString(),
+      });
+      log.warn("AUTH", `${connName} transient upstream timeout [${status}]; recorded without locking`);
+    } catch (e) {
+      log.warn("AUTH", `${connName} timeout update failed: ${e.message}`);
+    }
+    return { shouldFallback: true, cooldownMs: 0, transientUpstreamTimeout: true };
+  }
 
   // grok-cli: any 403 is a connection-level permission hard block. The known
   // chat-denied wording is retained only for diagnostics, not classification.

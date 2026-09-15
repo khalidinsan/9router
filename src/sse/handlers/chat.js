@@ -292,6 +292,11 @@ async function executeSingleModelChat(body, modelInfo, modelStr, clientRawReques
   // hole for everyone. Fail fast with the last error past the cap.
   let agQuotaFallbacks = 0;
   const AG_QUOTA_MAX_FALLBACKS = 2;
+  // Antigravity no-response timeouts can each wait up to the scaled header
+  // budget. Allow one alternate account, then fail instead of sweeping all
+  // accounts with the same slow payload.
+  let agHeaderTimeoutFallbacks = 0;
+  const AG_HEADER_TIMEOUT_MAX_FALLBACKS = 1;
 
   while (true) {
     const isGrokCli = provider === "grok-cli" || provider === "gcli";
@@ -420,6 +425,12 @@ async function executeSingleModelChat(body, modelInfo, modelStr, clientRawReques
 
     if (result.success) return result.response;
 
+    const transientUpstreamTimeout =
+      provider === "antigravity" &&
+      result.status === HTTP_STATUS.GATEWAY_TIMEOUT &&
+      result.transientUpstreamTimeout === true;
+    const markOptions = transientUpstreamTimeout ? { transientUpstreamTimeout: true } : undefined;
+
     // ── Pinned request (per-account model test / re-probe disabled) ──
     // Never rotate to another account. One pin = one attempt = one result.
     if (preferredConnectionId) {
@@ -432,7 +443,8 @@ async function executeSingleModelChat(body, modelInfo, modelStr, clientRawReques
           result.error,
           provider,
           model,
-          result.resetsAtMs
+          result.resetsAtMs,
+          markOptions
         );
       } else {
         log.warn(
@@ -471,7 +483,8 @@ async function executeSingleModelChat(body, modelInfo, modelStr, clientRawReques
           result.error,
           provider,
           model,
-          resetsAtMs
+          resetsAtMs,
+          markOptions
         );
     const shouldFallback = fallbackState.shouldFallback;
 
@@ -479,6 +492,13 @@ async function executeSingleModelChat(body, modelInfo, modelStr, clientRawReques
       if (isGrokCli) {
         if (fallbackState.authoritativeQuotaExhausted) grokCliExhaustedSkips += 1;
         else grokCliSharedFailures += 1;
+      }
+      if (transientUpstreamTimeout) {
+        agHeaderTimeoutFallbacks += 1;
+        if (agHeaderTimeoutFallbacks > AG_HEADER_TIMEOUT_MAX_FALLBACKS) {
+          log.warn("CHAT", `Antigravity header-timeout fallback cap reached (${AG_HEADER_TIMEOUT_MAX_FALLBACKS} extra account) — failing fast with last ${result.status} instead of sweeping all accounts`);
+          return result.response;
+        }
       }
       // Fail fast past the cap: a 3rd consecutive quota error means global
       // exhaustion, not one bad account — sweeping the rest only burns them.

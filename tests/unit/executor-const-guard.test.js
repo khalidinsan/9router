@@ -39,12 +39,15 @@ describe("provider baseUrl const (full path, no trailing slash)", () => {
   });
 });
 
-describe("antigravity retry (intentional: 429=0 fail-fast on quota, 503=1)", () => {
+describe("antigravity retry (intentional: 429=0 fail-fast on quota, 503=1, 504=0 no same-account repeat)", () => {
   it("429 attempts = 0", () => {
     expect(antigravity.transport.retry["429"].attempts).toBe(0);
   });
   it("503 attempts = 1", () => {
     expect(antigravity.transport.retry["503"].attempts).toBe(1);
+  });
+  it("504 attempts = 0", () => {
+    expect(antigravity.transport.retry["504"].attempts).toBe(0);
   });
 });
 

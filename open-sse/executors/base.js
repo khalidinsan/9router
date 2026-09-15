@@ -1,4 +1,4 @@
-import { HTTP_STATUS, RETRY_CONFIG, DEFAULT_RETRY_CONFIG, resolveRetryEntry, FETCH_CONNECT_TIMEOUT_MS } from "../config/runtimeConfig.js";
+import { HTTP_STATUS, RETRY_CONFIG, DEFAULT_RETRY_CONFIG, resolveRetryEntry, FETCH_CONNECT_TIMEOUT_MS, UPSTREAM_HEADER_TIMEOUT_CODE } from "../config/runtimeConfig.js";
 import { shouldRefreshCredentials } from "../services/oauthCredentialManager.js";
 import { proxyAwareFetch } from "../utils/proxyFetch.js";
 import { dbg } from "../utils/debugLog.js";
@@ -25,6 +25,12 @@ export class BaseExecutor {
 
   getFallbackCount() {
     return this.getBaseUrls().length || 1;
+  }
+
+  // Deadline for upstream response headers. Providers may extend it for
+  // request shapes with slower prefill (for example, large streamed bodies).
+  getHeaderTimeoutMs() {
+    return this.config?.timeoutMs || FETCH_CONNECT_TIMEOUT_MS;
   }
 
   buildUrl(model, stream, urlIndex = 0, credentials = null) {
@@ -135,16 +141,19 @@ export class BaseExecutor {
 
       if (!retryAttemptsByUrl[urlIndex]) retryAttemptsByUrl[urlIndex] = 0;
 
-      // Abort if upstream doesn't return response headers within connection timeout
+      // Abort if upstream doesn't return response headers within the header timeout.
       const connectCtrl = new AbortController();
-      const timeoutMs = this.config?.timeoutMs || FETCH_CONNECT_TIMEOUT_MS;
-      const connectTimer = setTimeout(() => connectCtrl.abort(new Error("fetch connect timeout")), timeoutMs);
+      const bodyStr = JSON.stringify(transformedBody);
+      const requestBytes = Buffer.byteLength(bodyStr, "utf8");
+      const timeoutMs = this.getHeaderTimeoutMs({ model, stream, requestBytes });
+      const headerTimeoutAbort = new Error(`No response headers within ${timeoutMs}ms`);
+      headerTimeoutAbort.code = UPSTREAM_HEADER_TIMEOUT_CODE;
+      const connectTimer = setTimeout(() => connectCtrl.abort(headerTimeoutAbort), timeoutMs);
       const mergedSignal = signal ? AbortSignal.any([signal, connectCtrl.signal]) : connectCtrl.signal;
 
       try {
-        const bodyStr = JSON.stringify(transformedBody);
         const fetchT0 = Date.now();
-        dbg("FETCH", `${this.provider.toUpperCase()} → ${url} | body=${bodyStr.length}B | connectTimeout=${timeoutMs}ms`);
+        dbg("FETCH", `${this.provider.toUpperCase()} → ${url} | body=${requestBytes}B | headerTimeout=${timeoutMs}ms`);
         const response = await this.fetch(url, {
           method: "POST",
           headers,
@@ -167,20 +176,44 @@ export class BaseExecutor {
         return { response, url, headers, transformedBody };
       } catch (error) {
         clearTimeout(connectTimer);
-        lastError = error;
+        const abortReason = connectCtrl.signal.aborted ? connectCtrl.signal.reason : null;
+        const isHeaderTimeout =
+          abortReason === headerTimeoutAbort ||
+          abortReason?.code === UPSTREAM_HEADER_TIMEOUT_CODE ||
+          error === headerTimeoutAbort ||
+          error?.cause === headerTimeoutAbort ||
+          error?.code === UPSTREAM_HEADER_TIMEOUT_CODE;
         const isConnectTimeout = connectCtrl.signal.aborted && error.name === "AbortError";
-        dbg("FETCH", `${this.provider.toUpperCase()} ✖ ${error.name}: ${error.message}${isConnectTimeout ? " (connect timeout)" : ""}`);
+        dbg("FETCH", `${this.provider.toUpperCase()} ✖ ${error.name}: ${error.message}${isHeaderTimeout ? " (header timeout)" : isConnectTimeout ? " (connect timeout)" : ""}`);
         // Connect timeout is internal — convert to retryable network error, don't propagate AbortError
-        if (error.name === "AbortError" && !isConnectTimeout) throw error;
+        if (error.name === "AbortError" && !isConnectTimeout && !isHeaderTimeout) throw error;
 
-        // Map network/fetch exceptions to 502 retry config
-        if (await tryRetry(urlIndex, HTTP_STATUS.BAD_GATEWAY, `network "${error.message}"`)) { urlIndex--; continue; }
+        const failure = error;
+        let networkStatus = HTTP_STATUS.BAD_GATEWAY;
+        if (isHeaderTimeout) {
+          const timeoutError = new Error(`No response headers within ${timeoutMs}ms`);
+          timeoutError.name = "UpstreamHeaderTimeoutError";
+          timeoutError.code = UPSTREAM_HEADER_TIMEOUT_CODE;
+          timeoutError.status = HTTP_STATUS.GATEWAY_TIMEOUT;
+          timeoutError.timeoutMs = timeoutMs;
+          timeoutError.requestBytes = requestBytes;
+          timeoutError.cause = error;
+          lastError = timeoutError;
+          lastStatus = HTTP_STATUS.GATEWAY_TIMEOUT;
+          networkStatus = HTTP_STATUS.GATEWAY_TIMEOUT;
+        } else {
+          lastError = failure;
+        }
+
+        // Map network/fetch exceptions to retry config. A header timeout uses
+        // the 504 entry so providers can avoid repeating a slow request in place.
+        if (await tryRetry(urlIndex, networkStatus, `network "${failure.message}"`)) { urlIndex--; continue; }
 
         if (urlIndex + 1 < fallbackCount) {
           log?.debug?.("RETRY", `Error on ${url}, trying fallback ${urlIndex + 1}`);
           continue;
         }
-        throw error;
+        throw lastError;
       }
     }
 

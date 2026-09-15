@@ -54,6 +54,12 @@ export default {
         attempts: 1,
         delayMs: 1000,
       },
+      // A 504 can be this gateway's own no-response-header timeout. Repeating a
+      // slow payload against the same account only delays rotation to the next
+      // account, so fail fast here and let account fallback handle it.
+      "504": {
+        attempts: 0,
+      },
     },
     usage: {
       // Quota/discovery on the daily host with the fixed consumer project —

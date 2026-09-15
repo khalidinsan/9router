@@ -9,7 +9,7 @@ import { createRequestLogger } from "../utils/requestLogger.js";
 import { getModelTargetFormat, getModelSupportedFormats, getModelStrip, getModelUpstreamId, getModelType, PROVIDER_ID_TO_ALIAS } from "../config/providerModels.js";
 import { PROVIDERS } from "../config/providers.js";
 import { createErrorResult, parseUpstreamError, formatProviderError } from "../utils/error.js";
-import { HTTP_STATUS, TOKEN_SAVER_HEADER } from "../config/runtimeConfig.js";
+import { HTTP_STATUS, TOKEN_SAVER_HEADER, UPSTREAM_HEADER_TIMEOUT_CODE } from "../config/runtimeConfig.js";
 import { handleBypassRequest } from "../utils/bypassHandler.js";
 import { trackPendingRequest, appendRequestLog, saveRequestDetail } from "@/lib/usageDb.js";
 import { getExecutor } from "../executors/index.js";
@@ -389,14 +389,16 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
     reqLogger.logTargetRequest(providerUrl, providerHeaders, finalBody);
   } catch (error) {
     trackPendingRequest(model, provider, connectionId, false, true, apiKey);
-    appendRequestLog({ model, provider, connectionId, status: `FAILED ${error.name === "AbortError" ? 499 : HTTP_STATUS.BAD_GATEWAY}` }).catch(() => { });
+    const transientUpstreamTimeout = error?.code === UPSTREAM_HEADER_TIMEOUT_CODE;
+    const failedStatus = transientUpstreamTimeout ? HTTP_STATUS.GATEWAY_TIMEOUT : HTTP_STATUS.BAD_GATEWAY;
+    appendRequestLog({ model, provider, connectionId, status: `FAILED ${error.name === "AbortError" ? 499 : failedStatus}` }).catch(() => { });
     saveRequestDetail(buildRequestDetail({
       provider, model, requestedModel, connectionId,
       latency: { ttft: 0, total: Date.now() - requestStartTime },
       tokens: { prompt_tokens: 0, completion_tokens: 0 },
       request: extractRequestConfig(body, stream),
       providerRequest: translatedBody || null,
-      response: { error: error.message || String(error), status: error.name === "AbortError" ? 499 : 502, thinking: null },
+      response: { error: error.message || String(error), status: error.name === "AbortError" ? 499 : failedStatus, thinking: null },
       pxpipe: pxpipeSummary,
       status: "error"
     })).catch(() => { });
@@ -405,11 +407,13 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
       streamController.handleError(error);
       return createErrorResult(499, "Request aborted");
     }
-    const errMsg = formatProviderError(error, provider, model, HTTP_STATUS.BAD_GATEWAY);
+    const errMsg = formatProviderError(error, provider, model, failedStatus);
     if (log?.errorLine) {
-      log.errorLine(reqTag, "✗", `ERROR 502 · ${provider}/${model} · ${Date.now() - requestStartTime}ms\n    ${errMsg}${error.stack ? `\n    ${error.stack}` : ""}`);
+      log.errorLine(reqTag, "✗", `ERROR ${failedStatus} · ${provider}/${model} · ${Date.now() - requestStartTime}ms\n    ${errMsg}${error.stack ? `\n    ${error.stack}` : ""}`);
     }
-    return createErrorResult(HTTP_STATUS.BAD_GATEWAY, errMsg);
+    const result = createErrorResult(failedStatus, errMsg);
+    if (transientUpstreamTimeout) result.transientUpstreamTimeout = true;
+    return result;
   }
 
   // Handle 401/403 - try token refresh (skip for noAuth providers)
