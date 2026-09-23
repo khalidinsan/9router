@@ -1,5 +1,6 @@
 import { DefaultExecutor } from "./default.js";
 import { workbuddyChatHeaders } from "../config/workbuddy.js";
+import { buildCodebuddyMessages } from "../shared/codebuddyMessages.js";
 
 /**
  * WorkBuddyExecutor — talks to https://www.workbuddy.ai/v2/chat/completions
@@ -9,7 +10,8 @@ import { workbuddyChatHeaders } from "../config/workbuddy.js";
  *
  *  - The gateway rejects a bare OpenAI shape with 11128 "first message is not
  *    system prompt", so a leading system message is always prepended and user
- *    content is sent as typed blocks.
+ *    content is sent as typed blocks. The client's own system prompt is folded
+ *    into that leading message — see shared/codebuddyMessages.js.
  *  - x-user-id carries the account sub; the gateway scopes billing to it.
  */
 export class WorkBuddyExecutor extends DefaultExecutor {
@@ -47,16 +49,7 @@ export class WorkBuddyExecutor extends DefaultExecutor {
       transformed.reasoning_summary = "auto";
     }
 
-    const source = Array.isArray(transformed.messages) ? transformed.messages : [];
-    transformed.messages = [{ role: "system", content: "You are CodeBuddy Code." }];
-    for (const message of source) {
-      if (!message || typeof message !== "object" || ["system", "developer"].includes(message.role)) continue;
-      if (message.role === "user" && typeof message.content === "string") {
-        transformed.messages.push({ ...message, content: [{ type: "text", text: message.content }] });
-      } else {
-        transformed.messages.push({ ...message });
-      }
-    }
+    transformed.messages = buildCodebuddyMessages(transformed.messages);
 
     return transformed;
   }
