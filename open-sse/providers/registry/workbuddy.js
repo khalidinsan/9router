@@ -48,7 +48,7 @@ export default {
     },
   },
   category: "oauth",
-  authModes: ["oauth"],
+  authModes: ["oauth", "apikey"],
   hasOAuth: true,
   thinkingConfig: {
     options: ["low", "medium", "high"],
@@ -108,5 +108,6 @@ export default {
   },
   features: {
     usage: true,
+    usageApikey: true,
   },
 };

@@ -833,6 +833,21 @@ async function testApiKeyConnection(connection, effectiveProxy = null) {
         const valid = res.status !== 401 && res.status !== 403;
         return { valid, error: valid ? null : "Invalid API key" };
       }
+      case "workbuddy": {
+        // WorkBuddy exposes no /models route; the billing meter endpoint answers
+        // 401 for a rejected key and 200 for an accepted one, and unlike a chat
+        // turn it costs no credits. Read the URL from the registry so the
+        // /v2/billing/... path is never prefixed twice.
+        const usageUrl = PROVIDERS["workbuddy"]?.usage?.url;
+        if (!usageUrl) return { valid: false, error: "WorkBuddy usage endpoint missing" };
+        const res = await fetchWithConnectionProxy(usageUrl, {
+          method: "POST",
+          headers: { ...(PROVIDERS["workbuddy"]?.headers || {}), "Content-Type": "application/json", Accept: "application/json", Authorization: `Bearer ${connection.apiKey}` },
+          body: "{}",
+        }, effectiveProxy);
+        const valid = res.status !== 401 && res.status !== 403;
+        return { valid, error: valid ? null : "Invalid API key" };
+      }
       case "genspark": {
         const baseUrl = (PROVIDERS["genspark"]?.baseUrl || "https://www.genspark.ai/api/llm_proxy/v1/chat/completions").replace(/\/chat\/completions$/, "");
         const res = await fetchWithConnectionProxy(`${baseUrl}/models`, {
