@@ -187,6 +187,54 @@ function isEllipsisOnly(value) {
   return ["...", "…"].includes(String(value || "").trim());
 }
 
+/**
+ * Does this turn carry tool specs — i.e. is Kiro acting as an agent?
+ *
+ * The two content heuristics below (`isEllipsisOnly`, `isShortFutureAction`)
+ * assume the model has ongoing work that a short reply could have interrupted:
+ * an agent that says "I'll check the logs next" and stops really did stop
+ * mid-task. A plain chat answer has no such work, so "..." or a short sentence
+ * is simply the answer.
+ *
+ * Kiro sends the tool catalog in the current user turn's context. When it is
+ * absent, the turn is chat and the heuristics must not run: a user who asks for
+ * exactly "..." gets exactly "...", not a retry that explains itself.
+ */
+function isAgenticTurn(body) {
+  const tools = body?.conversationState?.currentMessage?.userInputMessage
+    ?.userInputMessageContext?.tools;
+  return Array.isArray(tools) && tools.length > 0;
+}
+
+/**
+ * Can the gate stop holding output and stream from here on?
+ *
+ * Retry and streaming are mutually exclusive for one turn: a retry replaces the
+ * whole response, so once a byte reaches the client it can never be taken back.
+ * The gate therefore holds output only while a retry is still possible, and
+ * releases it the moment one is not.
+ *
+ * The threshold is KIRO_SHORT_FINAL_MAX_CHARS because that is the exact bound
+ * of the content-shape retries: `isEllipsisOnly` matches a 3-character answer,
+ * and `isShortFutureAction` returns false for anything longer than that limit.
+ * Past it neither can fire, so there is no content-shape retry left to protect
+ * and holding output would buy nothing.
+ *
+ * Below the threshold everything stays buffered — which costs nothing the user
+ * can perceive, because a sub-800-character answer arrives in one burst anyway.
+ * That is also why a `cancelled` / `pause_turn` / `content_filtered` turn stays
+ * private: those dispositions are only known at EOF, and short partial output is
+ * exactly what must not leak as a final answer.
+ *
+ * What is given up is protocol-level retry (`malformed_model_output`) on turns
+ * that already streamed past the threshold. Those can no longer be replaced; the
+ * failure is still reported inline, so the client never mistakes the turn for a
+ * clean stop.
+ */
+function canReleaseContent(output) {
+  return output.content.length > KIRO_SHORT_FINAL_MAX_CHARS;
+}
+
 function isShortFutureAction(value) {
   const text = String(value || "").trim().replaceAll("’", "'");
   if (OBSERVED_TRAILING_FUTURE_ACTION.test(text)) return true;
@@ -395,8 +443,20 @@ export class KiroExecutor extends BaseExecutor {
 
     const stream = new ReadableStream({
       start: async (controller) => {
-        const heartbeat = () => {
+        let released = false;
+        const emit = (bytes) => {
           if (!open) return;
+          released = true;
+          try {
+            controller.enqueue(bytes);
+          } catch {
+            open = false;
+          }
+        };
+        const heartbeat = () => {
+          // Once output is flowing the client is no longer waiting on silence,
+          // so the keep-alive comment has nothing left to say.
+          if (!open || released) return;
           try {
             controller.enqueue(encoder.encode(": kiro-validation\n\n"));
           } catch {
@@ -416,10 +476,14 @@ export class KiroExecutor extends BaseExecutor {
             // Kiro omits token counts when it sends no metricsEvent; the
             // transformer estimates them from the request body, so it must
             // reach the estimator.
-            body: args.body
+            body: args.body,
+            // Stream output as soon as a content-shape retry is no longer
+            // possible, instead of holding the whole turn. See canReleaseContent().
+            onRelease: emit
           });
           if (abortController.signal.aborted) throw makeAbortError(abortController.signal.reason);
-          controller.enqueue(bytes);
+          // A released attempt already forwarded its bytes; `bytes` is null.
+          if (bytes) controller.enqueue(bytes);
           controller.close();
         } catch (error) {
           if (open && error.name === "AbortError") {
@@ -459,6 +523,10 @@ export class KiroExecutor extends BaseExecutor {
       "initial"
     );
     if (first.kind === "complete") return first.bytes;
+    // Output already reached the client on this attempt, so there is nothing to
+    // return and nothing that could be retried — a retry would append a second
+    // response after one the caller has already read.
+    if (first.kind === "streamed") return null;
     if (first.kind === "terminal_stop" || first.kind === "upstream_error") {
       return this.integrityFailureSSE(first);
     }
@@ -504,6 +572,7 @@ export class KiroExecutor extends BaseExecutor {
       "retry"
     );
     if (second.kind === "complete") return second.bytes;
+    if (second.kind === "streamed") return null;
     if (second.kind === "terminal_stop" || second.kind === "upstream_error") {
       return this.integrityFailureSSE(second);
     }
@@ -557,6 +626,15 @@ export class KiroExecutor extends BaseExecutor {
     }
   }
 
+  /**
+   * Read an integrity attempt, optionally releasing output as it arrives.
+   *
+   * With `options.onRelease` supplied, the attempt stops buffering as soon as
+   * canReleaseContent() says a content-shape retry is no longer possible, and
+   * streams the rest. The return value then carries `streamed: true` and no
+   * bytes: the caller has already forwarded everything and must not forward it
+   * again.
+   */
   async readIntegrityAttempt(rawResponse, model, options, attempt) {
     let diagnostics;
     const transformed = this.transformEventStreamToSSE(rawResponse, model, {
@@ -571,6 +649,7 @@ export class KiroExecutor extends BaseExecutor {
     const chunks = [];
     let totalBytes = 0;
     let sawChunk = false;
+    let released = false;
     const output = { content: "", reasoning: "", hasToolCalls: false, error: null };
 
     try {
@@ -585,6 +664,17 @@ export class KiroExecutor extends BaseExecutor {
         );
         if (done) break;
         sawChunk = true;
+
+        // Once released, forward every subsequent chunk and stop buffering.
+        // `totalBytes` is left alone deliberately: it is the buffered-bytes
+        // budget, and nothing is buffered any more. Counting streamed bytes
+        // against it would trip integrity_buffer_exceeded on a long answer that
+        // had already reached the client.
+        if (released) {
+          options.onRelease(value);
+          continue;
+        }
+
         totalBytes += value.byteLength;
         if (totalBytes > options.maxBytes) {
           await reader.cancel("kiro_integrity_buffer_exceeded").catch(() => {});
@@ -596,6 +686,12 @@ export class KiroExecutor extends BaseExecutor {
         }
         chunks.push(value);
         inspectSSEChunk(value, output);
+
+        if (options.onRelease && canReleaseContent(output)) {
+          released = true;
+          options.onRelease(concatChunks(chunks, totalBytes));
+          chunks.length = 0;
+        }
       }
     } catch (error) {
       await reader.cancel(error.message).catch(() => {});
@@ -616,6 +712,10 @@ export class KiroExecutor extends BaseExecutor {
       const kind = safeDiagnostics.terminal_provenance === "invalid_tool_call"
         ? "invalid_tool"
         : "retryable_stop";
+      // Output already reached the client, so a retry would append a second
+      // response to one the caller has read. Report the failure instead of
+      // replacing what was delivered.
+      if (released) return { kind: "streamed", released: true, diagnostics: safeDiagnostics };
       return { kind, message: output.error?.message, diagnostics: safeDiagnostics };
     }
     if (safeDiagnostics.stop_disposition === "terminal_incomplete" ||
@@ -628,20 +728,30 @@ export class KiroExecutor extends BaseExecutor {
         : ["metadata_stop_reason", "message_stop_event"].includes(safeDiagnostics.terminal_provenance)
           ? "terminal_stop"
           : "missing_terminal";
+      if (released) return { kind: "streamed", released: true, diagnostics: safeDiagnostics };
       return { kind, message: output.error?.message, diagnostics: safeDiagnostics };
     }
     if (output.error) {
+      if (released) return { kind: "streamed", released: true, diagnostics: safeDiagnostics };
       return { kind: "missing_terminal", message: output.error.message, diagnostics: safeDiagnostics };
     }
-    if (!output.hasToolCalls) {
+    // Content heuristics apply only to agent turns — see isAgenticTurn(). For a
+    // plain chat turn a short reply is the answer, and retrying it makes the
+    // model re-answer a question it already answered correctly (verified: a
+    // request for exactly "..." came back as a paragraph explaining that the
+    // ellipsis had been the complete answer).
+    if (!output.hasToolCalls && isAgenticTurn(options.body)) {
       if (isEllipsisOnly(output.content) ||
           (!output.content.trim() && isEllipsisOnly(output.reasoning))) {
+        if (released) return { kind: "streamed", released: true, diagnostics: safeDiagnostics };
         return { kind: "ellipsis", diagnostics: safeDiagnostics };
       }
       if (isShortFutureAction(output.content)) {
+        if (released) return { kind: "streamed", released: true, diagnostics: safeDiagnostics };
         return { kind: "short_final", diagnostics: safeDiagnostics };
       }
     }
+    if (released) return { kind: "streamed", released: true, diagnostics: safeDiagnostics };
     return { kind: "complete", bytes: concatChunks(chunks, totalBytes), diagnostics: safeDiagnostics };
   }
 

@@ -122,6 +122,35 @@ async function execute(executor = new KiroExecutor(), overrides = {}) {
   });
 }
 
+// A turn that carries tool specs, i.e. Kiro acting as an agent. The two content
+// heuristics (ellipsis-only / short future action) only apply here: an agent
+// that announces work and stops really did stop mid-task, whereas a chat answer
+// has no ongoing work to interrupt.
+const AGENTIC_BODY = {
+  conversationState: {
+    currentMessage: {
+      userInputMessage: {
+        content: "base",
+        modelId: "m",
+        userInputMessageContext: {
+          tools: [{
+            toolSpecification: {
+              name: "get_weather",
+              description: "Get current weather for a city",
+              inputSchema: { json: { type: "object", properties: { city: { type: "string" } } } }
+            }
+          }]
+        }
+      }
+    }
+  }
+};
+
+/** Run an agent turn — the context where the content heuristics are meant to fire. */
+async function executeAgentic(executor = new KiroExecutor(), overrides = {}) {
+  return execute(executor, { body: structuredClone(AGENTIC_BODY), ...overrides });
+}
+
 beforeEach(() => {
   fetchMock.mockReset();
   delete process.env.KIRO_TOOL_CALL_REPAIR_BUFFER_MAX_BYTES;
@@ -209,7 +238,7 @@ describe("Kiro terminal integrity recovery", () => {
       .mockResolvedValueOnce(response([frame("assistantResponseEvent", { content: ellipsis })]))
       .mockResolvedValueOnce(response([frame("assistantResponseEvent", { content: "Recovered answer." })]));
 
-    const body = await (await execute()).response.text();
+    const body = await (await executeAgentic()).response.text();
 
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(body).toContain("Recovered answer.");
@@ -227,7 +256,7 @@ describe("Kiro terminal integrity recovery", () => {
       .mockResolvedValueOnce(response([frame("assistantResponseEvent", { content: progress })]))
       .mockResolvedValueOnce(response([frame("assistantResponseEvent", { content: "Verification completed." })]));
 
-    const body = await (await execute()).response.text();
+    const body = await (await executeAgentic()).response.text();
 
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(body).toContain("Verification completed.");
@@ -255,10 +284,31 @@ describe("Kiro terminal integrity recovery", () => {
       frame("assistantResponseEvent", { content: finalText })
     ]));
 
-    const body = await (await execute()).response.text();
+    const body = await (await executeAgentic()).response.text();
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(body).toContain(finalText);
+  });
+
+  it.each([
+    "...",
+    "…",
+    "I'll check the logs next.",
+    "Let me verify now",
+  ])("does not retry a short chat answer: %s", async (answer) => {
+    // A chat turn carries no tool specs, so there is no ongoing work a short
+    // reply could have interrupted — the reply is the answer. Retrying it makes
+    // the model re-answer a question it already answered correctly (observed:
+    // a request for exactly "..." came back as a paragraph explaining that the
+    // ellipsis had been the complete answer).
+    fetchMock.mockResolvedValueOnce(response([
+      frame("assistantResponseEvent", { content: answer })
+    ]));
+
+    const body = await (await execute()).response.text();
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(body).toContain(answer);
   });
 
   it("bounds incomplete-final repair to one retry", async () => {
@@ -266,7 +316,7 @@ describe("Kiro terminal integrity recovery", () => {
       .mockResolvedValueOnce(response([frame("assistantResponseEvent", { content: "..." })]))
       .mockResolvedValueOnce(response([frame("assistantResponseEvent", { content: "…" })]));
 
-    const body = await (await execute()).response.text();
+    const body = await (await executeAgentic()).response.text();
 
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(body).toContain("kiro_ellipsis_retry_failed");
@@ -778,5 +828,69 @@ describe("Kiro terminal integrity recovery", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(body).toContain("kiro_integrity_buffer_exceeded");
     expect(body).not.toContain('"name":"read_file"');
+  });
+
+  it("streams a long answer instead of holding it until EOF", async () => {
+    // Past KIRO_SHORT_FINAL_MAX_CHARS (800) neither content heuristic can fire,
+    // so the gate releases and forwards. Before this the whole answer was
+    // buffered and arrived in one burst at EOF.
+    const firstPart = "y".repeat(900);
+    const secondPart = "z".repeat(200);
+    const upstream = controlledResponse([frame("assistantResponseEvent", { content: firstPart })]);
+    fetchMock.mockResolvedValueOnce(upstream.value);
+
+    const result = await execute();
+    const reader = result.response.body.getReader();
+    await reader.read(); // heartbeat
+
+    const first = await reader.read();
+    expect(new TextDecoder().decode(first.value)).toContain(firstPart);
+
+    // A frame after release must reach the client before EOF.
+    upstream.enqueue(frame("assistantResponseEvent", { content: secondPart }));
+    const second = await reader.read();
+    expect(new TextDecoder().decode(second.value)).toContain(secondPart);
+
+    upstream.close();
+    await reader.cancel();
+  });
+
+  it("still holds a short answer until EOF", async () => {
+    // Under the threshold a content-shape retry is still possible, so output
+    // stays private — including for cancelled / pause_turn / content_filtered,
+    // whose disposition is only known at EOF.
+    const upstream = controlledResponse([frame("assistantResponseEvent", { content: "short answer" })]);
+    fetchMock.mockResolvedValueOnce(upstream.value);
+
+    const result = await execute();
+    const reader = result.response.body.getReader();
+    expect(new TextDecoder().decode((await reader.read()).value)).toBe(": kiro-validation\n\n");
+
+    let settled = false;
+    const pending = reader.read().then((value) => {
+      settled = true;
+      return value;
+    });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+
+    upstream.close();
+    expect(new TextDecoder().decode((await pending).value)).toContain("short answer");
+    await reader.cancel();
+  });
+
+  it("does not retry after output has streamed, so the client sees one response", async () => {
+    // A retry replaces the whole response; once bytes are delivered it would
+    // append a second answer to one the caller has already read.
+    const long = "z".repeat(900);
+    fetchMock.mockResolvedValueOnce(response([
+      frame("assistantResponseEvent", { content: long })
+    ]));
+
+    const body = await (await executeAgentic()).response.text();
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(body).toContain(long);
+    expect(body).not.toContain("kiro_ellipsis_retry_failed");
   });
 });
