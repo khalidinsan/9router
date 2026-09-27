@@ -10,6 +10,7 @@ import { refreshKiroToken } from "../services/tokenRefresh.js";
 import { SSE_DONE, SSE_HEADERS } from "../utils/sseConstants.js";
 import { getCapabilitiesForModel } from "../providers/capabilities.js";
 import { STREAM_FIRST_CHUNK_TIMEOUT_MS } from "../config/runtimeConfig.js";
+import { estimateInputTokens } from "../utils/usageTracking.js";
 
 const KIRO_REPAIR_BUFFER_MAX_BYTES = 8 * 1024 * 1024;
 const KIRO_REPAIR_HEARTBEAT_MS = 10_000;
@@ -411,7 +412,11 @@ export class KiroExecutor extends BaseExecutor {
             maxBytes,
             ttftTimeoutMs,
             stallTimeoutMs,
-            repairEnabled
+            repairEnabled,
+            // Kiro omits token counts when it sends no metricsEvent; the
+            // transformer estimates them from the request body, so it must
+            // reach the estimator.
+            body: args.body
           });
           if (abortController.signal.aborted) throw makeAbortError(abortController.signal.reason);
           controller.enqueue(bytes);
@@ -556,6 +561,8 @@ export class KiroExecutor extends BaseExecutor {
     let diagnostics;
     const transformed = this.transformEventStreamToSSE(rawResponse, model, {
       maxToolBytes: Math.max(1, Math.floor(options.maxBytes / 2)),
+      // Needed for the token estimate when Kiro omits contextUsageEvent.
+      body: options.body,
       onTerminalState: (value) => {
         diagnostics = value;
       }
@@ -1111,17 +1118,28 @@ export class KiroExecutor extends BaseExecutor {
         return;
       }
 
-      if (state.hasMetering && state.hasContextUsage && !state.usage?.total_tokens) {
+      // Kiro reports token counts only in `metricsEvent`, which it does not
+      // always send. Estimate whenever the turn produced no token counts at
+      // all: without this a real, billed turn recorded 0 tokens and was then
+      // dropped from /dashboard/usage entirely (see saveUsageStats).
+      if (!state.usage?.total_tokens) {
         const completion = state.totalContentLength
           ? Math.max(1, Math.floor(state.totalContentLength / 4))
           : 0;
-        const prompt = Math.floor(state.contextUsagePercentage * contextWindow / 100);
-        state.usage = {
-          ...(state.usage || {}),
-          prompt_tokens: prompt,
-          completion_tokens: completion,
-          total_tokens: prompt + completion
-        };
+        // contextUsageEvent carries a percentage of the window; without it fall
+        // back to the request body, the same estimator other providers use.
+        const prompt = state.hasContextUsage
+          ? Math.floor(state.contextUsagePercentage * contextWindow / 100)
+          : estimateInputTokens(options.body);
+        if (prompt || completion) {
+          state.usage = {
+            ...(state.usage || {}),
+            prompt_tokens: prompt,
+            completion_tokens: completion,
+            total_tokens: prompt + completion,
+            estimated: true,
+          };
+        }
       }
       const finishReason = truncatedAfterOutput
         ? "length"

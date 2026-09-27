@@ -1,6 +1,7 @@
 import { saveRequestUsage, appendRequestLog, saveRequestDetail } from "@/lib/usageDb.js";
 import { COLORS } from "../../utils/stream.js";
-import { canonicalizeUsage } from "../../utils/usageTracking.js";
+import { canonicalizeUsage, estimateUsage } from "../../utils/usageTracking.js";
+import { FORMATS } from "../../translator/formats.js";
 
 const OPTIONAL_PARAMS = [
   "temperature", "top_p", "top_k",
@@ -46,7 +47,14 @@ export function extractUsageFromResponse(responseBody) {
       prompt_tokens: responseBody.usage.prompt_tokens || 0,
       completion_tokens: responseBody.usage.completion_tokens || 0,
       cached_tokens: responseBody.usage.cached_tokens ?? responseBody.usage.prompt_tokens_details?.cached_tokens,
-      reasoning_tokens: responseBody.usage.completion_tokens_details?.reasoning_tokens
+      reasoning_tokens: responseBody.usage.completion_tokens_details?.reasoning_tokens,
+      // Kiro bills in credits and its turns can carry zero tokens, so this is
+      // the only record of the charge. Pass it through verbatim.
+      ...(responseBody.usage.kiro_credits !== undefined && {
+        kiro_credits: responseBody.usage.kiro_credits,
+        kiro_credit_unit: responseBody.usage.kiro_credit_unit,
+      }),
+      ...(responseBody.usage.estimated === true && { estimated: true }),
     };
   }
 
@@ -61,7 +69,49 @@ export function extractUsageFromResponse(responseBody) {
     };
   }
 
+  // Usage present but carrying no token fields — Kiro reports the charge in
+  // credits and may omit token counts entirely. Returning null here discarded
+  // the whole usage object, so a billed turn was recorded as if it never
+  // happened. Surface what the provider did report.
+  if (responseBody.usage && typeof responseBody.usage === "object") {
+    const reported = responseBody.usage;
+    if (reported.kiro_credits !== undefined) {
+      return {
+        prompt_tokens: reported.prompt_tokens || 0,
+        completion_tokens: reported.completion_tokens || 0,
+        total_tokens: reported.total_tokens || 0,
+        kiro_credits: reported.kiro_credits,
+        kiro_credit_unit: reported.kiro_credit_unit,
+        ...(reported.estimated === true && { estimated: true }),
+      };
+    }
+  }
+
   return null;
+}
+
+/**
+ * Fill in token counts a provider reported as zero using the shared estimator.
+ *
+ * Kiro bills in credits and can answer with `usage: {kiro_credits}` and no
+ * tokens at all. Recording 0 tokens there understates the turn and, worse,
+ * made cost calculation return 0 for a request Kiro actually charged for.
+ * Only fills fields that are missing — a real count is never overwritten.
+ */
+export function fillEstimatedTokens(usage, body, contentLength) {
+  if (!usage || typeof usage !== "object") return usage;
+  const prompt = Number(usage.prompt_tokens) || 0;
+  const completion = Number(usage.completion_tokens) || 0;
+  if (prompt > 0 && completion > 0) return usage;
+
+  const estimate = estimateUsage(body, contentLength, FORMATS.OPENAI);
+  return {
+    ...usage,
+    prompt_tokens: prompt || estimate.prompt_tokens || 0,
+    completion_tokens: completion || estimate.completion_tokens || 0,
+    total_tokens: (prompt || estimate.prompt_tokens || 0) + (completion || estimate.completion_tokens || 0),
+    estimated: true,
+  };
 }
 
 export function buildRequestDetail(base, overrides = {}) {
@@ -116,7 +166,13 @@ export function saveUsageStats({ provider, model, tokens, connectionId, apiKey, 
   const inTokens = tokens.input_tokens ?? tokens.prompt_tokens ?? 0;
   const outTokens = tokens.output_tokens ?? tokens.completion_tokens ?? 0;
 
-  if (inTokens === 0 && outTokens === 0) return;
+  // A provider that reports no token counts still spent a request, and some
+  // (Kiro) report the charge in a currency we cannot derive from tokens
+  // (`kiro_credits`). Dropping the row made those requests invisible on
+  // /dashboard/usage — not shown as zero, but absent entirely, which reads as
+  // "the model was never used". Record the request; token counts stay 0.
+  const hasCharge = Number.isFinite(Number(tokens.kiro_credits));
+  if (inTokens === 0 && outTokens === 0 && !hasCharge) return;
 
   if (!silent) {
     const time = new Date().toLocaleTimeString("en-US", { hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit" });

@@ -93,7 +93,10 @@ export function filterUsageForFormat(usage, targetFormat) {
       'prompt_tokens', 'completion_tokens', 'total_tokens',
       'cached_tokens', 'reasoning_tokens',
       'prompt_tokens_details', 'completion_tokens_details',
-      'estimated'
+      'estimated',
+      // Kiro charges in credits, not tokens. Dropping this left a Kiro turn
+      // with no token counts looking like it cost nothing at all.
+      'kiro_credits', 'kiro_credit_unit'
     ]
   };
 
@@ -132,6 +135,11 @@ export function normalizeUsage(usage) {
   assignNumber("cache_creation_input_tokens", usage?.cache_creation_input_tokens);
   assignNumber("cached_tokens", usage?.cached_tokens);
   assignNumber("reasoning_tokens", usage?.reasoning_tokens);
+  // Kiro bills in credits rather than tokens, and its turns can carry no token
+  // counts at all. Dropping this here erased the only record of the charge.
+  assignNumber("kiro_credits", usage?.kiro_credits);
+  if (typeof usage?.kiro_credit_unit === "string") normalized.kiro_credit_unit = usage.kiro_credit_unit;
+  if (usage?.estimated === true) normalized.estimated = true;
 
   // Preserve nested details objects for OpenAI format forwarding
   if (usage?.prompt_tokens_details && typeof usage.prompt_tokens_details === "object") {
@@ -207,6 +215,12 @@ export function canonicalizeUsage(usage) {
     cache_creation_input_tokens: cacheCreation,
   };
   if (reasoning > 0) result.reasoning_tokens = reasoning;
+  // Non-token charges survive canonicalization. Kiro bills in credits and may
+  // report no token counts at all, so dropping this would erase the only
+  // record of what the turn cost.
+  if (usage.kiro_credits !== undefined) result.kiro_credits = num(usage.kiro_credits);
+  if (typeof usage.kiro_credit_unit === "string") result.kiro_credit_unit = usage.kiro_credit_unit;
+  if (usage.estimated === true) result.estimated = true;
   return result;
 }
 
@@ -284,7 +298,12 @@ export function extractUsage(chunk) {
       cached_tokens: chunk.usage.prompt_tokens_details?.cached_tokens || chunk.usage.prompt_cache_hit_tokens,
       reasoning_tokens: chunk.usage.completion_tokens_details?.reasoning_tokens,
       prompt_tokens_details: chunk.usage.prompt_tokens_details,
-      completion_tokens_details: chunk.usage.completion_tokens_details
+      completion_tokens_details: chunk.usage.completion_tokens_details,
+      // Kiro charges in credits and may report no tokens; without this the
+      // merge below replaces its usage with one that has no credit record.
+      kiro_credits: chunk.usage.kiro_credits,
+      kiro_credit_unit: chunk.usage.kiro_credit_unit,
+      estimated: chunk.usage.estimated
     });
   }
 
@@ -308,6 +327,18 @@ export function extractUsage(chunk) {
       prompt_tokens: chunk.prompt_eval_count || 0,
       completion_tokens: chunk.eval_count || 0,
       total_tokens: (chunk.prompt_eval_count || 0) + (chunk.eval_count || 0)
+    });
+  }
+
+  // Credit-only usage (Kiro): the charge is reported without token counts.
+  if (chunk.usage && typeof chunk.usage === "object" && chunk.usage.kiro_credits !== undefined) {
+    return normalizeUsage({
+      prompt_tokens: chunk.usage.prompt_tokens || 0,
+      completion_tokens: chunk.usage.completion_tokens || 0,
+      total_tokens: chunk.usage.total_tokens || 0,
+      kiro_credits: chunk.usage.kiro_credits,
+      kiro_credit_unit: chunk.usage.kiro_credit_unit,
+      estimated: chunk.usage.estimated
     });
   }
 

@@ -8,7 +8,7 @@ import { HTTP_STATUS } from "../../config/runtimeConfig.js";
 import { parseSSEToOpenAIResponse } from "./sseToJsonHandler.js";
 import { normalizeKimiToolCalls } from "../../utils/kimiToolParser.js";
 import { unwrapClineEnvelope } from "../../shared/clineEnvelope.js";
-import { buildRequestDetail, extractRequestConfig, extractUsageFromResponse, saveUsageStats, formatDoneLine } from "./requestDetail.js";
+import { buildRequestDetail, extractRequestConfig, extractUsageFromResponse, saveUsageStats, formatDoneLine, fillEstimatedTokens } from "./requestDetail.js";
 import { appendRequestLog, saveRequestDetail } from "@/lib/usageDb.js";
 import { decloakToolNames } from "../../utils/claudeCloaking.js";
 import { ROLE, RESPONSES_ITEM } from "../../translator/schema/index.js";
@@ -324,9 +324,19 @@ export async function handleNonStreamingResponse({ providerResponse, provider, m
   responseBody = decloakToolNames(responseBody, toolNameMap);
 
   const usage = extractUsageFromResponse(responseBody);
-  appendLog({ tokens: usage, status: "200 OK" });
-  saveUsageStats({ provider, model, tokens: usage, connectionId, apiKey, endpoint: clientRawRequest?.endpoint, silent: true });
-  if (log?.line) log.line(reqTag, "📊", formatDoneLine({ usage, latency: { total: Date.now() - requestStartTime } }));
+  // Kiro answers a non-streaming request with `usage: {}` or a credit-only
+  // object — the metering rides in the EventStream, which the integrity gate
+  // already consumed. Without filling the missing token counts the turn
+  // recorded 0 tokens and 0 cost, and was then dropped from /dashboard/usage
+  // entirely, even though Kiro charged credits for it.
+  const effectiveUsage = fillEstimatedTokens(
+    usage,
+    body,
+    String(responseBody?.choices?.[0]?.message?.content || "").length
+  );
+  appendLog({ tokens: effectiveUsage, status: "200 OK" });
+  saveUsageStats({ provider, model, tokens: effectiveUsage, connectionId, apiKey, endpoint: clientRawRequest?.endpoint, silent: true });
+  if (log?.line) log.line(reqTag, "📊", formatDoneLine({ usage: effectiveUsage, latency: { total: Date.now() - requestStartTime } }));
 
   const translatedResponse = needsTranslation(targetFormat, sourceFormat)
     ? translateNonStreamingResponse(responseBody, targetFormat, sourceFormat, customToolNames)
@@ -377,6 +387,15 @@ export async function handleNonStreamingResponse({ providerResponse, provider, m
 
   if (translatedResponse?.usage) {
     translatedResponse.usage = filterUsageForFormat(addBufferToUsage(translatedResponse.usage), sourceFormat);
+  }
+
+  // A provider that answered with an empty `usage` object left the client
+  // unable to account for its own spend. Re-attach what we recorded: the same
+  // object written to the usage DB, so the two can never disagree. Same
+  // reasoning as sseToJsonHandler, which already does this.
+  const usageIsEmpty = !translatedResponse?.usage || Object.keys(translatedResponse.usage).length === 0;
+  if (usageIsEmpty && effectiveUsage && Object.keys(effectiveUsage).length > 0) {
+    translatedResponse.usage = filterUsageForFormat(addBufferToUsage(effectiveUsage), sourceFormat);
   }
 
   // Strip reasoning_content only when content is non-empty.
