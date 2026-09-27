@@ -35,9 +35,10 @@ describe("Kiro MITM model slots", () => {
 
   it("offers mappable slots for GPT-5.6 family models", () => {
     const models = new Map(kiro.defaultModels.map((m) => [m.id, m]));
-    expect(models.get("gpt-5.6-sol")).toMatchObject({ alias: "gpt-5.6-sol", contextLength: 272000, rateMultiplier: 2.4 });
-    expect(models.get("gpt-5.6-terra")).toMatchObject({ alias: "gpt-5.6-terra", contextLength: 272000, rateMultiplier: 1.2 });
-    expect(models.get("gpt-5.6-luna")).toMatchObject({ alias: "gpt-5.6-luna", contextLength: 272000, rateMultiplier: 0.6 });
+    // Rates are the upstream rateMultiplier in credits, as ListAvailableModels reports them.
+    expect(models.get("gpt-5.6-sol")).toMatchObject({ alias: "gpt-5.6-sol", contextLength: 1000000, rateMultiplier: 4.4 });
+    expect(models.get("gpt-5.6-terra")).toMatchObject({ alias: "gpt-5.6-terra", contextLength: 1000000, rateMultiplier: 2.2 });
+    expect(models.get("gpt-5.6-luna")).toMatchObject({ alias: "gpt-5.6-luna", contextLength: 1000000, rateMultiplier: 1.1 });
   });
 });
 
@@ -70,28 +71,51 @@ describe("Kiro static provider models", () => {
       "gpt-5.6-luna-thinking-agentic",
     ]));
 
+    // Rates/context come from the upstream catalog (ListAvailableModels), so
+    // they track Kiro's real credit multipliers rather than an estimate.
     for (const [id, rateMultiplier] of [
-      ["gpt-5.6-sol", 2.4],
-      ["gpt-5.6-sol-thinking", 2.4],
-      ["gpt-5.6-sol-agentic", 2.4],
-      ["gpt-5.6-sol-thinking-agentic", 2.4],
-      ["gpt-5.6-terra", 1.2],
-      ["gpt-5.6-terra-thinking", 1.2],
-      ["gpt-5.6-terra-agentic", 1.2],
-      ["gpt-5.6-terra-thinking-agentic", 1.2],
-      ["gpt-5.6-luna", 0.6],
-      ["gpt-5.6-luna-thinking", 0.6],
-      ["gpt-5.6-luna-agentic", 0.6],
-      ["gpt-5.6-luna-thinking-agentic", 0.6],
+      ["gpt-5.6-sol", 4.4],
+      ["gpt-5.6-sol-thinking", 4.4],
+      ["gpt-5.6-sol-agentic", 4.4],
+      ["gpt-5.6-sol-thinking-agentic", 4.4],
+      ["gpt-5.6-terra", 2.2],
+      ["gpt-5.6-terra-thinking", 2.2],
+      ["gpt-5.6-terra-agentic", 2.2],
+      ["gpt-5.6-terra-thinking-agentic", 2.2],
+      ["gpt-5.6-luna", 1.1],
+      ["gpt-5.6-luna-thinking", 1.1],
+      ["gpt-5.6-luna-agentic", 1.1],
+      ["gpt-5.6-luna-thinking-agentic", 1.1],
     ]) {
       const model = models.get(id);
       const upstreamModelId = id.replace(/-(thinking-agentic|thinking|agentic)$/, "");
       expect(model).toMatchObject({
-        contextLength: 272000,
+        contextLength: 1000000,
         rateMultiplier,
         upstreamModelId,
       });
-      expect(model.description).toContain("272k context window");
     }
+  });
+
+  it("covers every upstream catalog model with all four synthetic variants", () => {
+    // The registry is the fallback when the live catalog is unreachable, so a
+    // model Kiro can serve must never be missing from it.
+    const ids = new Set((PROVIDER_MODELS.kr || []).map((model) => model.id));
+    const upstream = [
+      "auto", "claude-opus-5.5", "claude-opus-5", "claude-sonnet-5", "claude-opus-4.8",
+      "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "claude-opus-4.7",
+      "claude-opus-4.6", "claude-sonnet-4.6", "claude-opus-4.5", "claude-sonnet-4.5",
+      "claude-sonnet-4", "claude-haiku-4.5", "deepseek-3.2", "minimax-m2.5",
+      "minimax-m2.1", "glm-5", "qwen3-coder-next",
+    ];
+    const missing = [];
+    for (const id of upstream) {
+      // `auto` is server-routed, so Kiro's own docs skip the -agentic variants for it.
+      const suffixes = id === "auto" ? ["", "-thinking"] : ["", "-thinking", "-agentic", "-thinking-agentic"];
+      for (const suffix of suffixes) {
+        if (!ids.has(`${id}${suffix}`)) missing.push(`${id}${suffix}`);
+      }
+    }
+    expect(missing).toEqual([]);
   });
 });

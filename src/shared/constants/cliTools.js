@@ -43,17 +43,31 @@ export const MITM_TOOLS = {
       // for background sub-tasks (verified via MITM request dump of generateAssistantResponse).
       // Both need a mappable slot — otherwise getMappedModel returns null and the chat call
       // is passed through to AWS instead of being routed to the chosen provider.
+      // "simple-task" is not a catalog model: it is a sub-task label the agent emits.
       { id: "auto", name: "Auto (Kiro Agent)", alias: "auto" },
-      { id: "claude-sonnet-5", name: "Claude Sonnet 5", alias: "claude-sonnet-5" },
-      { id: "claude-sonnet-4.5", name: "Claude Sonnet 4.5", alias: "claude-sonnet-4.5" },
-      { id: "claude-sonnet-4", name: "Claude Sonnet 4", alias: "claude-sonnet-4" },
-      { id: "claude-haiku-4.5", name: "Claude Haiku 4.5", alias: "claude-haiku-4.5" },
-      { id: "deepseek-3.2", name: "DeepSeek 3.2", alias: "deepseek-3.2" },
-      { id: "minimax-m2.1", name: "MiniMax M2.1", alias: "minimax-m2.1" },
-      { id: "gpt-5.6-sol", name: "GPT 5.6 Sol", alias: "gpt-5.6-sol", contextLength: 272000, rateMultiplier: 2.4 },
-      { id: "gpt-5.6-terra", name: "GPT 5.6 Terra", alias: "gpt-5.6-terra", contextLength: 272000, rateMultiplier: 1.2 },
-      { id: "gpt-5.6-luna", name: "GPT 5.6 Luna", alias: "gpt-5.6-luna", contextLength: 272000, rateMultiplier: 0.6 },
-      { id: "simple-task", name: "Qwen3 Coder Next", alias: "simple-task" },
+      { id: "simple-task", name: "Simple Task (Kiro sub-task)", alias: "simple-task" },
+      // The rest mirror the upstream catalog (ListAvailableModels), so a slot
+      // exists for every id Kiro can actually send. Rates are the upstream
+      // rateMultiplier in credits.
+      { id: "claude-opus-5.5", name: "Claude Opus 5.5", alias: "claude-opus-5.5", contextLength: 1000000, rateMultiplier: 2 },
+      { id: "claude-opus-5", name: "Claude Opus 5", alias: "claude-opus-5", contextLength: 1000000, rateMultiplier: 2.2 },
+      { id: "claude-sonnet-5", name: "Claude Sonnet 5", alias: "claude-sonnet-5", contextLength: 1000000, rateMultiplier: 1.3 },
+      { id: "claude-opus-4.8", name: "Claude Opus 4.8", alias: "claude-opus-4.8", contextLength: 1000000, rateMultiplier: 2.2 },
+      { id: "gpt-5.6-sol", name: "GPT 5.6 Sol", alias: "gpt-5.6-sol", contextLength: 1000000, rateMultiplier: 4.4 },
+      { id: "gpt-5.6-terra", name: "GPT 5.6 Terra", alias: "gpt-5.6-terra", contextLength: 1000000, rateMultiplier: 2.2 },
+      { id: "gpt-5.6-luna", name: "GPT 5.6 Luna", alias: "gpt-5.6-luna", contextLength: 1000000, rateMultiplier: 1.1 },
+      { id: "claude-opus-4.7", name: "Claude Opus 4.7", alias: "claude-opus-4.7", contextLength: 1000000, rateMultiplier: 2.2 },
+      { id: "claude-opus-4.6", name: "Claude Opus 4.6", alias: "claude-opus-4.6", contextLength: 1000000, rateMultiplier: 2.2 },
+      { id: "claude-sonnet-4.6", name: "Claude Sonnet 4.6", alias: "claude-sonnet-4.6", contextLength: 1000000, rateMultiplier: 1.3 },
+      { id: "claude-opus-4.5", name: "Claude Opus 4.5", alias: "claude-opus-4.5", contextLength: 200000, rateMultiplier: 2.2 },
+      { id: "claude-sonnet-4.5", name: "Claude Sonnet 4.5", alias: "claude-sonnet-4.5", contextLength: 200000, rateMultiplier: 1.3 },
+      { id: "claude-sonnet-4", name: "Claude Sonnet 4", alias: "claude-sonnet-4", contextLength: 200000, rateMultiplier: 1.3 },
+      { id: "claude-haiku-4.5", name: "Claude Haiku 4.5", alias: "claude-haiku-4.5", contextLength: 200000, rateMultiplier: 0.4 },
+      { id: "deepseek-3.2", name: "DeepSeek 3.2", alias: "deepseek-3.2", contextLength: 164000, rateMultiplier: 0.25 },
+      { id: "minimax-m2.5", name: "MiniMax M2.5", alias: "minimax-m2.5", contextLength: 196000, rateMultiplier: 0.25 },
+      { id: "minimax-m2.1", name: "MiniMax M2.1", alias: "minimax-m2.1", contextLength: 196000, rateMultiplier: 0.15 },
+      { id: "glm-5", name: "GLM 5", alias: "glm-5", contextLength: 200000, rateMultiplier: 0.5 },
+      { id: "qwen3-coder-next", name: "Qwen3 Coder Next", alias: "qwen3-coder-next", contextLength: 256000, rateMultiplier: 0.05 },
     ],
   },
   // cursor: {
