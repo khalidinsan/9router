@@ -4,7 +4,15 @@ import { createProviderConnection } from "@/models";
 
 /**
  * POST /api/oauth/kiro/import
- * Import and validate refresh token from Kiro IDE.
+ *
+ * Import and validate a refresh token.
+ *
+ * `authMethod` is preserved when the caller knows it (the kiro-cli import path
+ * sends "github"/"google"). It is not cosmetic: the executor uses it to pick
+ * the endpoint surface, and resolveDefaultProfileArn() maps social methods to
+ * the social profile ARN. Collapsing a social account to "imported" would
+ * resolve the Builder ID ARN instead.
+ *
  * For IDC (organization) tokens, accepts clientId/clientSecret/region so the
  * token can be refreshed via the regional AWS OIDC endpoint.
  */
@@ -31,8 +39,13 @@ export async function POST(request) {
     const tokenData = await kiroService.refreshToken(refreshToken.trim(), providerSpecificData);
 
     const email = kiroService.extractEmailFromJWT(tokenData.accessToken);
-    const resolvedAuthMethod = isIdc ? "idc" : "imported";
-    const providerLabel = isIdc ? "Enterprise" : "Imported";
+    const SOCIAL_METHODS = new Set(["github", "google", "builder-id"]);
+    const resolvedAuthMethod = isIdc
+      ? "idc"
+      : (SOCIAL_METHODS.has(authMethod) ? authMethod : "imported");
+    const providerLabel = isIdc
+      ? "Enterprise"
+      : (resolvedAuthMethod === "imported" ? "Imported" : resolvedAuthMethod);
     const resolvedProfileArn = profileArn || tokenData.profileArn || null;
 
     const connection = await createProviderConnection({

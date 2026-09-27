@@ -265,14 +265,26 @@ export class KiroExecutor extends BaseExecutor {
       }
     }
 
-    // CLIRO parity for the Amazon surfaces: the Kiro runtime accepts the
-    // SSO bearer header + agent-mode marker. Without these the deprecated
-    // path gateway answers REQUEST_BODY_INVALID for modern payloads.
+    // Identity split, deliberately:
+    //
+    //   - `x-amzn-codewhisperer-machine-id: kiro-desktop` is GONE. It is an
+    //     IDE identity string, and the whole point of this change is that an
+    //     account presents the CLI, not the desktop app.
+    //   - `x-amz-sso-bearer` STAYS. It carries no client identity (it is the
+    //     same token as Authorization) and it was added together with
+    //     `x-amzn-kiro-agent-mode` to stop the legacy path gateway answering
+    //     REQUEST_BODY_INVALID for modern payloads. Removing it would trade a
+    //     verified fix for an unverifiable one.
+    //
+    // `x-amzn-kiro-agent-mode` is also kept: kiro-cli knows this header (it is
+    // in the CLI binary's field table) and normally carries agent mode in the
+    // body instead, but the legacy surface needs the header.
     if (credentials?.accessToken) {
       headers["x-amz-sso-bearer"] = credentials.accessToken;
     }
     headers["x-amzn-kiro-agent-mode"] = "spec";
-    headers["x-amzn-codewhisperer-machine-id"] = "kiro-desktop";
+    // kiro-cli stamps its own attempt counter alongside Amz-Sdk-Request.
+    headers["x-kiro-attempt"] = "1;max=3";
     const profileArn = credentials?.providerSpecificData?.profileArn;
     if (profileArn) {
       headers["x-amzn-codewhisperer-profile-arn"] = profileArn;

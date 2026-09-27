@@ -1,9 +1,9 @@
 /**
  * Kiro model catalog fetcher.
  *
- * Calls AWS CodeWhisperer's `ListAvailableModels` endpoint to get the live
- * catalog for an authenticated Kiro account, then expands each upstream model
- * into 9router-shaped variants:
+ * Calls the Kiro control plane's `ListAvailableModels` operation to get the
+ * live catalog for an authenticated Kiro account, then expands each upstream
+ * model into 9router-shaped variants:
  *
  *   {upstream}                          - base model
  *   {upstream}-thinking                 - same model, thinking on at request time
@@ -14,20 +14,18 @@
  * API. They are 9router fictions and the `openai-to-kiro` translator strips
  * them before the request leaves this process.
  *
- * The runtime UA is built to match what Kiro IDE itself sends, because the
- * upstream rejects requests with malformed `User-Agent` headers (returns 400
- * "format of value 'os/win/10 lang/js ...' is invalid").
+ * The request presents the kiro-cli fingerprint (config/kiroClient.js) and
+ * targets `management.*.kiro.dev`, which is where the CLI sends this call.
  */
 
 import { v4 as uuidv4 } from "uuid";
 import { createHash } from "crypto";
 import { refreshKiroToken } from "./tokenRefresh.js";
-
-const KIRO_RUNTIME_SDK_VERSION = "1.0.0";
-const KIRO_AGENT_OS = "windows";
-const KIRO_AGENT_OS_VERSION = "10.0.26200";
-const KIRO_NODE_VERSION = "22.21.1";
-const KIRO_VERSION = "0.10.32";
+import {
+  buildKiroCliControlPlaneHeaders,
+  kiroCliManagementHost,
+  KIRO_CLI_ORIGIN,
+} from "../config/kiroClient.js";
 
 const DEFAULT_REGION = "us-east-1";
 const FETCH_TIMEOUT_MS = 30_000;
@@ -60,35 +58,21 @@ function regionFromProfileArn(profileArn) {
 }
 
 /**
- * Build the per-account fingerprint headers Kiro upstream validates.
- * Keyed off whatever stable identifier we have for this credential, so the
- * same account always presents the same machineId.
+ * Build the headers for the Kiro model catalog request.
+ *
+ * kiro-cli reaches `ListAvailableModels` through the control plane at
+ * `management.*.kiro.dev` with an `x-amz-target` header — not through
+ * `q.*.amazonaws.com` like the IDE. Both the identity and the surface move
+ * together: the UA declares `api/kirocontrolplanebearer` for this call.
  */
-function buildKiroFingerprintHeaders(credentials) {
-  const seed =
-    credentials?.providerSpecificData?.clientId
-    || credentials?.refreshToken
-    || credentials?.providerSpecificData?.profileArn
-    || credentials?.accessToken
-    || "kiro-anonymous";
-  const machineId = createHash("sha256").update(String(seed)).digest("hex");
-
-  const userAgent =
-    `aws-sdk-js/${KIRO_RUNTIME_SDK_VERSION} ua/2.1 ` +
-    `os/${KIRO_AGENT_OS}#${KIRO_AGENT_OS_VERSION} ` +
-    `lang/js md/nodejs#${KIRO_NODE_VERSION} ` +
-    `api/codewhispererruntime#${KIRO_RUNTIME_SDK_VERSION} m/N,E ` +
-    `KiroIDE-${KIRO_VERSION}-${machineId}`;
-  const amzUserAgent = `aws-sdk-js/${KIRO_RUNTIME_SDK_VERSION} KiroIDE-${KIRO_VERSION}-${machineId}`;
-
+function buildKiroCatalogHeaders(credentials) {
   return {
-    "User-Agent": userAgent,
-    "x-amz-user-agent": amzUserAgent,
-    "x-amzn-kiro-agent-mode": "vibe",
-    "x-amzn-codewhisperer-optout": "true",
-    "amz-sdk-request": "attempt=1; max=1",
+    ...buildKiroCliControlPlaneHeaders(),
+    "Content-Type": "application/x-amz-json-1.0",
+    "x-amz-target": "KiroControlPlaneBearerService.ListAvailableModels",
+    "amz-sdk-request": "attempt=1; max=3",
     "amz-sdk-invocation-id": uuidv4(),
-    "Accept": "application/json"
+    "Authorization": `Bearer ${credentials?.accessToken || ""}`,
   };
 }
 
@@ -160,14 +144,11 @@ async function fetchKiroCatalogRaw(credentials, signal) {
   const profileArn = credentials?.providerSpecificData?.profileArn || "";
   const region = regionFromProfileArn(profileArn);
   const params = new URLSearchParams();
-  params.set("origin", "AI_EDITOR");
+  params.set("origin", KIRO_CLI_ORIGIN);
   if (profileArn) params.set("profileArn", profileArn);
-  const url = `https://q.${region}.amazonaws.com/ListAvailableModels?${params.toString()}`;
+  const url = `${kiroCliManagementHost(region)}/?${params.toString()}`;
 
-  const headers = {
-    ...buildKiroFingerprintHeaders(credentials),
-    "Authorization": `Bearer ${credentials?.accessToken || ""}`
-  };
+  const headers = buildKiroCatalogHeaders(credentials);
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort("timeout"), FETCH_TIMEOUT_MS);
@@ -179,8 +160,12 @@ async function fetchKiroCatalogRaw(credentials, signal) {
   let response;
   try {
     response = await fetch(url, {
-      method: "GET",
+      method: "POST",
       headers,
+      body: JSON.stringify({
+        origin: KIRO_CLI_ORIGIN,
+        ...(profileArn ? { profileArn } : {}),
+      }),
       signal: controller.signal
     });
   } finally {

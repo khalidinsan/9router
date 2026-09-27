@@ -13,7 +13,7 @@ for (const [name, translate, body] of [
       expect(payload.conversationState).not.toHaveProperty("agentContinuationId");
       expect(payload.conversationState).not.toHaveProperty("agentTaskType");
       expect(payload.conversationState.chatTriggerType).toBe("MANUAL");
-      expect(payload.conversationState.currentMessage.userInputMessage.origin).toBe("AI_EDITOR");
+      expect(payload.conversationState.currentMessage.userInputMessage.origin).toBe("KIRO_CLI");
     });
   });
 }

@@ -1,3 +1,5 @@
+import { buildKiroCliChatHeaders } from "../../config/kiroClient.js";
+
 export default {
   id: "kiro",
   priority: 10,
@@ -26,11 +28,14 @@ export default {
     retry: {
       "429": 0,
     },
+    // kiro-cli identity, captured from a live kiro-cli 2.24.1 request — see
+    // config/kiroClient.js. Both the chat and control-plane UA strings are the
+    // real CLI's own values, so an account never presents the desktop-IDE
+    // fingerprint.
     headers: {
-      "Content-Type": "application/json",
-      Accept: "application/vnd.amazon.eventstream",
-      "User-Agent": "AWS-SDK-JS/3.0.0 kiro-ide/1.0.0",
-      "X-Amz-User-Agent": "aws-sdk-js/3.0.0 kiro-ide/1.0.0",
+      "Content-Type": "application/x-amz-json-1.0",
+      Accept: "*/*",
+      ...buildKiroCliChatHeaders(),
     },
     tokenUrl: "https://prod.us-east-1.auth.desktop.kiro.dev/refreshToken",
     authUrl: "https://prod.us-east-1.auth.desktop.kiro.dev",

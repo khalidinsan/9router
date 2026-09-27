@@ -20,6 +20,7 @@ export default function KiroAuthModal({ isOpen, onMethodSelect, onClose }) {
   const [importing, setImporting] = useState(false);
   const [autoDetecting, setAutoDetecting] = useState(false);
   const [autoDetected, setAutoDetected] = useState(false);
+  const [tokenSource, setTokenSource] = useState(null);
   const [idcCredentials, setIdcCredentials] = useState(null);
 
   // Auto-detect token when import method is selected
@@ -30,6 +31,7 @@ export default function KiroAuthModal({ isOpen, onMethodSelect, onClose }) {
       setAutoDetecting(true);
       setError(null);
       setAutoDetected(false);
+      setTokenSource(null);
       setIdcCredentials(null);
 
       try {
@@ -39,16 +41,19 @@ export default function KiroAuthModal({ isOpen, onMethodSelect, onClose }) {
         if (data.found) {
           setRefreshToken(data.refreshToken);
           setAutoDetected(true);
-          // Store IDC/organization credentials if present
-          if (data.clientId && data.clientSecret) {
-            setIdcCredentials({
-              clientId: data.clientId,
-              clientSecret: data.clientSecret,
-              region: data.region,
-              authMethod: data.authMethod,
-              profileArn: data.profileArn,
-            });
-          }
+          setTokenSource(data.source || null);
+          // Store IDC/organization credentials if present, and always carry
+          // the detected auth method + profileArn through to the import call:
+          // the executor routes on authMethod and resolves the profile ARN
+          // from it, so dropping a social method ("github"/"google") would
+          // make a CLI-issued session resolve the wrong ARN.
+          setIdcCredentials({
+            clientId: data.clientId,
+            clientSecret: data.clientSecret,
+            region: data.region,
+            authMethod: data.authMethod,
+            profileArn: data.profileArn,
+          });
         } else {
           setError(data.error || "Could not auto-detect token");
         }
@@ -480,7 +485,7 @@ export default function KiroAuthModal({ isOpen, onMethodSelect, onClose }) {
                 </div>
                 <h3 className="text-lg font-semibold mb-2">Auto-detecting token...</h3>
                 <p className="text-sm text-text-muted">
-                  Reading from AWS SSO cache
+                  Looking for a local kiro-cli or Kiro IDE login
                 </p>
               </div>
             )}
@@ -494,7 +499,7 @@ export default function KiroAuthModal({ isOpen, onMethodSelect, onClose }) {
                     <div className="flex gap-2">
                       <span className="material-symbols-outlined text-green-600 dark:text-green-400">check_circle</span>
                       <p className="text-sm text-green-800 dark:text-green-200">
-                        Token auto-detected from Kiro IDE successfully!
+                        Token auto-detected from {tokenSource === "kiro-cli" ? "kiro-cli" : "Kiro IDE"} successfully!
                       </p>
                     </div>
                   </div>
@@ -506,7 +511,7 @@ export default function KiroAuthModal({ isOpen, onMethodSelect, onClose }) {
                     <div className="flex gap-2">
                       <span className="material-symbols-outlined text-blue-600 dark:text-blue-400">info</span>
                       <p className="text-sm text-blue-800 dark:text-blue-200">
-                        Kiro IDE not detected. Please paste your refresh token manually.
+                        No local kiro-cli or Kiro IDE login found. Please paste your refresh token manually.
                       </p>
                     </div>
                   </div>

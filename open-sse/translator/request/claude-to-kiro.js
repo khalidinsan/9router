@@ -17,6 +17,7 @@
  */
 import { register } from "../index.js";
 import { FORMATS } from "../formats.js";
+import { KIRO_CLI_ORIGIN } from "../../config/kiroClient.js";
 import { applyKiroSessionReplay } from "../../utils/kiroSessionReplay.js";
 import { resolveContinuationId, resolveSessionIdentity } from "../../utils/sessionManager.js";
 import {
@@ -303,7 +304,7 @@ export function claudeToKiroRequest(model, body, stream, credentials) {
   const userInputMessage = {
     content: replayCurrent.content || "",
     modelId: upstreamModel,
-    origin: "AI_EDITOR",
+    origin: KIRO_CLI_ORIGIN,
     ...(replayCurrent.userInputMessageContext && {
       userInputMessageContext: replayCurrent.userInputMessageContext,
     }),

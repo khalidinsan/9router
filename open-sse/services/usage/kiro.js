@@ -4,6 +4,12 @@
 
 import { proxyAwareFetch } from "../../utils/proxyFetch.js";
 import { resolveDefaultProfileArn } from "../../config/kiroConstants.js";
+import {
+  buildKiroCliUsageHeaders,
+  kiroCliManagementHost,
+  KIRO_CLI_ORIGIN,
+} from "../../config/kiroClient.js";
+import { v4 as uuidv4 } from "uuid";
 import { U, parseResetTime } from "./shared.js";
 
 /**
@@ -68,12 +74,43 @@ export async function getKiroUsage(accessToken, providerSpecificData, proxyOptio
 
   const getUsageParams = new URLSearchParams({
     isEmailRequired: "true",
-    origin: "AI_EDITOR",
+    origin: KIRO_CLI_ORIGIN,
     resourceType: "AGENTIC_REQUEST",
   });
 
-  // For compatibility, try multiple known Kiro usage endpoints
+  // kiro-cli reaches GetUsageLimits through the control plane at
+  // management.*.kiro.dev with an x-amz-target header, not through the
+  // IDE's q.*.amazonaws.com surfaces. Try the CLI surface first, then fall
+  // back to the IDE-era endpoints for accounts/regions where it is not
+  // available.
   const attempts = [
+    {
+      name: "management-getusagelimits",
+      run: async () => {
+        const params = new URLSearchParams({
+          origin: KIRO_CLI_ORIGIN,
+          ...(profileArn ? { profileArn } : {}),
+        });
+        const region = providerSpecificData?.region || "us-east-1";
+        return proxyAwareFetch(`${kiroCliManagementHost(region)}/?${params}`, {
+          method: "POST",
+          headers: {
+            ...buildKiroCliUsageHeaders(),
+            "Authorization": `Bearer ${accessToken}`,
+            "Content-Type": "application/x-amz-json-1.0",
+            "x-amz-target": "AmazonCodeWhispererService.GetUsageLimits",
+            "amz-sdk-request": "attempt=1; max=3",
+            "amz-sdk-invocation-id": uuidv4(),
+            ...apiKeyHeaders,
+            ...externalIdpHeaders,
+          },
+          body: JSON.stringify({
+            origin: KIRO_CLI_ORIGIN,
+            ...(profileArn ? { profileArn } : {}),
+          }),
+        }, proxyOptions);
+      },
+    },
     {
       name: "codewhisperer-get",
       run: async () => proxyAwareFetch(
@@ -83,8 +120,7 @@ export async function getKiroUsage(accessToken, providerSpecificData, proxyOptio
           headers: {
             "Authorization": `Bearer ${accessToken}`,
             "Accept": "application/json",
-            "x-amz-user-agent": "aws-sdk-js/1.0.0 KiroIDE",
-            "user-agent": "aws-sdk-js/1.0.0 KiroIDE",
+            ...buildKiroCliUsageHeaders(),
             ...apiKeyHeaders,
             ...externalIdpHeaders,
           },
@@ -101,11 +137,12 @@ export async function getKiroUsage(accessToken, providerSpecificData, proxyOptio
           "Content-Type": "application/x-amz-json-1.0",
           "x-amz-target": "AmazonCodeWhispererService.GetUsageLimits",
           "Accept": "application/json",
+          ...buildKiroCliUsageHeaders(),
           ...apiKeyHeaders,
           ...externalIdpHeaders,
         },
         body: JSON.stringify({
-          origin: "AI_EDITOR",
+          origin: KIRO_CLI_ORIGIN,
           ...(profileArn ? { profileArn } : {}),
           resourceType: "AGENTIC_REQUEST",
         }),
@@ -115,7 +152,7 @@ export async function getKiroUsage(accessToken, providerSpecificData, proxyOptio
       name: "q-get",
       run: async () => {
         const params = new URLSearchParams({
-          origin: "AI_EDITOR",
+          origin: KIRO_CLI_ORIGIN,
           ...(profileArn ? { profileArn } : {}),
           resourceType: "AGENTIC_REQUEST",
         });
@@ -124,6 +161,7 @@ export async function getKiroUsage(accessToken, providerSpecificData, proxyOptio
           headers: {
             "Authorization": `Bearer ${accessToken}`,
             "Accept": "application/json",
+            ...buildKiroCliUsageHeaders(),
             ...apiKeyHeaders,
             ...externalIdpHeaders,
           },

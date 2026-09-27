@@ -33,11 +33,19 @@ describe("kiro API-key auth (KiroService.validateApiKey)", () => {
 
     const [url, init] = fetchMock.mock.calls[0];
     expect(url).toBe(
-      "https://q.us-east-1.amazonaws.com/ListAvailableModels?origin=AI_EDITOR"
+      "https://management.us-east-1.kiro.dev/?origin=KIRO_CLI"
     );
-    expect(init.method).toBe("GET");
+    expect(init.method).toBe("POST");
     expect(init.headers.Authorization).toBe("Bearer my-secret-key");
     expect(init.headers.TokenType).toBe("API_KEY");
+    expect(init.headers["x-amz-target"]).toBe(
+      "KiroControlPlaneBearerService.ListAvailableModels"
+    );
+    // The request must present the CLI identity, not the desktop IDE.
+    expect(init.headers["User-Agent"]).toContain("app/AmazonQ-For-CLI");
+    expect(init.headers["User-Agent"]).toContain("api/kirocontrolplanebearer");
+    expect(init.headers["User-Agent"]).not.toContain("KiroIDE");
+    expect(init.headers["User-Agent"]).not.toContain("kiro-ide");
   });
 
   it("rejects an empty API key without a network call", async () => {

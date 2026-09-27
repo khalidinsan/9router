@@ -4,7 +4,7 @@
  */
 import { register } from "../index.js";
 import { FORMATS } from "../formats.js";
-import { v4 as uuidv4 } from "uuid";
+import { KIRO_CLI_ORIGIN } from "../../config/kiroClient.js";
 import { applyKiroSessionReplay } from "../../utils/kiroSessionReplay.js";
 import { resolveContinuationId, resolveSessionIdentity } from "../../utils/sessionManager.js";
 import {
@@ -401,7 +401,7 @@ export function openaiToKiroRequest(model, body, stream, credentials) {
         userInputMessage: {
           content: replayCurrent.content || "",
           modelId: upstreamModel,
-          origin: "AI_EDITOR",
+          origin: KIRO_CLI_ORIGIN,
           ...(replayCurrent.images?.length > 0 && {
             images: replayCurrent.images
           }),

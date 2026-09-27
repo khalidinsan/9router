@@ -5,6 +5,7 @@ import { isOpenAICompatibleProvider, isAnthropicCompatibleProvider } from "@/sha
 import { getDefaultModel } from "open-sse/config/providerModels.js";
 import { resolveOllamaLocalHost, PROVIDERS } from "open-sse/config/providers.js";
 import { CODEX_CLI_VERSION } from "open-sse/config/appConstants.js";
+import { kiroCliRefreshUserAgent } from "open-sse/config/kiroClient.js";
 import {
   refreshProviderCredentials,
   shouldRefreshCredentials,
@@ -276,7 +277,7 @@ async function refreshOAuthToken(connection) {
       }
       const response = await fetch(KIRO_CONFIG.socialRefreshUrl, {
         method: "POST",
-        headers: { "Content-Type": "application/json", "User-Agent": "kiro-cli/1.0.0" },
+        headers: { "Content-Type": "application/json", "User-Agent": kiroCliRefreshUserAgent() },
         body: JSON.stringify({ refreshToken }),
       });
       if (!response.ok) return null;

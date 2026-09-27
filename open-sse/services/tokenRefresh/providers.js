@@ -4,6 +4,7 @@ import { proxyAwareFetch } from "../../utils/proxyFetch.js";
 import { dedupRefresh } from "./dedup.js";
 import { workbuddyRefreshHeaders } from "../../config/workbuddy.js";
 import { buildExternalIdpRefreshParams } from "../../../src/lib/oauth/kiroExternalIdp.js";
+import { kiroCliRefreshUserAgent } from "../../config/kiroClient.js";
 
 let _xaiServiceSingleton = null;
 export async function refreshXaiToken(refreshToken, log) {
@@ -424,7 +425,7 @@ export async function refreshKiroToken(refreshToken, providerSpecificData, log, 
     headers: {
       "Content-Type": "application/json",
       Accept: "application/json",
-      "User-Agent": "kiro-cli/1.0.0",
+      "User-Agent": kiroCliRefreshUserAgent(),
     },
     body: JSON.stringify({
       refreshToken: refreshToken,

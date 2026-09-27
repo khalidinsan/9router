@@ -2,15 +2,39 @@ import { NextResponse } from "next/server";
 import { readFile, readdir } from "fs/promises";
 import { homedir } from "os";
 import { join } from "path";
+import { readKiroCliToken } from "@/lib/oauth/kiroCliImport";
 
 /**
  * GET /api/oauth/kiro/auto-import
- * Auto-detect and extract Kiro refresh token from AWS SSO cache.
+ *
+ * Detect a local Kiro credential, preferring a real `kiro-cli` login over the
+ * IDE's AWS SSO cache. The CLI's token is what makes the imported connection
+ * carry a genuine CLI session; the SSO cache is the fallback for machines
+ * where only the IDE was ever logged in.
+ *
  * For IDC (organization) tokens, also resolves clientId/clientSecret from the
  * linked client registration file so token refresh works.
  */
 export async function GET() {
   try {
+    // Source 1: the local kiro-cli install.
+    const cli = await readKiroCliToken();
+    if (cli.found) {
+      return NextResponse.json({
+        found: true,
+        refreshToken: cli.token.refreshToken,
+        source: "kiro-cli",
+        sourcePath: cli.dbPath,
+        clientId: null,
+        clientSecret: null,
+        region: null,
+        authMethod: cli.token.authMethod,
+        profileArn: cli.token.profileArn,
+        accessToken: cli.token.accessToken,
+        expiresAt: cli.token.expiresAt,
+      });
+    }
+
     const cachePath = join(homedir(), ".aws/sso/cache");
 
     let files;

@@ -244,7 +244,7 @@ exports[`GOLDEN request: OpenAI → Kiro > full body (image base64 + tool_result
 
 continue",
         "modelId": "claude-sonnet-4.5",
-        "origin": "AI_EDITOR",
+        "origin": "KIRO_CLI",
         "userInputMessageContext": {
           "toolResults": [
             {

@@ -1,4 +1,9 @@
 import { KIRO_CONFIG, assertValidAwsRegion } from "../constants/oauth.js";
+import {
+  buildKiroCliControlPlaneHeaders,
+  kiroCliManagementHost,
+  KIRO_CLI_ORIGIN,
+} from "open-sse/config/kiroClient.js";
 
 /**
  * Kiro OAuth Service
@@ -298,17 +303,19 @@ export class KiroService {
    */
   async listAvailableApiKeyModels(apiKey, region = "us-east-1") {
     assertValidAwsRegion(region);
-    const params = new URLSearchParams({ origin: "AI_EDITOR" });
-    const endpoint = `https://q.${region}.amazonaws.com/ListAvailableModels?${params}`;
+    const params = new URLSearchParams({ origin: KIRO_CLI_ORIGIN });
+    const endpoint = `${kiroCliManagementHost(region)}/?${params}`;
     const response = await fetch(endpoint, {
-      method: "GET",
+      method: "POST",
       headers: {
+        ...buildKiroCliControlPlaneHeaders(),
         "Authorization": `Bearer ${apiKey}`,
         "TokenType": "API_KEY",
-        "Accept": "application/json",
-        "User-Agent": "AWS-SDK-JS/3.0.0 kiro-ide/1.0.0",
-        "X-Amz-User-Agent": "aws-sdk-js/3.0.0 kiro-ide/1.0.0",
+        "Content-Type": "application/x-amz-json-1.0",
+        "x-amz-target": "KiroControlPlaneBearerService.ListAvailableModels",
+        "amz-sdk-request": "attempt=1; max=3",
       },
+      body: JSON.stringify({ origin: KIRO_CLI_ORIGIN }),
     });
 
     if (!response.ok) {
@@ -353,19 +360,20 @@ export class KiroService {
    * List available models from CodeWhisperer API
    */
   async listAvailableModels(accessToken, profileArn) {
-    const endpoint = "https://codewhisperer.us-east-1.amazonaws.com";
-    const target = "AmazonCodeWhispererService.ListAvailableModels";
+    const endpoint = `${kiroCliManagementHost()}/?origin=${KIRO_CLI_ORIGIN}`;
+    const target = "KiroControlPlaneBearerService.ListAvailableModels";
 
     const response = await fetch(endpoint, {
       method: "POST",
       headers: {
+        ...buildKiroCliControlPlaneHeaders(),
         "Content-Type": "application/x-amz-json-1.0",
         "x-amz-target": target,
         "Authorization": `Bearer ${accessToken}`,
-        "Accept": "application/json",
+        "amz-sdk-request": "attempt=1; max=3",
       },
       body: JSON.stringify({
-        origin: "AI_EDITOR",
+        origin: KIRO_CLI_ORIGIN,
         profileArn,
       }),
     });
