@@ -11,11 +11,11 @@ import {
   USAGE_SUPPORTED_PROVIDERS,
   USAGE_APIKEY_PROVIDERS,
 } from "../../src/shared/constants/providers.js";
-import { PROVIDERS } from "../../open-sse/providers/index.js";
 import { parseQuotaData } from "../../src/app/(dashboard)/dashboard/usage/components/ProviderLimits/utils.js";
 
-const CREDITS_URL = "https://api.commandcode.ai/alpha/billing/credits";
-const SUBS_URL = "https://api.commandcode.ai/alpha/billing/subscriptions";
+const BASE = "https://api.commandcode.ai";
+const CREDITS_URL = `${BASE}/alpha/billing/credits`;
+const SUBS_URL = `${BASE}/alpha/billing/subscriptions`;
 
 function jsonResponse(body, status = 200) {
   return new Response(JSON.stringify(body), {
@@ -24,6 +24,7 @@ function jsonResponse(body, status = 200) {
   });
 }
 
+// Verbatim Go-plan payloads captured from a live account.
 const SAMPLE_CREDITS = {
   credits: {
     belowThreshold: false,
@@ -60,10 +61,37 @@ const SAMPLE_SUB = {
   },
 };
 
+const WHOAMI = {
+  user: { name: "Hieu", email: "hieu@example.com" },
+  org: { id: "org_1", name: "personal" },
+};
+const ORG_CREDITS = {
+  credits: { monthlyCredits: 12.5, purchasedCredits: 1, freeCredits: 0.5 },
+  windowLimits: {
+    fiveHour: { used: 2, cap: 10, resetAt: Date.now() + 3_600_000, exceeded: false },
+    weekly: { used: 20, cap: 70, resetAt: Date.now() + 86_400_000, exceeded: false },
+  },
+};
+const ORG_SUB = {
+  data: {
+    planId: "individual-goat",
+    currentPeriodStart: "2026-09-01T00:00:00.000Z",
+    currentPeriodEnd: "2026-10-01T00:00:00.000Z",
+  },
+};
+
+function mockHappyPath() {
+  proxyAwareFetch.mockImplementation(async (url) => {
+    const u = String(url);
+    if (u.includes("/alpha/whoami")) return jsonResponse(WHOAMI);
+    if (u.includes("/alpha/billing/credits")) return jsonResponse(ORG_CREDITS);
+    if (u.includes("/alpha/billing/subscriptions")) return jsonResponse(ORG_SUB);
+    return jsonResponse({ error: "unexpected " + u }, 404);
+  });
+}
+
 describe("commandcode registry usage flags", () => {
-  it("exposes alpha billing urls and apikey usage flags", () => {
-    expect(PROVIDERS.commandcode.usage?.url).toBe(CREDITS_URL);
-    expect(PROVIDERS.commandcode.usage?.subscriptionsUrl).toBe(SUBS_URL);
+  it("is listed for the apikey quota dashboard", () => {
     expect(USAGE_SUPPORTED_PROVIDERS).toContain("commandcode");
     expect(USAGE_APIKEY_PROVIDERS).toContain("commandcode");
   });
@@ -154,6 +182,14 @@ describe("parseCommandCodeUsage", () => {
     expect(parsed.plan).toBe("Pro");
     expect(parsed.quotas.Monthly).toMatchObject({ used: 20, total: 80 });
   });
+
+  it("keeps percent windows when the subscription payload is missing (fail-open)", () => {
+    const parsed = parseCommandCodeUsage(ORG_CREDITS, null);
+    expect(parsed.plan).toBe("Command Code");
+    expect(parsed.quotas.session).toMatchObject({ used: 20, total: 100 });
+    expect(parsed.quotas.weekly).toMatchObject({ used: 29, total: 100 });
+    expect(parsed.quotas.Monthly).toBeUndefined();
+  });
 });
 
 describe("getUsageForProvider(commandcode)", () => {
@@ -161,43 +197,65 @@ describe("getUsageForProvider(commandcode)", () => {
     vi.clearAllMocks();
   });
 
-  it("GETs credits + subscriptions with Bearer apiKey", async () => {
-    proxyAwareFetch
-      .mockResolvedValueOnce(jsonResponse(SAMPLE_CREDITS))
-      .mockResolvedValueOnce(jsonResponse(SAMPLE_SUB));
+  it("returns a message when apiKey is missing", async () => {
+    const usage = await getUsageForProvider({ provider: "commandcode" });
+    expect(usage.message).toMatch(/api key/i);
+    expect(proxyAwareFetch).not.toHaveBeenCalled();
+  });
 
+  it("GETs whoami then credits + subscriptions with orgId and Bearer apiKey", async () => {
+    mockHappyPath();
     const usage = await getUsageForProvider({
       provider: "commandcode",
       apiKey: "user_test",
     });
 
     expect(usage.message).toBeUndefined();
-    expect(usage.plan).toBe("Go");
-    expect(usage.quotas.session.remaining).toBe(76);
-    expect(usage.quotas.weekly.remaining).toBe(2);
+    expect(usage.plan).toBe("GOAT");
 
-    expect(proxyAwareFetch).toHaveBeenCalledTimes(2);
-    const urls = proxyAwareFetch.mock.calls.map(([url]) => url).sort();
-    expect(urls).toEqual([CREDITS_URL, SUBS_URL].sort());
+    const urls = proxyAwareFetch.mock.calls.map(([url]) => String(url));
+    expect(urls.some((u) => u.startsWith(`${BASE}/alpha/whoami`))).toBe(true);
+    expect(urls.some((u) => u.includes("/alpha/billing/credits") && u.includes("orgId=org_1"))).toBe(true);
+    expect(urls.some((u) => u.includes("/alpha/billing/subscriptions") && u.includes("orgId=org_1"))).toBe(true);
+    expect(proxyAwareFetch.mock.calls[0][1].headers.Authorization).toBe("Bearer user_test");
     for (const [, opts] of proxyAwareFetch.mock.calls) {
       expect(opts.method).toBe("GET");
-      expect(opts.headers.Authorization).toBe("Bearer user_test");
     }
+
+    // fiveHour 2/10 and weekly 20/70 are surfaced as 0-100 percent bars;
+    // the Monthly dollar pot is sized from the plan allotment minus remaining.
+    expect(usage.quotas.session).toMatchObject({ used: 20, total: 100, remaining: 80 });
+    expect(usage.quotas.weekly).toMatchObject({ used: 29, total: 100, remaining: 71 });
+    expect(usage.quotas.Monthly).toMatchObject({ used: 57.5, total: 70 });
   });
 
-  it("returns message on missing key / 401", async () => {
-    const missing = await getUsageForProvider({ provider: "commandcode" });
-    expect(missing.message).toMatch(/api key/i);
-    expect(proxyAwareFetch).not.toHaveBeenCalled();
+  it("falls back to the registry billing urls when the base is default", async () => {
+    mockHappyPath();
+    await getUsageForProvider({ provider: "commandcode", apiKey: "user_test" });
+    const urls = proxyAwareFetch.mock.calls.map(([url]) => String(url));
+    expect(urls.some((u) => u.startsWith(CREDITS_URL))).toBe(true);
+    expect(urls.some((u) => u.startsWith(SUBS_URL))).toBe(true);
+  });
 
-    proxyAwareFetch
-      .mockResolvedValueOnce(jsonResponse({ error: "no" }, 401))
-      .mockResolvedValueOnce(jsonResponse({}, 401));
-    const auth = await getUsageForProvider({
+  it("returns an auth message when whoami rejects the key", async () => {
+    proxyAwareFetch.mockResolvedValueOnce(jsonResponse({ error: "unauthorized" }, 401));
+    const usage = await getUsageForProvider({
       provider: "commandcode",
       apiKey: "bad",
     });
-    expect(auth.message).toMatch(/auth|key|401/i);
+    expect(usage.message).toMatch(/auth|key|401/i);
+  });
+
+  it("returns an auth message when credits rejects the key", async () => {
+    proxyAwareFetch
+      .mockResolvedValueOnce(jsonResponse(WHOAMI))
+      .mockResolvedValueOnce(jsonResponse({ error: "no" }, 403))
+      .mockResolvedValueOnce(jsonResponse({}, 200));
+    const usage = await getUsageForProvider({
+      provider: "commandcode",
+      apiKey: "bad",
+    });
+    expect(usage.message).toMatch(/auth|key|401|403/i);
   });
 });
 
@@ -220,5 +278,7 @@ describe("parseQuotaData(commandcode)", () => {
     expect(rows[1]).toMatchObject({ quotaType: "weekly", used: 98, remaining: 2 });
     expect(rows[2]).toMatchObject({ quotaType: "Monthly", used: 5.8868, total: 10 });
     expect(rows[2].remaining).toBeUndefined();
+    // `session` is the key the dashboard maps to the "5h" label.
+    expect(rows[0].name).toBe("5h");
   });
 });

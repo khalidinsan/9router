@@ -1,7 +1,8 @@
 /**
  * Command Code usage — CLI alpha billing (works on Go; no Provider API).
  *
- * GET /alpha/billing/credits
+ * GET /alpha/whoami            (?limits=1; supplies orgId for team/org accounts)
+ * GET /alpha/billing/credits   (?orgId)
  * GET /alpha/billing/subscriptions  (plan label + monthly period; fail-open)
  *
  * Window bars match Codex: `session` (5h) + `weekly` as 0–100 percent used.
@@ -15,10 +16,24 @@ const CREDITS_URL = USAGE.url || "https://api.commandcode.ai/alpha/billing/credi
 const SUBSCRIPTIONS_URL =
   USAGE.subscriptionsUrl || "https://api.commandcode.ai/alpha/billing/subscriptions";
 
+// whoami lives beside the billing routes; derive it from the registry URL so a
+// proxied/self-hosted base keeps working, and never throw at module load.
+function deriveWhoamiUrl(creditsUrl) {
+  try {
+    return new URL("/alpha/whoami", creditsUrl).toString();
+  } catch {
+    return "https://api.commandcode.ai/alpha/whoami";
+  }
+}
+
+const WHOAMI_URL = USAGE.whoamiUrl || deriveWhoamiUrl(CREDITS_URL);
+
 const PLAN_LABELS = {
   "individual-go": "Go",
   "individual-goat": "GOAT",
   "individual-pro": "Pro",
+  "individual-pro-v1": "Pro",
+  "individual-provider": "Provider",
   "individual-max": "Max",
   "individual-ultra": "Ultra",
   "teams-pro": "Teams Pro",
@@ -37,10 +52,20 @@ const PLAN_MONTHLY_CREDITS = {
   "individual-go": 10,
   "individual-goat": 70,
   "individual-pro": 80,
+  "individual-pro-v1": 80,
+  "individual-provider": 15,
   "individual-max": 150,
   "individual-ultra": 300,
   "teams-pro": 40,
 };
+
+function withQuery(route, params) {
+  const query = new URLSearchParams(
+    Object.entries(params || {}).filter(([, v]) => v != null),
+  ).toString();
+  if (!query) return route;
+  return route.includes("?") ? `${route}&${query}` : `${route}?${query}`;
+}
 
 function roundPct(value) {
   return Math.max(0, Math.min(100, Math.round(toFiniteNumber(value, 0))));
@@ -124,9 +149,29 @@ export async function getCommandCodeUsage(apiKey = null, proxyOptions = null) {
   };
 
   try {
+    const whoamiRes = await proxyAwareFetch(
+      withQuery(WHOAMI_URL, { limits: "1" }),
+      { method: "GET", headers },
+      proxyOptions,
+    );
+    if (whoamiRes.status === 401 || whoamiRes.status === 403) {
+      return {
+        plan: "Command Code",
+        message: "Command Code authentication failed. Check the API key.",
+      };
+    }
+    if (!whoamiRes.ok) {
+      return {
+        plan: "Command Code",
+        message: `Command Code usage API error (${whoamiRes.status}).`,
+      };
+    }
+    const whoami = await whoamiRes.json().catch(() => null);
+    const orgId = whoami?.org?.id ?? null;
+
     const [creditsRes, subsRes] = await Promise.all([
-      proxyAwareFetch(CREDITS_URL, { method: "GET", headers }, proxyOptions),
-      proxyAwareFetch(SUBSCRIPTIONS_URL, { method: "GET", headers }, proxyOptions).catch(() => null),
+      proxyAwareFetch(withQuery(CREDITS_URL, { orgId }), { method: "GET", headers }, proxyOptions),
+      proxyAwareFetch(withQuery(SUBSCRIPTIONS_URL, { orgId }), { method: "GET", headers }, proxyOptions).catch(() => null),
     ]);
 
     if (creditsRes.status === 401 || creditsRes.status === 403) {

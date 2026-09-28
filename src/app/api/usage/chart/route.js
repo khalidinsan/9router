@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { getChartData, getChartDataByApiKey } from "@/lib/usageDb";
 import { getQueryTimeZone } from "@/lib/tz";
 
-const VALID_PERIODS = new Set(["today", "24h", "7d", "30d", "60d"]);
+const VALID_PERIODS = new Set(["today", "24h", "7d", "30d", "60d", "all"]);
 const VALID_BY = new Set(["apiKey"]);
 
 export async function GET(request) {

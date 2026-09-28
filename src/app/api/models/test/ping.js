@@ -150,6 +150,36 @@ export async function pingModelByKind(
     return { ok: true, latencyMs, error: null, status: res.status, ...pin };
   }
 
+  if (kind === "systemone") {
+    const res = await fetch(`${baseUrl}/api/v1/systemone`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        model,
+        state: "Customer: I was charged twice for my order this morning.",
+        questions: {
+          probe: { type: "noul", instructions: "Is the customer reporting a billing problem?" },
+        },
+      }),
+      signal: AbortSignal.timeout(15000),
+    });
+    const latencyMs = Date.now() - start;
+    const rawText = await res.text().catch(() => "");
+    let parsed = null;
+    try { parsed = rawText ? JSON.parse(rawText) : null; } catch {}
+
+    if (!res.ok) {
+      const detail = parsed?.error?.message || parsed?.msg || parsed?.message || parsed?.error || rawText;
+      return { ok: false, latencyMs, error: `HTTP ${res.status}${detail ? `: ${String(detail).slice(0, 240)}` : ""}`, status: res.status, ...pin };
+    }
+
+    const hasAnswers = parsed?.answers && typeof parsed.answers === "object" && Object.keys(parsed.answers).length > 0;
+    if (!hasAnswers) {
+      return { ok: false, latencyMs, status: res.status, error: "Provider returned no answers for this model", ...pin };
+    }
+    return { ok: true, latencyMs, error: null, status: res.status, ...pin };
+  }
+
   const res = await fetch(`${baseUrl}/api/v1/chat/completions`, {
     method: "POST",
     headers,
@@ -178,7 +208,7 @@ export async function pingModelByKind(
 
   if (!res.ok) {
     const detail = parsed?.error?.message || parsed?.msg || parsed?.message || parsed?.error || rawText;
-    return { ok: false, latencyMs, error: `HTTP ${res.status}${detail ? `: ${String(detail).slice(0, 240)}` : ""}`, status: res.status, ...pin };
+    return { ok: false, latencyMs, error: `HTTP ${res.status}${detail ? `: ${String(detail).slice(0, 500)}` : ""}`, status: res.status, ...pin };
   }
 
   const providerStatus = parsed?.status;

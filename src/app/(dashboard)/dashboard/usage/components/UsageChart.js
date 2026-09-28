@@ -9,8 +9,8 @@ import {
   YAxis,
   CartesianGrid,
   Tooltip,
-  ResponsiveContainer,
   Legend,
+  ResponsiveContainer,
 } from "recharts";
 import Card from "@/shared/components/Card";
 import { tzCaption, tzQueryParam, useClientTimeZone } from "@/shared/utils/datetime";
@@ -22,6 +22,19 @@ const fmtTokens = (n) => {
 };
 
 const fmtCost = (n) => `$${(n || 0).toFixed(4)}`;
+const fmtRequests = (n) => String(n || 0);
+
+const VIEW_MODES = [
+  { value: "tokens", label: "Tokens" },
+  { value: "requests", label: "Requests" },
+  { value: "cost", label: "Cost" },
+];
+
+const VIEW_CONFIG = {
+  tokens:   { dataKey: "tokens",   color: "#6366f1", gradId: "gradTokens",   formatter: fmtTokens,   label: "Tokens" },
+  requests: { dataKey: "requests", color: "#14b8a6", gradId: "gradRequests", formatter: fmtRequests, label: "Requests" },
+  cost:     { dataKey: "cost",     color: "#f59e0b", gradId: "gradCost",     formatter: fmtCost,     label: "Cost" },
+};
 
 // Stable per-series colors (hashed from series name so colors don't jump
 // between refetches when totals reorder).
@@ -83,6 +96,7 @@ export default function UsageChart({ period = "7d" }) {
   }, [fetchData]);
 
   const isSplit = split === "byKey";
+  const cfg = VIEW_CONFIG[viewMode];
   const seriesList = useMemo(
     () => (isSplit && data && Array.isArray(data.series) ? data.series : []),
     [isSplit, data]
@@ -95,7 +109,12 @@ export default function UsageChart({ period = "7d" }) {
     return data.labels.map((label, i) => {
       const row = { label };
       for (const s of seriesList) {
-        row[s.key] = viewMode === "tokens" ? (s.tokens[i] || 0) : (s.cost[i] || 0);
+        row[s.key] =
+          viewMode === "tokens"
+            ? (s.tokens?.[i] || 0)
+            : viewMode === "requests"
+              ? (s.requests?.[i] || 0)
+              : (s.cost?.[i] || 0);
       }
       return row;
     });
@@ -103,27 +122,26 @@ export default function UsageChart({ period = "7d" }) {
 
   const hasData = isSplit
     ? seriesList.length > 0 && rows.some((r) => seriesList.some((s) => (r[s.key] || 0) > 0))
-    : rows.some((d) => d.tokens > 0 || d.cost > 0);
+    : (Array.isArray(data) ? data : []).some((d) => (d[cfg.dataKey] || 0) > 0);
 
-  const tooltipFormatter = (value, name) =>
-    viewMode === "tokens" ? [fmtTokens(value), name] : [fmtCost(value), name];
+  const tooltipFormatter = (value, name) => [cfg.formatter(value), isSplit ? name : cfg.label];
 
   return (
     <Card className="flex min-w-0 flex-col gap-3 p-3 sm:p-4">
       <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-        <div className="grid w-full grid-cols-2 items-center gap-1 rounded-lg border border-border bg-bg-subtle p-1 sm:w-auto">
-          <button
-            onClick={() => setViewMode("tokens")}
-            className={`px-3 py-1 rounded-md text-sm font-medium transition-colors ${viewMode === "tokens" ? "bg-primary text-white shadow-sm" : "text-text-muted hover:text-text hover:bg-bg-hover"}`}
-          >
-            Tokens
-          </button>
-          <button
-            onClick={() => setViewMode("cost")}
-            className={`px-3 py-1 rounded-md text-sm font-medium transition-colors ${viewMode === "cost" ? "bg-primary text-white shadow-sm" : "text-text-muted hover:text-text hover:bg-bg-hover"}`}
-          >
-            Cost
-          </button>
+        <div
+          className="grid w-full items-center gap-1 rounded-lg border border-border bg-bg-subtle p-1 sm:w-auto"
+          style={{ gridTemplateColumns: `repeat(${VIEW_MODES.length}, minmax(0, 1fr))` }}
+        >
+          {VIEW_MODES.map((m) => (
+            <button
+              key={m.value}
+              onClick={() => setViewMode(m.value)}
+              className={`px-3 py-1 rounded-md text-sm font-medium transition-colors ${viewMode === m.value ? "bg-primary text-white shadow-sm" : "text-text-muted hover:text-text hover:bg-bg-hover"}`}
+            >
+              {m.label}
+            </button>
+          ))}
         </div>
         <div className="grid w-full grid-cols-2 items-center gap-1 rounded-lg border border-border bg-bg-subtle p-1 sm:w-auto">
           <button
@@ -156,6 +174,10 @@ export default function UsageChart({ period = "7d" }) {
                 <stop offset="5%" stopColor="#6366f1" stopOpacity={0.25} />
                 <stop offset="95%" stopColor="#6366f1" stopOpacity={0} />
               </linearGradient>
+              <linearGradient id="gradRequests" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="5%" stopColor="#14b8a6" stopOpacity={0.25} />
+                <stop offset="95%" stopColor="#14b8a6" stopOpacity={0} />
+              </linearGradient>
               <linearGradient id="gradCost" x1="0" y1="0" x2="0" y2="1">
                 <stop offset="5%" stopColor="#f59e0b" stopOpacity={0.25} />
                 <stop offset="95%" stopColor="#f59e0b" stopOpacity={0} />
@@ -173,7 +195,7 @@ export default function UsageChart({ period = "7d" }) {
               tick={{ fontSize: 10, fill: "currentColor", fillOpacity: 0.5 }}
               tickLine={false}
               axisLine={false}
-              tickFormatter={viewMode === "tokens" ? fmtTokens : fmtCost}
+              tickFormatter={cfg.formatter}
               width={50}
             />
             <Tooltip
@@ -183,32 +205,16 @@ export default function UsageChart({ period = "7d" }) {
                 borderRadius: "8px",
                 fontSize: "12px",
               }}
-              formatter={
-                isSplit
-                  ? tooltipFormatter
-                  : (value, name) =>
-                      name === "tokens" ? [fmtTokens(value), "Tokens"] : [fmtCost(value), "Cost"]
-              }
+              formatter={isSplit ? tooltipFormatter : (value) => [cfg.formatter(value), cfg.label]}
             />
             {isSplit && <Legend wrapperStyle={{ fontSize: "12px" }} />}
-            {!isSplit && viewMode === "tokens" && (
+            {!isSplit && (
               <Area
                 type="monotone"
-                dataKey="tokens"
-                stroke="#6366f1"
+                dataKey={cfg.dataKey}
+                stroke={cfg.color}
                 strokeWidth={2}
-                fill="url(#gradTokens)"
-                dot={false}
-                activeDot={{ r: 4 }}
-              />
-            )}
-            {!isSplit && viewMode !== "tokens" && (
-              <Area
-                type="monotone"
-                dataKey="cost"
-                stroke="#f59e0b"
-                strokeWidth={2}
-                fill="url(#gradCost)"
+                fill={`url(#${cfg.gradId})`}
                 dot={false}
                 activeDot={{ r: 4 }}
               />

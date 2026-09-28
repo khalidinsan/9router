@@ -129,7 +129,7 @@ function openaiToGeminiBase(model, body, stream, signature = DEFAULT_THINKING_AG
             if (tc.type !== OPENAI_BLOCK.FUNCTION) continue;
 
             const args = tryParseJSON(tc.function?.arguments || "{}");
-            const cachedSig = tc.id ? getGeminiThoughtSignatureSync(tc.id, sessionId) : null;
+            const cachedSig = tc.id ? getGeminiThoughtSignatureSync(tc.id, sessionId, model) : null;
             // First call gets cached signature or fallback; sibling calls remain unsigned if no cached sig
             const callSig = cachedSig || (!firstFunctionCallSeen ? signature : undefined);
             firstFunctionCallSeen = true;
@@ -281,15 +281,10 @@ function wrapInCloudCodeEnvelope(model, geminiCLI, credentials = null, isAntigra
     }
   };
 
-  // Antigravity: `requestType: "agent"` is deliberately NOT set.
-  //
-  // That flag switches Cloud Code Assist into strict agent-mode inspection, which
-  // rejects this gateway's prompt with a detail-free HTTP 429 RESOURCE_EXHAUSTED
-  // in ~100-500ms while account quota is untouched (97% remaining when measured).
-  // Verified against the live endpoint, 3 accounts x 5 interleaved rounds, same
-  // 79KB prompt: with "agent" 0/15 successes; without it 15/15. Content and size
-  // are irrelevant — that same prompt passes verbatim without the flag, and a
-  // neutral 79KB filler always passes.
+  // Antigravity specific fields.
+  // NOTE: the official Antigravity client omits `requestType` entirely on the
+  // agent (chat) path. Sending `requestType: "agent"` triggers a detail-free
+  // 429 RESOURCE_EXHAUSTED even with quota available.
   if (!isAntigravity) {
     // Keep safetySettings for Gemini CLI
     envelope.request.safetySettings = geminiCLI.safetySettings;
@@ -317,6 +312,8 @@ function wrapInCloudCodeEnvelopeForClaude(model, claudeRequest, credentials = nu
     // `requestType` is deliberately omitted — see wrapInCloudCodeEnvelope above.
     // The nested/system path mints its own IDE-shaped id in the executor.
     requestId: `agent-${generateUUID()}`,
+    // NOTE: official Antigravity client omits `requestType` on the agent (chat)
+    // path — see the note in wrapInCloudCodeEnvelope() above.
     request: {
       sessionId: toNumericSessionId(credentials?._clientSessionId) || deriveSessionId(credentials?.email || credentials?.connectionId),
       contents: [],
@@ -352,7 +349,7 @@ function wrapInCloudCodeEnvelopeForClaude(model, claudeRequest, credentials = nu
           if (block.type === CLAUDE_BLOCK.TEXT) {
             parts.push({ text: block.text });
           } else if (block.type === CLAUDE_BLOCK.TOOL_USE) {
-            const cachedSig = block.id ? getGeminiThoughtSignatureSync(block.id, credentials?._clientSessionId) : null;
+            const cachedSig = block.id ? getGeminiThoughtSignatureSync(block.id, credentials?._clientSessionId, model) : null;
             const callSig = cachedSig || (!firstToolUseSeen ? signature : undefined);
             firstToolUseSeen = true;
 

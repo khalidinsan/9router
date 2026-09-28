@@ -249,7 +249,7 @@ export class AntigravityExecutor extends BaseExecutor {
       const modifiedParts = parts?.map(p => {
         if (!p.functionCall) return p;
         const callId = p.functionCall.id;
-        const cachedSig = callId ? getGeminiThoughtSignatureSync(callId, sessionId) : null;
+        const cachedSig = callId ? getGeminiThoughtSignatureSync(callId, sessionId, body.model || model) : null;
         const callSig = p.thoughtSignature || cachedSig || (!firstFunctionCallSeen ? DEFAULT_THINKING_AG_SIGNATURE : undefined);
         firstFunctionCallSeen = true;
         if (callSig) {
@@ -335,6 +335,18 @@ export class AntigravityExecutor extends BaseExecutor {
     stripBlacklisted(cleanBody);
 
     this._lastSessionId = transformedRequest.sessionId; // cached for buildHeaders (base.execute order)
+
+    // Official Antigravity client omits `requestType` entirely on the agent
+    // (chat) path. Sending `requestType: "agent"` here (or leaking it through
+    // from an upstream envelope via the ...body spread below) makes Google
+    // bucket the request and return a detail-free 429 RESOURCE_EXHAUSTED even
+    // with quota available. `image_gen` and
+    // `search` buckets are unaffected and keep their own requestType.
+    // `cleanBody` is a shallow clone taken before this point, so it must be
+    // sanitized too — otherwise `requestType: "agent"` leaks back into the
+    // returned envelope via the `...cleanBody` spread below.
+    delete body.requestType;
+    delete cleanBody.requestType;
 
     return {
       ...cleanBody,

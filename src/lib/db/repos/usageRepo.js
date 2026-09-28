@@ -7,8 +7,9 @@ import { resolveTimeZone, buildChartEdges, startOfDayInTz } from "../../tz.js";
 
 function maskApiKey(key) {
   if (!key || typeof key !== "string") return null;
-  if (key.length <= 8) return key.charAt(0) + "***";
-  return key.slice(0, 8) + "***";
+  if (key.length <= 12) return key.charAt(0) + "***";
+  // Keep the tail: keys sharing a machine-id prefix (team keys) must not collide.
+  return key.slice(0, 8) + "***" + key.slice(-4);
 }
 
 // Stable, non-reversible group id for an API key. Masked prefixes MUST NOT
@@ -406,12 +407,12 @@ export async function getUsageHistory(filter = {}) {
 
 function loadDaysInRange(adapter, maxDays) {
   if (maxDays == null) {
-    return adapter.all(`SELECT dateKey, data FROM usageDaily`);
+    return adapter.all(`SELECT dateKey, data FROM usageDaily ORDER BY dateKey ASC`);
   }
   const today = new Date();
   const cutoff = new Date(today.getFullYear(), today.getMonth(), today.getDate() - maxDays + 1);
   const cutoffKey = `${cutoff.getFullYear()}-${String(cutoff.getMonth() + 1).padStart(2, "0")}-${String(cutoff.getDate()).padStart(2, "0")}`;
-  return adapter.all(`SELECT dateKey, data FROM usageDaily WHERE dateKey >= ?`, [cutoffKey]);
+  return adapter.all(`SELECT dateKey, data FROM usageDaily WHERE dateKey >= ? ORDER BY dateKey ASC`, [cutoffKey]);
 }
 
 export async function getUsageStats(period = "all", timeZone) {
@@ -634,8 +635,15 @@ export async function getUsageStats(period = "all", timeZone) {
       }
     }
 
-    // Overlay precise lastUsed timestamps from history
-    const overlayCutoff = maxDays ? Date.now() - maxDays * 86400000 : 0;
+    // Overlay precise lastUsed timestamps from history.
+    // ponytail: overlay scans only a recent window; entries older than that keep
+    // day-level lastUsed from usageDaily. Upgrade to a materialized per-key
+    // MAX(timestamp) table if exact old timestamps ever matter.
+    const OVERLAY_WINDOW_MS = 2 * 86400000;
+    const overlayCutoff = Math.max(
+      maxDays ? Date.now() - maxDays * 86400000 : 0,
+      Date.now() - OVERLAY_WINDOW_MS
+    );
     const histRows = db.all(
       `SELECT timestamp, provider, model, connectionId, apiKey, endpoint FROM usageHistory WHERE timestamp >= ?`,
       [new Date(overlayCutoff).toISOString()]
@@ -787,7 +795,7 @@ export async function getChartData(period = "7d", timeZone) {
   if (tz) {
     ensureChartIndex(db);
     const { labels, edges, bucketCount } = buildChartEdges(period, tz, now);
-    const buckets = labels.map((label) => ({ label, tokens: 0, cost: 0 }));
+    const buckets = labels.map((label) => ({ label, tokens: 0, cost: 0, requests: 0 }));
     const rows = db.all(
       `SELECT timestamp, promptTokens, completionTokens, cost FROM usageHistory WHERE timestamp >= ? ORDER BY timestamp ASC`,
       [new Date(edges[0]).toISOString()]
@@ -800,6 +808,7 @@ export async function getChartData(period = "7d", timeZone) {
       if (t > now || t >= edges[bucketCount]) continue;
       buckets[idx].tokens += (r.promptTokens || 0) + (r.completionTokens || 0);
       buckets[idx].cost += r.cost || 0;
+      buckets[idx].requests += 1;
     }
     return buckets;
   }
@@ -812,7 +821,7 @@ export async function getChartData(period = "7d", timeZone) {
     const startTime = startOfDay.getTime();
     const endTime = startTime + bucketCount * bucketMs;
     const labelFn = (ts) => new Date(ts).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false });
-    const buckets = Array.from({ length: bucketCount }, (_, i) => ({ label: labelFn(startTime + i * bucketMs), tokens: 0, cost: 0 }));
+    const buckets = Array.from({ length: bucketCount }, (_, i) => ({ label: labelFn(startTime + i * bucketMs), tokens: 0, cost: 0, requests: 0 }));
 
     const rows = db.all(
       `SELECT timestamp, promptTokens, completionTokens, cost FROM usageHistory WHERE timestamp >= ?`,
@@ -825,6 +834,7 @@ export async function getChartData(period = "7d", timeZone) {
       if (idx >= 0 && idx < bucketCount) {
         buckets[idx].tokens += (r.promptTokens || 0) + (r.completionTokens || 0);
         buckets[idx].cost += r.cost || 0;
+        buckets[idx].requests += 1;
       }
     }
     return buckets;
@@ -835,7 +845,7 @@ export async function getChartData(period = "7d", timeZone) {
     const bucketMs = 3600000;
     const labelFn = (ts) => new Date(ts).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false });
     const startTime = now - bucketCount * bucketMs;
-    const buckets = Array.from({ length: bucketCount }, (_, i) => ({ label: labelFn(startTime + i * bucketMs), tokens: 0, cost: 0 }));
+    const buckets = Array.from({ length: bucketCount }, (_, i) => ({ label: labelFn(startTime + i * bucketMs), tokens: 0, cost: 0, requests: 0 }));
 
     const rows = db.all(
       `SELECT timestamp, promptTokens, completionTokens, cost FROM usageHistory WHERE timestamp >= ?`,
@@ -847,13 +857,40 @@ export async function getChartData(period = "7d", timeZone) {
       const idx = Math.min(Math.floor((t - startTime) / bucketMs), bucketCount - 1);
       buckets[idx].tokens += (r.promptTokens || 0) + (r.completionTokens || 0);
       buckets[idx].cost += r.cost || 0;
+      buckets[idx].requests += 1;
     }
     return buckets;
   }
 
+  const labelFn = (d) => d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+
+  if (period === "all") {
+    const dayRows = loadDaysInRange(db, null);
+    if (!dayRows.length) return [];
+    const dayMap = {};
+    for (const r of dayRows) dayMap[r.dateKey] = parseJson(r.data, {});
+
+    const earliest = new Date(dayRows[0].dateKey + "T00:00:00");
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const diffDays = Math.max(1, Math.round((today - earliest) / 86400000) + 1);
+
+    return Array.from({ length: diffDays }, (_, i) => {
+      const d = new Date(earliest);
+      d.setDate(d.getDate() + i);
+      const dateKey = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+      const dayData = dayMap[dateKey];
+      return {
+        label: labelFn(d),
+        tokens: dayData ? (dayData.promptTokens || 0) + (dayData.completionTokens || 0) : 0,
+        cost: dayData ? (dayData.cost || 0) : 0,
+        requests: dayData ? (dayData.requests || 0) : 0,
+      };
+    });
+  }
+
   const bucketCount = period === "7d" ? 7 : period === "30d" ? 30 : 60;
   const today = new Date();
-  const labelFn = (d) => d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
 
   // Build map of dateKey → day data
   const dayRows = loadDaysInRange(db, bucketCount);
@@ -869,6 +906,7 @@ export async function getChartData(period = "7d", timeZone) {
       label: labelFn(d),
       tokens: dayData ? (dayData.promptTokens || 0) + (dayData.completionTokens || 0) : 0,
       cost: dayData ? (dayData.cost || 0) : 0,
+      requests: dayData ? (dayData.requests || 0) : 0,
     };
   });
 }
@@ -917,7 +955,7 @@ export async function getChartDataByApiKey(period = "7d", timeZone) {
     const { labels: tzLabels, edges, bucketCount: tzCount } = buildChartEdges(period, tz, now);
     const tzPerRaw = {};
     const tzEnsure = (raw) => {
-      if (!tzPerRaw[raw]) tzPerRaw[raw] = { tokens: new Array(tzCount).fill(0), cost: new Array(tzCount).fill(0) };
+      if (!tzPerRaw[raw]) tzPerRaw[raw] = { tokens: new Array(tzCount).fill(0), cost: new Array(tzCount).fill(0), requests: new Array(tzCount).fill(0) };
       return tzPerRaw[raw];
     };
     const rows = db.all(
@@ -934,6 +972,7 @@ export async function getChartDataByApiKey(period = "7d", timeZone) {
       const s = tzEnsure(raw);
       s.tokens[idx] += (r.promptTokens || 0) + (r.completionTokens || 0);
       s.cost[idx] += r.cost || 0;
+      s.requests[idx] += 1;
     }
     const ranked = Object.entries(tzPerRaw)
       .map(([raw, s]) => ({ raw, ...s, total: s.tokens.reduce((a, b) => a + b, 0) }))
@@ -946,7 +985,7 @@ export async function getChartDataByApiKey(period = "7d", timeZone) {
   let bucketCount;
   const perRaw = {};
   const ensure = (raw) => {
-    if (!perRaw[raw]) perRaw[raw] = { tokens: new Array(bucketCount).fill(0), cost: new Array(bucketCount).fill(0) };
+    if (!perRaw[raw]) perRaw[raw] = { tokens: new Array(bucketCount).fill(0), cost: new Array(bucketCount).fill(0), requests: new Array(bucketCount).fill(0) };
     return perRaw[raw];
   };
 
@@ -977,6 +1016,7 @@ export async function getChartDataByApiKey(period = "7d", timeZone) {
       const s = ensure(raw);
       s.tokens[idx] += (r.promptTokens || 0) + (r.completionTokens || 0);
       s.cost[idx] += r.cost || 0;
+      s.requests[idx] += 1;
     }
   } else {
     bucketCount = period === "7d" ? 7 : period === "30d" ? 30 : 60;
@@ -1002,6 +1042,7 @@ export async function getChartDataByApiKey(period = "7d", timeZone) {
         const s = ensure(raw);
         s.tokens[idx] += (ak.promptTokens || 0) + (ak.completionTokens || 0);
         s.cost[idx] += ak.cost || 0;
+        s.requests[idx] += ak.requests || 0;
       }
     });
   }
@@ -1020,17 +1061,19 @@ export async function getChartDataByApiKey(period = "7d", timeZone) {
 function finalizeChartSeries(labels, ranked, nameOf, maskedOf) {
   const bucketCount = labels.length;
   const series = ranked.slice(0, CHART_SERIES_LIMIT).map((e, i) => ({
-    key: `k${i}`, name: nameOf(e.raw), masked: maskedOf(e.raw), tokens: e.tokens, cost: e.cost,
+    key: `k${i}`, name: nameOf(e.raw), masked: maskedOf(e.raw), tokens: e.tokens, cost: e.cost, requests: e.requests,
   }));
   const rest = ranked.slice(CHART_SERIES_LIMIT);
   if (rest.length > 0) {
     const oT = new Array(bucketCount).fill(0);
     const oC = new Array(bucketCount).fill(0);
+    const oR = new Array(bucketCount).fill(0);
     for (const e of rest) {
       e.tokens.forEach((v, i) => { oT[i] += v; });
       e.cost.forEach((v, i) => { oC[i] += v; });
+      (e.requests || []).forEach((v, i) => { oR[i] += v; });
     }
-    series.push({ key: `k${series.length}`, name: `Others (${rest.length})`, masked: null, tokens: oT, cost: oC });
+    series.push({ key: `k${series.length}`, name: `Others (${rest.length})`, masked: null, tokens: oT, cost: oC, requests: oR });
   }
   return { labels, series };
 }

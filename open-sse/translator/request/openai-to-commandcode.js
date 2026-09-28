@@ -5,6 +5,7 @@
  *  - params.system: STRING at top level (Anthropic-style; system messages NOT allowed in messages[])
  *  - params.messages[*].role ∈ {"user","assistant","tool"}
  *  - params.messages[*].content: Array of content blocks (NEVER a string)
+ *  - image_url / image source → {type:"image", source:{type:"base64", media_type, data}}
  *  - tool_use blocks (assistant): {type:"tool-call", toolCallId, toolName, input}
  *  - tool_result blocks (role=user): {type:"tool-result", toolCallId, toolName, output}
  *  - tools[*]: Anthropic plain {name, description, input_schema}
@@ -13,8 +14,8 @@ import { register } from "../index.js";
 import { FORMATS } from "../formats.js";
 import { randomUUID } from "crypto";
 import { ROLE, OPENAI_BLOCK } from "../schema/index.js";
-import { parseDataUri } from "../concerns/image.js";
 import { DEFAULT_MAX_TOKENS } from "../../config/runtimeConfig.js";
+import { parseDataUri } from "../concerns/image.js";
 
 function flattenText(content) {
   if (content == null) return "";
@@ -99,6 +100,10 @@ function convertMessages(messages = []) {
 
     if (role === ROLE.ASSISTANT) {
       const blocks = [];
+      const rc = m.reasoning_content || m.thought || m.reasoning;
+      if (rc || (Array.isArray(m.tool_calls) && m.tool_calls.length > 0)) {
+        blocks.push({ type: "reasoning", text: rc || " " });
+      }
       const text = flattenText(m.content);
       if (text) blocks.push({ type: OPENAI_BLOCK.TEXT, text });
       if (Array.isArray(m.tool_calls)) {

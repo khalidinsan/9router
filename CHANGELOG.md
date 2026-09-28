@@ -1,4 +1,224 @@
-1: @both
+# Unreleased
+
+## Features
+- **Quota tracker**: show the subscription plan on each account card. The usage
+  API already returned `plan` and the dashboard stored it, but nothing rendered
+  it — the only component that read it (`ProviderLimitCard`) is not imported
+  anywhere. The card now shows it as a chip beside the connection label
+  (e.g. Command Code `GOAT`, Grok CLI `Free`). A plan is hidden when it is
+  absent, a placeholder (`Unknown`/`N/A`), or merely echoes the provider name —
+  several providers fall back to their own name when they cannot read the tier
+  (Command Code without a subscription, OpenCode Go, Antigravity), and a chip
+  repeating the heading above it is noise.
+- **Antigravity**: group quota by pool instead of only per model — read
+  `retrieveUserQuotaSummary` (the same source as `agy /usage`) and normalize it
+  into weekly + 5-hour buckets. `fetchAvailableModels` only carries a single
+  per-model window, so the weekly limits behind it were invisible. Claude and GPT
+  models share the `3p` weekly pool and carry no per-model `remainingFraction`, so
+  `resolveAntigravityQuota` falls back to the governing group's weekly bucket and
+  treats an unknown group as fail-open — never as exhausted. The usage dashboard
+  renders the grouped pools.
+- **Antigravity**: reserve a connection while a request is in flight — the
+  account-selection loop could hand the same connection to several concurrent
+  requests before any of them had started, so they all raced into the same quota
+  window. Selection now counts in-flight reservations on top of the DB's pending
+  requests, and a request that keeps hitting quota falls back to at most 2 extra
+  accounts before failing fast with the last error (each attempt holds ~13s and
+  deepens the shared hole for everyone).
+- **Gemini**: add Gemini 3.8 Flash (high/medium/low) and honour its thinking
+  floor — 3.8 dropped the `minimal` level, so a `none` request on a model that
+  cannot disable thinking now clamps to the model's declared minimum instead of
+  sending a level it rejects.
+- **opencode**: add `muse-spark-1.3-contributor-free`, routed to the Responses
+  API like 1.2.
+
+## Fixes
+- **Command Code**: size the monthly credit pool for the GOAT plan — the plan map
+  had no `individual-goat` entry, so the monthly allotment resolved to 0 and the
+  Monthly row silently vanished from the quota tracker (the 5h/weekly bars kept
+  working, which makes a stale map look like a plan regression). GOAT is $70/mo;
+  `individual-pro` was also stale at $30 and is now $80. Both from the official
+  pricing table; the billing API reports only the *remaining* pool and exposes no
+  plan/entitlement endpoint, so the plan id is the only way to size the bar.
+- **Antigravity**: realign to the agy 1.1.27 wire (MITM-verified against the
+  official CLI). Three changes move the request back into the quota pool agy
+  itself draws from, which is what stops `RESOURCE_EXHAUSTED` while agy stays
+  healthy: (1) the CLI fingerprint is now `antigravity/cli/1.1.27` with
+  `cl=976543523`; (2) every request carries the fixed `project:
+  "aicode-consumers"` — agy sends it even for accounts that own a real GCP
+  project, and sending the stored project id routes into a different pool with
+  weekly numbers that never match `agy /usage`; (3) `quota`/`loadCodeAssist`
+  discovery moved to the `daily-cloudcode-pa` host, since PROD reports a
+  different pool (weekly 100% vs agy's 68%). The request id is now the
+  IDE-shaped `agent/<conversation>/<ms>/<trajectory>/<step>` (derived
+  deterministically from the session, so it stays stable across a conversation)
+  instead of `agent-<uuid>`; the legacy shape correlates with quota
+  misattribution. Headers were trimmed to what agy actually sends — no
+  `X-Machine-Session-Id`, no `Accept` — and the default thinking signature is
+  the `skip_thought_signature_validator` sentinel. 429 retry attempts go from 3
+  to 0: a quota reset is minutes away, so retrying in place only burns the
+  window deeper.
+- **Antigravity**: fix blanket 403/404 from `daily-cloudcode-pa` — the official
+  agy CLI 1.1.22 now requires every request to carry `project` (consumer
+  accounts fall back to Google's fixed `aicode-consumers` project; omitting it
+  yields 403 "You do not have a valid license of this product"), and Google
+  rejects the old `antigravity/cli/1.0.16` User-Agent (404 "Requested entity was
+  not found"). Bumped the fingerprint to `1.1.22` with `cl=971564011` and always
+  send a `project` id (the fingerprint was moved on again to 1.1.27 above).
+- **Antigravity**: drop history messages whose parts were stripped to empty —
+  assistant thinking-only messages (reasoning without text/tool calls) ended up
+  as `parts: []` after the thought-part filter and Google rejected the request
+  with 400 "Request contains an invalid argument" on resumed sessions.
+- **Antigravity**: fix `DISCONNECT: ResponseAborted` on every streaming request
+  from OpenAI clients — the finish+usage frame lands mid-stream and (unlike
+  other providers) no `data: [DONE]` sentinel is ever emitted downstream
+  (isGeminiFamily skip), so OMP's client broke early and cancelled the open
+  response, losing usage tracking. Generalize the Token Harbor/B.AI terminal
+  normalizer to antigravity (OpenAI clients only — Gemini-family clients still
+  get no sentinel).
+- **B.AI**: correct `deepseek-v4-flash-vision-exp` context to 805k — directly
+  probed `api.b.ai` and the model accepts up to ~805k input tokens (400
+  `quota_limit_reached` "Input token exceed the limit" only past that); the
+  declared 100k was 8x too small and misled clients into truncating early.
+- **Capabilities**: report `vision: true` for DeepSeek V4.1 (`deepseek-v4.1-flash`,
+  including vendor-prefixed and `:free` reseller ids). The blanket `*deepseek-v4*`
+  pattern left it text-only, so clients dropped images before they were ever sent —
+  but both resellers (tokenharbor, commandcode) accept image blocks and read them
+  correctly, and the models.dev catalog already declared the modality. Verified
+  end-to-end through the gateway against two distinct images; the new rule sits
+  before the generic V4 pattern so plain V4 (`-pro`, `-flash`) stays text-only.
+- **Grok CLI**: fix 400 `invalid-argument` "Could not decode the compaction
+  blob" on `gcli/grok-4.6` — first-turn requests (and composer/dashboard
+  jobs) shared one per-connection session id, so a long conversation that hit
+  upstream compaction fused that id and every later request 400'd against
+  its unrecoverable compaction state. Session ids now anchor on the first
+  user message (stable per conversation, unique across conversations on a
+  connection), and a compaction-blob decode failure poisons that id so the
+  next request starts a fresh upstream conversation instead of looping.
+  Verified against the official grok CLI wire (the request shape itself was
+  accepted by the proxy — only the id reuse was at fault).
+- **Usage log**: make the console `📊 DONE` line report the same cache-inclusive
+  input total as `/dashboard/usage` — Anthropic-style `input_tokens` excludes
+  cache reads/creations (and the usage page stores canonical cache-inclusive
+  `prompt_tokens`), so Claude-format providers (e.g. GLM via agentrouter) showed
+  the log at roughly half the page value. The cache breakdown is still shown in
+  parentheses.
+- **Request details**: the `/dashboard/usage?tab=details` feed had silently
+  frozen — the settings row lacked `enableObservability` and the merge-with-
+  defaults path yielded `false`, so `saveRequestDetail` no-oped without a log
+  line (no DB rows since 2026-08-07). Flip the default to `true` and backfill
+  the stored settings so detail recording resumes.
+
+# v0.5.91 (2026-09-26)
+
+## Features
+- **Providers**: add Token Harbor provider and four OpenAI-compatible aggregator providers (dahl, atria, agnes, bai)
+- **Claude**: forward `x-claude-code-session-id` on OAuth requests; merge client `anthropic-beta` flags and forward rate-limit headers; return thinking text to OpenAI-format clients
+- **Codex**: add GPT-6 Sol and Luna support
+- **CLI Tools**: support multiple model profiles for Codex CLI
+- **Hermes**: multi-role model config (delegation + auxiliary slots)
+- **OpenCode Go**: complete the Go catalog (40 models) with auto-fetch + family endpoint regex
+- **Usage**: show and redeem free limit resets for cc accounts
+- **Cline**: expose the `cline-free/*` tier and price it at zero
+- **Combos**: display vision adapter models in an ordered table view
+
+## Fixes
+- **Claude**: decloak tool names when `toolNameMap` misses (#4342); update spoofed cli version to 2.1.280 to support Opus 5.5
+- **Providers API**: make POST `/api/providers` O(1) and refuse silent key overwrite (#4350)
+- **Capabilities**: stop caching the catalog source per module copy (#4351)
+- **OAuth**: stop Zed paste-token crash and add IDE auto-import (#4359)
+- **Dashboard**: resolve combo limits with the server's capabilities (#4360); lazy-load charts and `marked`, preload in background on idle
+- **Responses**: carry the streamed output items in `response.completed` (#4307)
+- **STT**: dispatch live-API-only Gemini models over the Live WebSocket transport (#4006)
+- **Gemini**: guard terminal model turns and unresponded functionCalls in `normalizeGeminiContents`
+- **Command Code**: replay raw byte chunks to preserve all NDJSON lines
+- **Translator**: stop emitting empty `<think>` markers into OpenAI content
+- **CLI Tools**: refresh Codex settings after apply (#4347); keep existing `ANTHROPIC_AUTH_TOKEN` when applying Claude settings
+- **Tray**: native arm64 macOS menubar binary, no Rosetta required
+- **CLI**: filter model selector by active connections and noAuth providers
+- **Usage**: key live byApiKey stats by full api key to prevent team-key collision and preserve API key usage attribution
+- **Tailscale**: cap enable-flow health wait at 20s
+
+# v0.5.86 (2026-09-23)
+
+## Features
+- **Xiaomi MiMo**: server-assisted desktop login for headless/Docker deployments, five account clusters (cn/sgp/ams/ru/in), and v2.6 pro/flash/pro-ultraspeed models with dual-route (account service vs. cloud API)
+- **Claude**: add Claude Opus 5.5 support
+- **i18n**: translate React text rewrites via characterData mutation observer
+
+## Fixes
+- **Proxy Pools**: keep request headers intact through Vercel/Cloudflare/Deno relays (spreading a `Headers` instance yielded `{}`, dropping auth and content-type)
+- **Xiaomi MiMo login**: keep the session in the httpOnly cookie only, require dashboard auth on the proxy branch, and stop forwarding authorization headers upstream
+
+# v0.5.85 (2026-09-22)
+
+## Features
+- **System One**: add `/v1/systemone` decision endpoint for Jev models (OpenCode Zen and OpenRouter lanes), wire into sidebar and Media Providers page with interactive probe testing
+- **CLI Tools**: add dynamic configuration, settings APIs, and official logos for Pi, OMP, Crush, ForgeCode, Smelt, and CodeWhale
+- **Analytics & Usage**: add Requests mode, provider/model breakdown charts, All Time period filter, and refined overview cards
+- **Combos**: add Cursor/Claude Default presets; support bulk select/delete and bulk strategy changes (Fallback / Round Robin / Fusion)
+- **Model Capabilities**: expose model capability metadata on `/v1/models` and aggregate capabilities across combo targets
+- **OpenCode Zen & MiMo**: add OpenCode Zen (`opencode-zen`) provider with free-tier fingerprint; switch default vision fallback to MiMo V2.6 Flash Free
+- **Qoder CN**: add `qoder-cn` provider for qoder.com.cn with OAuth flow, COSY protocol, and CN gateway routing
+
+## Fixes
+- **Translator**: map Claude `refusal` stop_reason to `content_filter` and surface explanation; strip replayed reasoning fields for Groq, Mistral, and Cerebras (#4220)
+- **Antigravity**: drop requestType `agent` to avoid false 429 `RESOURCE_EXHAUSTED`; separate weekly and short-window (5-hour) quotas and deduplicate dashboard rows
+- **Responses API**: report usage on `response.completed` so clients can auto-compact (#3432)
+- **Hugging Face**: migrate to Inference Providers router (`router.huggingface.co`), expand image models catalog, and add STT route
+- **Qoder**: prevent signed request replay (`403/103 Duplicate request`), handle code 110 billing blocks, and preserve upstream SSE error status
+- **Performance**: bound usage `lastUsed` scan to a 2-day window; map large budget tokens to `max` reasoning tier
+- **Docker**: publish verified multi-platform images (linux/amd64 and linux/arm64) with configurable apk build mirrors
+
+# v0.5.81 (2026-09-18)
+
+## Features
+- **Xiaomi MiMo**: merge MiMo Desktop support into `xiaomi-mimo` with dual auth (API key + Desktop/OAuth session), Preview models support, and encrypted-callback OAuth flow
+- **Claude Code**: add 1M-context toggle (`[1m]` marker) and drive `CLAUDE_CODE_AUTO_COMPACT_WINDOW` directly from the dashboard
+- **Models**: add DeepSeek-V4.1-Flash to DeepSeek provider, CodeBuddy-Intl, and Ollama (`deepseek-v4.1-flash:cloud`); enable `low`..`max` reasoning effort levels and vision capability for DeepSeek-V4.*
+- **i18n**: integrate Persian (fa) translation
+
+## Fixes
+- **Cursor**: stop AgentService empty turns (`OUT 0`) and silent hangs — fold system prompts instead of `custom_system_prompt`, send `ModelDetails`, read Composer/Grok `thinking_delta`, ack request-context without echoing MCP tools, and reject IDE execs so the model can continue
+- **RTK**: for Cursor, compress source-format `tool_result` / `role:tool` **before** translation — its translator rewrites those shapes, so post-translate compression missed them. Other providers keep the post-translate pass unchanged
+- **OpenCode / OpenCode Go**: resolve 403 `FreeTierError` and 429 rate limits with canonical session format, valid User-Agent, and stable upstream session reuse; force stream and declare `forceStream` for free-tier SSE aggregation; cloak decoy tools, normalize Muse Free tool choice, and strip prior reasoning items on Responses models; route Union Alpha via Messages API
+- **Kiro**: preserve underscores in tool names (`mcp__server__tool`) and restore client tool names in responses; use neutral placeholder for tool-result-only turns; forward tool-result images
+- **Stream**: report aborts after HTTP 200 in-band (per-format error frames) instead of closing silently
+- **Command Code**: preserve images and `reasoning_effort` on `/alpha/generate`; retry transient stream errors and avoid fake stop chunks; add Quota Tracker support
+- **Zed**: harden OAuth lifecycle (preserve `systemId`, renew proxy timeout), support live model resolution, and lower display priority in OAuth list
+- **Antigravity**: scope cached thought signatures to model family; strip Claude Code billing headers from system prompts; sanitize Hermes system identity
+- **Codex**: route bare `codex-auto-review` requests to the Codex provider (#4135)
+- **Auth**: do not cool down an account for request-scoped 4xx errors
+- **Usage**: improve DeepSeek credit balance display as currency credit instead of 0/total quota bar
+- **Model Catalog**: scope synced catalog to gateways and declare vision capabilities for DeepSeek V4.1-Flash IDs
+
+# v0.5.75 (2026-09-10)
+
+## Features
+- **Video**: add OpenRouter and Vertex AI (Veo) video generation on `/v1/videos/*` via a provider adapter layer; poll requests resolve their provider from `x-connection-id` or `?provider=`
+- **Antigravity**: add weekly quota tracking (Gemini weekly / Claude & GPT weekly) and free-tier handling from `retrieveUserQuotaSummary` (#3892)
+- **Codex**: add GPT Image 2.5, Flare and Sunburst image models with multi-image support; add the same ids to the OpenAI catalog
+- **Qoder**: surface usage to all clients and stop inlining large attachments — images upload through `/api/v2/image/upload` like qodercli, oversized file blocks become stubs, context tier auto-escalates
+- **OpenCode Go**: add newly published models (glm-5.3, kimi-k3, deepseek-flash, longcat-2.0, hy4-preview, hy3 on chat/completions; qwen3.8-max, qwen3.8-flash on `/messages`; grok-4.6, gpt-5.6-luna on Responses) and list `deepseek-v4.1-flash` first in the catalog
+- **CLI tools**: group the model selector by provider with full-text search and manual custom model ID entry
+- **CodeBuddy-CN**: replace `deepseek-v4-flash` with `deepseek-v4.1-flash`
+
+## Fixes
+- **Tools**: scope Claude tool type defaulting to gateways declaring `requireClaudeToolType` — the global default broke Anthropic-compatible endpoints that only accept the legacy typeless tool shape (#3905)
+- **Claude**: cap re-anchored `cache_control` at the 4-marker budget so a spent budget no longer 400s and triggers a full combo failover; wrap bare single-object content turns before the mid-conversation-system fold
+- **Cline / Airforce**: unwrap the `{"success":true,"data":…}` envelope on non-stream chat completions (#3644); add the live Cline/ClinePass model catalog and refresh Airforce free models
+- **Cline**: stop `workos:`-prefixing ClinePass API keys (401 on every request, #2333) and add clinepass token refresh
+- **Kiro**: never send a top-level `systemPrompt` (`400 REQUEST_BODY_INVALID`); route requests through current runtime surfaces (#3776)
+- **Codex**: strip Unicode-property tool schema patterns the validator rejects (#3922); restore the `Version` header and single-source the CLI version
+- **DeepSeek**: keep Anthropic-only tool types when forwarding to `/anthropic/v1/messages`
+- **Qoder**: drop the Responses usage plumbing from shared translator/handler code, which changed token accounting for every provider, not just Qoder
+- **Antigravity**: normalize contents and handle intermediate tool responses; protect the OAuth token-refresh path from Google anti-abuse rate limits (#3813)
+- **Providers**: clear stale connection health state (`modelLock_*`, `backoffLevel`, `rateLimitedUntil`, `errorCode`) when a connection is re-validated (#3810, #3830); remove the duplicate `qwen` provider that shadowed `alims-intl`
+- **Video / Vertex**: reject job ids and model ids that would escape the request URL path (SSRF)
+- **Usage**: parse the Fable weekly limit from `limits[]` instead of fabricating a row (#3847)
+- **Auth**: set a 24h `maxAge` on the dashboard session cookie
+
+
 # v0.5.69 (2026-09-05)
 
 ## Features

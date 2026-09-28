@@ -20,6 +20,7 @@ export default {
     },
   },
   category: "apikey",
+  authType: "apikey",
   thinkingConfig: {
     options: ["low", "medium", "high", "xhigh", "max"],
     defaultMode: "high",
@@ -35,6 +36,7 @@ export default {
     { id: "hy3", name: "Hy3", contextLength: 262144 },
     { id: "mimo-v2.5", name: "MiMo V2.5", contextLength: 1000000 },
   ],
+  modelsFetcher: { url: "https://api.b.ai/v1/models", type: "openai" },
   passthroughModels: true,
   serviceKinds: ["llm"],
 };

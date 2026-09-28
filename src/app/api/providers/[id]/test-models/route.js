@@ -70,8 +70,15 @@ export async function POST(request, { params }) {
       }
     }
 
-    // LLM-only by default for account test panel (media models have own pages)
-    models = models.filter((m) => !m.kind || m.kind === "llm");
+    // LLM-only by default for the account test panel (media models have their
+    // own pages). An explicit `models` request is honoured as-is, and a
+    // media-only provider falls back to its full catalogue — otherwise the
+    // panel would report "no models configured" for image/audio-only providers.
+    const explicitSelection = Array.isArray(body.models) && body.models.length > 0;
+    if (!explicitSelection) {
+      const llmModels = models.filter((m) => !m.kind || m.kind === "llm");
+      if (llmModels.length > 0) models = llmModels;
+    }
 
     if (models.length === 0) {
       return NextResponse.json(

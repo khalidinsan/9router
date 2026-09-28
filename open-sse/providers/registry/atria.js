@@ -9,7 +9,7 @@ export default {
   ],
   uiAlias: "atria",
   display: {
-    name: "Atria",
+    name: "Atria Dawn",
     icon: "atria",
     color: "#5B4BFF",
     textIcon: "AT",
@@ -20,6 +20,7 @@ export default {
     },
   },
   category: "apikey",
+  authType: "apikey",
   thinkingConfig: {
     options: ["low", "medium", "high", "xhigh", "max"],
     defaultMode: "high",
