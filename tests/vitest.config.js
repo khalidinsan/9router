@@ -9,6 +9,13 @@ export default defineConfig({
     environment: "node",
     globals: true,
     include: ["**/*.test.js"],
+    // Tests import the real db layer, which writes wherever DATA_DIR points.
+    // Without this the suite seeds hundreds of throwaway provider connections
+    // into the user's live ~/.9router database (test fixtures leak into the
+    // dashboard). Point every worker at a disposable directory instead.
+    env: {
+      DATA_DIR: resolve(__dirname, "../.tmp-test-data"),
+    },
     // Don't scan into git worktrees nested under .claude/ — they carry their
     // own copies of the test files but lack an installed node_modules (open-sse,
     // etc.), which makes provider imports fail during collection.
