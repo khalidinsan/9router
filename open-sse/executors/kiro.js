@@ -212,26 +212,35 @@ function isAgenticTurn(body) {
  * Retry and streaming are mutually exclusive for one turn: a retry replaces the
  * whole response, so once a byte reaches the client it can never be taken back.
  * The gate therefore holds output only while a retry is still possible, and
- * releases it the moment one is not.
+ * releases the moment one is not.
  *
- * The threshold is KIRO_SHORT_FINAL_MAX_CHARS because that is the exact bound
- * of the content-shape retries: `isEllipsisOnly` matches a 3-character answer,
- * and `isShortFutureAction` returns false for anything longer than that limit.
- * Past it neither can fire, so there is no content-shape retry left to protect
- * and holding output would buy nothing.
+ * The two signals become dead at very different sizes, so they are tested
+ * separately rather than through one combined length.
  *
- * Below the threshold everything stays buffered — which costs nothing the user
- * can perceive, because a sub-800-character answer arrives in one burst anyway.
- * That is also why a `cancelled` / `pause_turn` / `content_filtered` turn stays
- * private: those dispositions are only known at EOF, and short partial output is
- * exactly what must not leak as a final answer.
+ * Reasoning: the only branch that reads it fires when `!content.trim()` and the
+ * reasoning is *exactly* "..." or "…". Accumulation only ever appends, so once
+ * reasoning passes 3 characters that branch can never match again — waiting for
+ * a full threshold would hold the entire thinking phase for nothing. This is the
+ * case that made thinking arrive in one block: a model can spend thousands of
+ * characters reasoning before its first word of content, and none of that was
+ * released.
+ *
+ * Content: `isEllipsisOnly` needs exactly 3 characters, and
+ * `isShortFutureAction` returns false past KIRO_SHORT_FINAL_MAX_CHARS, so that
+ * is the bound for holding content.
+ *
+ * Below both bounds everything stays buffered, which is what keeps a cancelled /
+ * pause_turn / content_filtered turn private: those dispositions are only known
+ * at EOF, and short partial output is exactly what must not leak as a final
+ * answer.
  *
  * What is given up is protocol-level retry (`malformed_model_output`) on turns
- * that already streamed past the threshold. Those can no longer be replaced; the
- * failure is still reported inline, so the client never mistakes the turn for a
- * clean stop.
+ * that already streamed. Those can no longer be replaced; the failure is still
+ * reported inline, so the client never mistakes the turn for a clean stop.
  */
 function canReleaseContent(output) {
+  // Reasoning past 3 characters can no longer satisfy the ellipsis branch.
+  if (output.reasoning.trim().length > 3) return true;
   return output.content.length > KIRO_SHORT_FINAL_MAX_CHARS;
 }
 

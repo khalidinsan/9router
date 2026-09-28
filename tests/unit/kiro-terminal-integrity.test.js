@@ -893,4 +893,52 @@ describe("Kiro terminal integrity recovery", () => {
     expect(body).toContain(long);
     expect(body).not.toContain("kiro_ellipsis_retry_failed");
   });
+
+  it("streams reasoning as it arrives instead of holding the whole thinking phase", async () => {
+    // The retry branch that reads reasoning needs it to be exactly "..." or "…".
+    // Accumulation only appends, so past 3 characters that branch is dead and
+    // the gate must stop holding — otherwise a model that reasons for thousands
+    // of characters before its first word shows nothing until the answer starts.
+    const upstream = controlledResponse([
+      frame("reasoningContentEvent", { content: "Let me think about this carefully. " })
+    ]);
+    fetchMock.mockResolvedValueOnce(upstream.value);
+
+    const result = await execute();
+    const reader = result.response.body.getReader();
+    await reader.read(); // heartbeat
+
+    const first = await reader.read();
+    expect(new TextDecoder().decode(first.value)).toContain("Let me think about this carefully.");
+
+    upstream.enqueue(frame("reasoningContentEvent", { content: "Still reasoning here." }));
+    const second = await reader.read();
+    expect(new TextDecoder().decode(second.value)).toContain("Still reasoning here.");
+
+    upstream.close();
+    await reader.cancel();
+  });
+
+  it("holds reasoning that is still a bare ellipsis", async () => {
+    // Three characters or fewer can still satisfy the ellipsis branch, so it
+    // stays private until the turn resolves.
+    const upstream = controlledResponse([frame("reasoningContentEvent", { content: "..." })]);
+    fetchMock.mockResolvedValueOnce(upstream.value);
+
+    const result = await execute();
+    const reader = result.response.body.getReader();
+    expect(new TextDecoder().decode((await reader.read()).value)).toBe(": kiro-validation\n\n");
+
+    let settled = false;
+    const pending = reader.read().then((value) => {
+      settled = true;
+      return value;
+    });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+
+    upstream.close();
+    await pending;
+    await reader.cancel();
+  });
 });
