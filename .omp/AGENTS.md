@@ -202,9 +202,26 @@ git push
 
 ## 9. Reminders
 
-- Unit tests: `npx vitest run tests/unit/...` — note ~77 pre-existing failures
-  exist from a module-resolution issue (`open-sse/` bare specifier from
-  `src/`), unrelated to syncs. Judge with `tests/__baseline__/verify-*.mjs`.
+- Unit tests: run the full suite with
+  `cd tests && npx vitest run --config vitest.config.js` (vitest is NOT in
+  `node_modules` — use the npx cache path if `npx` resolves oddly). The
+  baseline is ~239 failures, most of which also fail on a pristine upstream
+  tree; judge a sync by comparing against `git archive upstream/master`
+  extracted to /tmp, not by the raw failure count.
+- `tests/vitest.config.js` sets `DATA_DIR=.tmp-test-data` so the suite cannot
+  write into the live `~/.9router` database. Upstream's
+  `provider-priority-insert-cost.test.js` imports the real db layer and seeds
+  ~356 provider connections per run; without that env they land in the user's
+  production DB and show up in `/dashboard/usage` as `seed-N` rows. If a
+  future sync replaces our vitest.config.js, restore the `env` block.
+- **GitHub Actions in the fork**: `gitbook-pages.yml` deploys to
+  `9router/9router.github.io` (upstream's repo) and its build is broken
+  upstream (`useEffect is not defined` on /es/troubleshooting). It triggers
+  on any `gitbook/**` change, which a sync brings in — that is what emails
+  a failure on every merge. It is disabled in the fork via
+  `gh workflow disable`; re-check after a sync that it stayed off.
+  `docker-publish.yml` only runs on `v*` tags and `tray-binaries.yml` only on
+  `workflow_dispatch`, so neither fires on a normal sync.
 - After merging to master, the user may ask to delete the sync branch — clean
   up both local and remote.
 - If the server must stay reachable from the LAN, keep
