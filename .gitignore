@@ -104,3 +104,6 @@ debug.log
 
 # Playwright MCP session artifacts (console logs, page snapshots)
 .playwright-mcp/
+
+# Disposable data dir used by the vitest suite (tests/vitest.config.js)
+.tmp-test-data/
