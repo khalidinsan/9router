@@ -285,9 +285,9 @@ export default function KiroAuthModal({ isOpen, onMethodSelect, onClose }) {
               <div className="flex items-start gap-3">
                 <span className="material-symbols-outlined text-primary mt-0.5">file_upload</span>
                 <div className="flex-1">
-                  <h3 className="font-semibold mb-1">Import Token</h3>
+                  <h3 className="font-semibold mb-1">Import from Kiro CLI</h3>
                   <p className="text-sm text-text-muted">
-                    Paste refresh token from Kiro IDE.
+                    Auto-detects your local kiro-cli login, or paste a refresh token.
                   </p>
                 </div>
               </div>
@@ -537,7 +537,7 @@ export default function KiroAuthModal({ isOpen, onMethodSelect, onClose }) {
 
                 <div className="flex gap-2">
                   <Button onClick={handleImportToken} fullWidth disabled={importing || !refreshToken.trim()}>
-                    {importing ? "Importing..." : "Import Token"}
+                    {importing ? "Importing..." : "Import from Kiro CLI"}
                   </Button>
                   <Button onClick={handleBack} variant="ghost" fullWidth>
                     Back
