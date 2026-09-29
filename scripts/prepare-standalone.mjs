@@ -35,6 +35,19 @@ if (fs.existsSync(publicSrc)) {
   console.log("[prepare-standalone] copied public/");
 }
 
+// The HTTP server wrapper must sit next to the standalone server.js: it patches
+// http.createServer to stamp x-9r-real-ip / x-9r-peer-token from the TCP socket,
+// and that proof is what lets dashboardGuard treat a loopback browser as local.
+// Without it every local-only route (kiro/cursor/zed auto-import, MCP, tunnel,
+// headroom, reset-password) answers 403 "Local only: CLI token required" in
+// production, because isLoopbackPeer() cannot see the socket any other way.
+const wrapperSrc = path.join(root, "custom-server.js");
+const wrapperDest = path.join(standalone, "custom-server.js");
+if (fs.existsSync(wrapperSrc)) {
+  fs.copyFileSync(wrapperSrc, wrapperDest);
+  console.log("[prepare-standalone] copied custom-server.js");
+}
+
 // sql.js WASM files are not traced into standalone; copy them manually.
 const sqlJsSrc = path.join(root, "node_modules", "sql.js", "dist");
 const sqlJsDest = path.join(standalone, "node_modules", "sql.js", "dist");
