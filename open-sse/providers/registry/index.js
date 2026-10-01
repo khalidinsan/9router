@@ -129,6 +129,7 @@ import p126 from "./xquik.js";
 import p128 from "./atria.js";
 import p131 from "./dahl.js";
 import p132 from "./agnes.js";
+import p134 from "./commandcode-provider.js";
 export default [
   agentrouter,
   p0,
@@ -261,4 +262,5 @@ export default [
   p128,
   p131,
   p132,
+  p134,
 ];

@@ -876,6 +876,29 @@ async function testApiKeyConnection(connection, effectiveProxy = null) {
         const valid = res.status !== 401 && res.status !== 403;
         return { valid, error: valid ? null : "Invalid API key" };
       }
+      case "commandcode":
+      case "commandcode-provider": {
+        // Two lanes, one plan pool: `commandcode` talks to the CLI endpoint
+        // (/alpha/generate), `commandcode-provider` to the OpenAI/Anthropic-shaped
+        // Provider API (/provider/v1). Both authenticate with the same
+        // `user_...` key and meter against the same Command Code plan.
+        //
+        // Probe the billing endpoint rather than a chat route: it is a GET, so it
+        // costs no credits, and it answers 401 for a rejected key and 200 for an
+        // accepted one. A chat probe would also work but burns tokens and would
+        // need a different request shape per lane.
+        const creditsUrl = PROVIDERS["commandcode"]?.usage?.url;
+        if (!creditsUrl) return { valid: false, error: "Command Code usage endpoint missing" };
+        const res = await fetchWithConnectionProxy(creditsUrl, {
+          headers: { Authorization: `Bearer ${connection.apiKey}` },
+        }, effectiveProxy);
+        if (res.status === 403) {
+          // Key is fine, the plan is not: the Go plan has no Provider API access.
+          return { valid: false, error: "Provider API requires a GOAT plan or higher (upgrade_required)" };
+        }
+        const valid = res.status !== 401 && res.status !== 403;
+        return { valid, error: valid ? null : "Invalid API key" };
+      }
       case "genspark": {
         const baseUrl = (PROVIDERS["genspark"]?.baseUrl || "https://www.genspark.ai/api/llm_proxy/v1/chat/completions").replace(/\/chat\/completions$/, "");
         const res = await fetchWithConnectionProxy(`${baseUrl}/models`, {

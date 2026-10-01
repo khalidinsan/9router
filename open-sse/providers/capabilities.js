@@ -621,6 +621,32 @@ export function getCapabilitiesForModel(provider, model) {
     };
   }
 
+  // Command Code Provider API (api.commandcode.ai/provider/v1/*) — plain
+  // OpenAI/Anthropic wire, no vendor thinking shapes. Blanket capability for
+  // every model on the provider; the lookup below is exact-key-only, so an
+  // exact map cannot express "all models".
+  //   • thinkingFormat: null → resolveFormat falls through to the per-wire
+  //     native format (openai → reasoning_effort; claude → thinking block).
+  //   • thinkingCanDisable: false + minThinkingLevel: "low" → applyFormat
+  //     clamps a client's "disable thinking" to the model floor "low" instead
+  //     of emitting reasoning_effort: "none", which this server rejects with
+  //     HTTP 400 (unlike /alpha/generate, which ignores it). Mirrors the
+  //     gemini-3.8 minThinkingLevel pattern.
+  //   • maxOutput 128000 is an unverified default (mirrors the existing
+  //     commandcode branch for models with no more specific data).
+  if (provider === "commandcode-provider" || provider === "cmcp") {
+    return {
+      ...DEFAULT_CAPABILITIES,
+      reasoning: true,
+      thinkingFormat: null,
+      thinkingCanDisable: false,
+      minThinkingLevel: "low",
+      contextWindow: 1000000,
+      maxOutput: 128000,
+      vision: !isCommandCodeTextOnly(model),
+    };
+  }
+
   // 1. Provider-specific override
   if (provider) {
     const providerCaps = PROVIDER_CAPABILITIES[provider];

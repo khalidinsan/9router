@@ -41,6 +41,11 @@ const PATTERN_THINKING = [
   { provider: "codex", pattern: "*gpt-5.6-sol*", levels: [...CODEX_GPT_5_6_LEVELS, "ultra"] },
   { provider: "codex", pattern: "*gpt-5.6-terra*", levels: [...CODEX_GPT_5_6_LEVELS, "ultra"] },
   { provider: "codex", pattern: "*gpt-5.6-luna*", levels: CODEX_GPT_5_6_LEVELS },
+  // Command Code Provider API (cmcp) validates reasoning_effort strictly:
+  // low|medium|high|xhigh|max, anything else → HTTP 400. "none" is kept as a
+  // picker entry meaning "disable" but is clamped to "low" upstream by the
+  // capability's minThinkingLevel; "minimal" is deliberately absent.
+  { provider: "commandcode-provider", levels: ["none", "low", "medium", "high", "xhigh", "max"] },
   { pattern: "*codex*", levels: ["low", "medium", "high", "xhigh"] }, // codex cannot disable thinking
   { pattern: "*mimo*v2.6*", levels: ["none", "low", "medium", "high", "xhigh"] },
   // mimo-v2.5-pro on opencode-go rejects reasoning_effort "max" (probed live); v2.5 accepts it.
@@ -75,7 +80,8 @@ export function getThinkingLevels(provider, model) {
     ? getProviderModels("cx").find((entry) => entry.id === baseId)?.thinkingLevels
     : null;
   const hit = PATTERN_THINKING.find((entry) =>
-    (!entry.provider || entry.provider === provider) && matchPattern(entry.pattern, model)
+    (!entry.provider || entry.provider === provider) &&
+    (!entry.pattern || matchPattern(entry.pattern, model)) // no pattern → applies to every model on the provider
   );
   let levels = modelLevels || hit?.levels || FORMAT_LEVELS[caps.thinkingFormat] || L.base;
   if (caps.thinkingCanDisable === false) levels = levels.filter((l) => l !== "none");

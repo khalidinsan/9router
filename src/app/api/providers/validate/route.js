@@ -432,6 +432,40 @@ export async function POST(request) {
           break;
         }
 
+        case "commandcode-provider": {
+          // Provider API (https://api.commandcode.ai/provider/v1) — distinct from the
+          // `commandcode` CLI/Go lane above. Two failure modes to distinguish:
+          //   401 → bad/absent key
+          //   403 → key is valid but the account is on the Go plan, which has NO
+          //         Provider API access (upstream answers `upgrade_required`); the
+          //         endpoint needs GOAT or higher.
+          //
+          // Probe an AUTHENTICATED endpoint. `/provider/v1/models` is public —
+          // it answers 200 with no Authorization header at all (probed live), so
+          // validating against it would pass every key, including garbage.
+          // `/provider/v1/messages` is the cheapest authenticated call: it
+          // rejects a bad key with 401 BEFORE body validation, so an
+          // intentionally-empty message array is enough and no tokens are spent.
+          const res = await fetch("https://api.commandcode.ai/provider/v1/messages", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "Authorization": `Bearer ${apiKey}`,
+              "anthropic-version": "2023-06-01",
+            },
+            body: JSON.stringify({ model: "claude-sonnet-5-5", max_tokens: 1, messages: [] }),
+            signal: AbortSignal.timeout(8000),
+          });
+          isValid = res.status !== 401 && res.status !== 403;
+          if (!isValid) {
+            const upstreamBody = (await res.text().catch(() => "")).trim().slice(0, 300);
+            error = upstreamBody || (res.status === 403
+              ? "Provider API requires a GOAT plan or higher (upgrade_required)"
+              : "Invalid API key");
+          }
+          break;
+        }
+
         case "deepgram": {
           const res = await fetch("https://api.deepgram.com/v1/projects", {
             headers: { "Authorization": `Token ${apiKey}` },

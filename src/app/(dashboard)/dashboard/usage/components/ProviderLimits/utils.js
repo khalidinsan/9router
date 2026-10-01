@@ -567,6 +567,7 @@ export function parseQuotaData(provider, data) {
 
       case "codex":
       case "commandcode":
+      case "commandcode-provider":
         // Codex + Command Code: session (5h) / weekly are 0–100 percent bars
         // (`remaining` is leftover percent). Monthly dollar pots omit remaining
         // so getRemainingPercentage falls back to used/total.
