@@ -33,6 +33,19 @@
   API like 1.2.
 
 ## Fixes
+- **Command Code Provider (cmcp)**: stop forcing every model through a null
+  thinking format. The lane's blanket capability override sat above the
+  exact/pattern tables, so `claude-sonnet-5-5` lost its `claude-adaptive`
+  thinking format and fell back to the legacy Claude wire shape
+  (`thinking: {type:"enabled", budget_tokens}`), which the Provider API rejects
+  with HTTP 400 — "thinking.type.enabled is not supported for this model. Use
+  thinking.type.adaptive and output_config.effort". Models now resolve their
+  natural capabilities (Claude 5.x → adaptive, gpt-6 → openai, deepseek → its
+  own format), with the lane's text-only denylist still enforced. The lane also
+  rejects the disable sentinels on both wires: `thinking: {type:"disabled"}` on
+  /messages and `reasoning_effort: "none"` on /chat/completions. Disabling
+  thinking now omits the field on the Claude wire (upstream returns
+  `thinking_tokens: 0`) and sends `"off"` on the OpenAI wire.
 - **Command Code**: size the monthly credit pool for the GOAT plan — the plan map
   had no `individual-goat` entry, so the monthly allotment resolved to 0 and the
   Monthly row silently vanished from the quota tracker (the 5h/weekly bars kept

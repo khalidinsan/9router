@@ -604,6 +604,17 @@ function isCommandCodeTextOnly(model) {
   }
   return false;
 }
+function resolveRawModelCapabilities(baseModel, model) {
+  if (MODEL_CAPABILITIES[baseModel]) return MODEL_CAPABILITIES[baseModel];
+  if (MODEL_CAPABILITIES[model]) return MODEL_CAPABILITIES[model];
+  for (const { pattern, caps } of PATTERN_CAPABILITIES) {
+    if (matchPattern(pattern, baseModel) || matchPattern(pattern, model)) {
+      return caps;
+    }
+  }
+  return null;
+}
+
 export function getCapabilitiesForModel(provider, model) {
   if (!model) return { ...DEFAULT_CAPABILITIES };
 
@@ -628,29 +639,20 @@ export function getCapabilitiesForModel(provider, model) {
   }
 
   // Command Code Provider API (api.commandcode.ai/provider/v1/*) — plain
-  // OpenAI/Anthropic wire, no vendor thinking shapes. Blanket capability for
-  // every model on the provider; the lookup below is exact-key-only, so an
-  // exact map cannot express "all models".
-  //   • thinkingFormat: null → resolveFormat falls through to the per-wire
-  //     native format (openai → reasoning_effort; claude → thinking block).
-  //   • thinkingCanDisable: false + minThinkingLevel: "low" → applyFormat
-  //     clamps a client's "disable thinking" to the model floor "low" instead
-  //     of emitting reasoning_effort: "none", which this server rejects with
-  //     HTTP 400 (unlike /alpha/generate, which ignores it). Mirrors the
-  //     gemini-3.8 minThinkingLevel pattern.
-  //   • maxOutput 128000 is an unverified default (mirrors the existing
-  //     commandcode branch for models with no more specific data).
+  // OpenAI/Anthropic wire. Models resolve their natural exact/pattern capabilities
+  // (e.g. claude-sonnet-5-5 inherits thinkingFormat:"claude-adaptive", gpt-6 inherits
+  // "openai"), merged with Provider API constraints (reasoning blanket-enabled,
+  // vision text-only denylist per isCommandCodeTextOnly).
   if (provider === "commandcode-provider" || provider === "cmcp") {
-    return {
-      ...DEFAULT_CAPABILITIES,
+    const providerCaps = PROVIDER_CAPABILITIES[provider];
+    const explicit = providerCaps?.[model] || providerCaps?.[baseModel];
+    const raw = explicit || resolveRawModelCapabilities(baseModel, model) || {};
+    const result = refine({
+      ...raw,
       reasoning: true,
-      thinkingFormat: null,
-      thinkingCanDisable: false,
-      minThinkingLevel: "low",
-      contextWindow: 1000000,
-      maxOutput: 128000,
-      vision: !isCommandCodeTextOnly(model),
-    };
+    }, provider, model);
+    if (isCommandCodeTextOnly(model)) result.vision = false;
+    return result;
   }
 
   // 1. Provider-specific override

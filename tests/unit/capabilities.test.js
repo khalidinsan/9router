@@ -283,3 +283,31 @@ describe("getCapabilitiesForModel — codebuddy-cn provider overrides", () => {
   });
 });
 
+describe("getCapabilitiesForModel — commandcode-provider (cmcp)", () => {
+  it("Claude Sonnet 5.5 preserves claude-adaptive format and 1M context", () => {
+    const caps = getCapabilitiesForModel("commandcode-provider", "claude-sonnet-5-5");
+    expect(caps.thinkingFormat).toBe("claude-adaptive");
+    expect(caps.contextWindow).toBe(1000000);
+    expect(caps.maxOutput).toBe(128000);
+    expect(caps.vision).toBe(true);
+    expect(caps.reasoning).toBe(true);
+  });
+
+  it("cmcp alias resolves identical capabilities", () => {
+    const caps = getCapabilitiesForModel("cmcp", "claude-sonnet-5-5");
+    expect(caps.thinkingFormat).toBe("claude-adaptive");
+  });
+
+  it("GPT-6 Sol preserves openai thinking format", () => {
+    const caps = getCapabilitiesForModel("commandcode-provider", "gpt-6.1-sol");
+    expect(caps.thinkingFormat).toBe("openai");
+    expect(caps.reasoning).toBe(true);
+  });
+
+  it("text-only denylist model stays non-vision on cmcp", () => {
+    const caps = getCapabilitiesForModel("commandcode-provider", "deepseek/deepseek-v4-flash");
+    expect(caps.vision).toBe(false);
+    expect(caps.reasoning).toBe(true);
+  });
+});
+

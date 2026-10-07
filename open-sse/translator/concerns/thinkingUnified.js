@@ -254,7 +254,7 @@ function stripAll(body) {
 }
 
 // Apply unified thinking config to body in the resolved provider-native format.
-function applyFormat(fmt, body, cfg, caps, supportedLevels, display) {
+function applyFormat(fmt, body, cfg, caps, supportedLevels, display, provider = null) {
   const none = cfg.mode === "none";
   const canDisable = caps.thinkingCanDisable !== false;
   // Model cannot disable thinking → clamp "none" to the model's minimum effort
@@ -265,13 +265,24 @@ function applyFormat(fmt, body, cfg, caps, supportedLevels, display) {
 
   switch (fmt) {
     case "openai": {
-      if (none && canDisable) { body.reasoning_effort = "none"; break; }
+      if (none && canDisable) {
+        // Command Code Provider API rejects reasoning_effort: "none" with HTTP 400;
+        // it expects "off" instead.
+        body.reasoning_effort = (provider === "commandcode-provider" || provider === "cmcp") ? "off" : "none";
+        break;
+      }
       const level = toLevel(eff);
       if (level) body.reasoning_effort = normalizeOpenAILevel(level, supportedLevels);
       break;
     }
     case "claude-adaptive": {
-      if (none && canDisable) { body.thinking = { type: "disabled" }; break; }
+      if (none && canDisable) {
+        // Command Code Provider API rejects thinking: {type: "disabled"} with HTTP 400.
+        // Omitting both thinking and output_config turns thinking off (thinking_tokens: 0).
+        if (provider === "commandcode-provider" || provider === "cmcp") break;
+        body.thinking = { type: "disabled" };
+        break;
+      }
       // Models that can disable thinking need the explicit adaptive switch.
       // Permanently adaptive models such as Fable 5.1 accept effort directly.
       if (canDisable) body.thinking = { type: "adaptive", ...(display ? { display } : {}) };
@@ -413,6 +424,6 @@ export function applyThinking(targetFormat, model, body, provider = null, intent
   // An OpenAI-shaped client's ask arrives via the captured intent instead.
   const display = typeof body.thinking?.display === "string" ? body.thinking.display : intent?.display;
   stripAll(body);
-  applyFormat(fmt, body, cfg, caps, supportedLevels, display);
+  applyFormat(fmt, body, cfg, caps, supportedLevels, display, provider);
   return body;
 }

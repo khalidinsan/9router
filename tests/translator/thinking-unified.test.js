@@ -273,6 +273,20 @@ describe("applyThinking per provider format", () => {
     }, "commandcode");
     expect(out.params.reasoning_effort).toBe("max");
   });
+  it("cmcp sonnet 5.5 → claude-adaptive format with adaptive switch + effort", () => {
+    const out = apply("claude", "claude-sonnet-5-5", { reasoning_effort: "high" }, "commandcode-provider");
+    expect(out.thinking).toEqual({ type: "adaptive" });
+    expect(out.output_config).toEqual({ effort: "high" });
+  });
+  it("cmcp sonnet 5.5 none → omits thinking and output_config instead of sending disabled", () => {
+    const out = apply("claude", "claude-sonnet-5-5", { reasoning_effort: "none" }, "commandcode-provider");
+    expect(out.thinking).toBeUndefined();
+    expect(out.output_config).toBeUndefined();
+  });
+  it("cmcp openai wire none → maps reasoning_effort to off instead of none", () => {
+    const out = apply("openai", "gpt-6.1-sol", { reasoning_effort: "none" }, "commandcode-provider");
+    expect(out.reasoning_effort).toBe("off");
+  });
 });
 
 describe("extractReasoningText (response shapes)", () => {
