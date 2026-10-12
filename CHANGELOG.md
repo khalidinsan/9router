@@ -33,6 +33,14 @@
   API like 1.2.
 
 ## Fixes
+- **Step 5 Preview**: stop inheriting the Step 3.x floor. The generic `*step-*`
+  capability pattern pinned every Step model at 128k context / 64k output and
+  no vision, but Step 5 Preview is StepFun's 1M-context multimodal flagship
+  (models.dev `stepfun` entry: context 1000000, output 65536, input image+video).
+  Requests carrying an image were silently stripped with "model has no vision
+  support", and the advertised window was 8x too small. A more specific
+  `*step-5*` pattern now sits above the generic rule; Step 3.5/3.7 keep the
+  original floor.
 - **Command Code Provider (cmcp)**: stop forcing every model through a null
   thinking format. The lane's blanket capability override sat above the
   exact/pattern tables, so `claude-sonnet-5-5` lost its `claude-adaptive`

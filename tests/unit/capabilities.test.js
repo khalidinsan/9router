@@ -311,3 +311,29 @@ describe("getCapabilitiesForModel — commandcode-provider (cmcp)", () => {
   });
 });
 
+describe("getCapabilitiesForModel — Step 5 Preview (1M multimodal)", () => {
+  it("resolves the 1M context + vision from the *step-5* pattern, not the *step-* floor", () => {
+    const caps = getCapabilitiesForModel("workbuddy", "step-5-preview");
+    expect(caps.contextWindow).toBe(1000000);
+    expect(caps.maxOutput).toBe(65536);
+    expect(caps.vision).toBe(true);
+    expect(caps.videoInput).toBe(true);
+    expect(caps.reasoning).toBe(true);
+    expect(caps.thinkingFormat).toBe("step");
+  });
+
+  it("applies on the vendor-prefixed ids too (cmcp / claude-lane style)", () => {
+    for (const id of ["stepfun/Step-5-Preview", "stepfun/step-5-preview"]) {
+      const caps = getCapabilitiesForModel("cmcp", id);
+      expect(caps.contextWindow).toBe(1000000);
+      expect(caps.vision).toBe(true);
+    }
+  });
+
+  it("older Step 3.x keeps the 128k text-only floor", () => {
+    const caps = getCapabilitiesForModel("workbuddy", "step-3.7-flash");
+    expect(caps.contextWindow).toBe(128000);
+    expect(caps.vision).toBe(false);
+  });
+});
+

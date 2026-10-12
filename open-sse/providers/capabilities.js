@@ -446,6 +446,11 @@ export const PATTERN_CAPABILITIES = [
   // ── Others ───────────────────────────────────────────────────────
   { pattern: "*hunyuan*",       caps: { reasoning: true, thinkingFormat: "hunyuan", contextWindow: 262144, maxOutput: 262144 } },
   { pattern: "hy3*",            caps: { reasoning: true, thinkingFormat: "hunyuan", contextWindow: 262144, maxOutput: 262144 } },
+  // Step 5 Preview is the 1M-context multimodal flagship — must sit ABOVE the
+  // generic `*step-*` rule, which carries a 128k/64k text-only floor copied from
+  // the older Step 3.x line. Limits per models.dev (stepfun upstream entry):
+  // context 1_000_000, output 65536, input image+video.
+  { pattern: "*step-5*",        caps: { vision: true, videoInput: true, reasoning: true, thinkingFormat: "step", contextWindow: 1000000, maxOutput: 65536 } },
   { pattern: "*step-*",         caps: { reasoning: true, thinkingFormat: "step", contextWindow: 128000 } },
   { pattern: "*nemotron*",      caps: { reasoning: true, contextWindow: 128000 } },
   { pattern: "*ling-*",         caps: { reasoning: true, contextWindow: 128000 } },
