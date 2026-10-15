@@ -1,14 +1,14 @@
 /**
  * Grok CLI / Grok Build (cli-chat-proxy.grok.com)
  *
- * Source of truth: wire capture of official grok 1.0.3
+ * Source of truth: wire capture of official @xai-official/grok 1.0.44
  * talking to https://cli-chat-proxy.grok.com (OpenAI Responses API).
  *
  * Distinct from:
  *  - `xai`      → api.x.ai (API key / xAI API OAuth PKCE)
  *  - `grok-web` → grok.com web SSO cookie
  *
- * Official TUI menu (grok 1.0.3): grok-4.6 (default) and grok-4.5 as distinct
+ * Official TUI menu (grok 1.0.44): grok-4.6 (default) and grok-4.5 as distinct
  * models. Session metadata uses a -build suffix (grok-4.6-build / grok-4.5-build).
  * Do not rewrite 4.6 → 4.5. grok-build is a separate product id (fork secondary).
  */

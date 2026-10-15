@@ -115,6 +115,7 @@ export default {
     { id: "minimax-m2.5-thinking", name: "Minimax M2.5 (Thinking)", upstreamModelId: "minimax-m2.5", contextLength: 196000, maxOutput: 64000, rateMultiplier: 0.25, description: "Kiro minimax-m2.5 — 0.25x credit, 196k context" },
     { id: "minimax-m2.5-agentic", name: "Minimax M2.5 (Agentic)", upstreamModelId: "minimax-m2.5", contextLength: 196000, maxOutput: 64000, rateMultiplier: 0.25, description: "Kiro minimax-m2.5 — 0.25x credit, 196k context" },
     { id: "minimax-m2.5-thinking-agentic", name: "Minimax M2.5 (Thinking + Agentic)", upstreamModelId: "minimax-m2.5", contextLength: 196000, maxOutput: 64000, rateMultiplier: 0.25, description: "Kiro minimax-m2.5 — 0.25x credit, 196k context" },
+    { id: "MiniMax-M2.5", name: "MiniMax M2.5" },
     { id: "minimax-m2.1", name: "Minimax M2.1", upstreamModelId: "minimax-m2.1", contextLength: 196000, maxOutput: 64000, rateMultiplier: 0.15, description: "Kiro minimax-m2.1 — 0.15x credit, 196k context" },
     { id: "minimax-m2.1-thinking", name: "Minimax M2.1 (Thinking)", upstreamModelId: "minimax-m2.1", contextLength: 196000, maxOutput: 64000, rateMultiplier: 0.15, description: "Kiro minimax-m2.1 — 0.15x credit, 196k context" },
     { id: "minimax-m2.1-agentic", name: "Minimax M2.1 (Agentic)", upstreamModelId: "minimax-m2.1", contextLength: 196000, maxOutput: 64000, rateMultiplier: 0.15, description: "Kiro minimax-m2.1 — 0.15x credit, 196k context" },

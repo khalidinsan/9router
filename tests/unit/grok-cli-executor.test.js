@@ -116,8 +116,8 @@ describe("GrokCliExecutor", () => {
     expect(headers["x-authenticateresponse"]).toBe("authenticate-response");
     expect(headers["x-grok-client-mode"]).toBe("headless");
     expect(headers["x-grok-client-identifier"]).toBe("grok-shell");
-    expect(headers["x-grok-client-version"]).toBe("1.0.3");
-    expect(headers["User-Agent"]).toBe("grok-shell/1.0.3 (linux; x86_64)");
+    expect(headers["x-grok-client-version"]).toBe("1.0.44");
+    expect(headers["User-Agent"]).toBe("grok-shell/1.0.44 (linux; x86_64)");
     expect(headers["x-grok-session-id"]).toBe("sess-abc");
     expect(headers["x-grok-conv-id"]).toBe("sess-abc");
     expect(headers["x-grok-req-id"]).toBe("req-xyz");

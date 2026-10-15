@@ -74,6 +74,8 @@ const DEFAULT_SETTINGS = {
   grokRegisterImapPass: "",
   grokRegisterImapHost: "imap.gmail.com",
   grokRegisterImapPort: 993,
+  // Per-provider user header overrides applied at dispatch: { [providerId]: { headers: {..} } }
+  providerOverrides: {},
 };
 
 async function readRaw() {

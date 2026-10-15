@@ -112,6 +112,7 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
   const preferredConnectionId = options?.preferredConnectionId || null;
   // Internal re-probe of disabled grok-cli accounts (dashboard / maintenance)
   const allowInactivePin = options?.allowInactivePin === true;
+  const requestedModel = options?.requestedModel || model;
   // Acquire mutex to prevent race conditions
   const currentMutex = selectionMutex;
   let resolveMutex;
@@ -179,7 +180,7 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
       // Standing per-account restriction ("this account is DeepSeek only").
       // Rotating to another account that also allows the model still works —
       // this only skips accounts the user has excluded for that model.
-      if (!isModelAllowedOnConnection(c, model)) {
+      if (!isModelAllowedOnConnection(c, requestedModel)) {
         skippedByAllowlist += 1;
         return false;
       }
@@ -635,7 +636,7 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
     cooldownMs = 3000;
     newBackoffLevel = 0;
   } else {
-    ({ shouldFallback, cooldownMs, newBackoffLevel } = checkFallbackError(status, errorText, backoffLevel));
+    ({ shouldFallback, cooldownMs, newBackoffLevel } = checkFallbackError(status, errorText, backoffLevel, resolveProviderId(provider)));
   }
   if (!shouldFallback) return { shouldFallback: false, cooldownMs: 0 };
 
