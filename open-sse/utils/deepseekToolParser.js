@@ -52,8 +52,13 @@ const FENCE = `(?:${FW}{1,2}|\\|{1,2})`;
 
 // Precompiled detectors — non-global so `.test()` carries no lastIndex state.
 // These run on every content delta, so they must not allocate.
-const DSML_DETECT = new RegExp(`<${FENCE}DSML${FENCE}`);
-const TOKENBAR_DETECT = new RegExp(`<\\|tool[${TB}_]`);
+// The leading `<` is OPTIONAL: the model sometimes emits the fence with the `<`
+// already consumed (production capture: `|DSML| calls>`), so detection and every
+// open tag must tolerate its absence or the markup leaks as prose.
+const LT = "<?";
+
+const DSML_DETECT = new RegExp(`${LT}${FENCE}DSML${FENCE}`);
+const TOKENBAR_DETECT = new RegExp(`${LT}\\|tool[${TB}_]`);
 
 /** True when `content` carries either native DeepSeek tool-call markup. */
 export function hasDeepseekToolMarkup(content) {
@@ -103,9 +108,9 @@ function stripResidualFences(text) {
  */
 function parseDsml(content) {
   const calls = [];
-  const openRe = new RegExp(`<${FENCE}DSML${FENCE}\\s*invoke\\s+name=["']([^"']+)["'][^>]*>`, "g");
+  const openRe = new RegExp(`${LT}${FENCE}DSML${FENCE}\\s*invoke\\s+name=["']([^"']+)["'][^>]*>`, "g");
   const paramRe = new RegExp(
-    `<${FENCE}DSML${FENCE}\\s*parameter\\s+name=["']([^"']+)["'][^>]*>([\\s\\S]*?)<\\/${FENCE}DSML${FENCE}\\s*parameter>`,
+    `${LT}${FENCE}DSML${FENCE}\\s*parameter\\s+name=["']([^"']+)["'][^>]*>([\\s\\S]*?)<\\/${FENCE}DSML${FENCE}\\s*parameter>`,
     "g"
   );
   const closeRe = new RegExp(`<\\/${FENCE}DSML${FENCE}\\s*invoke>`);
@@ -149,9 +154,9 @@ function parseDsml(content) {
  */
 function parseTokenBar(content) {
   const calls = [];
-  const beginRe = new RegExp(`<\\|tool${TB}call${TB}begin\\|>`, "g");
+  const beginRe = new RegExp(`${LT}\\|tool${TB}call${TB}begin\\|>`, "g");
   const sepRe = new RegExp(`<\\|tool${TB}sep\\|>`);
-  const nextBeginRe = new RegExp(`<\\|tool${TB}call${TB}begin\\|>`);
+  const nextBeginRe = new RegExp(`${LT}\\|tool${TB}call${TB}begin\\|>`);
   const terminators = [
     new RegExp(`<\\|tool${TB}call${TB}end\\|>`),
     new RegExp(`<\\|tool${TB}calls${TB}end\\|>`),

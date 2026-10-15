@@ -74,6 +74,17 @@
   until it completes; held text that never becomes a marker is flushed on the
   finish chunk. Verified against a mock upstream that fragments the markup into
   12-character deltas.
+- **DeepSeek markup: wrapper line and bare fences**: two further leaks, both
+  found in production `providerResponse` after the fix above shipped. (1) The
+  DSML wrapper (`<|DSML| calls>`) reached the client because detection only knew
+  the `invoke name=` form, so the opening line was emitted as prose. Detection is
+  now a depth scan over a single open/close token stream: the dialects nest, so
+  "last open vs last close" reported the wrapper closed as soon as its first
+  inner call closed, and matching opens and closes separately made a close tag's
+  own text look like an open. (2) The model sometimes emits the fence with the
+  leading `<` already consumed (`|DSML| calls>`), which every detector and open
+  tag rejected; the `<` is now optional. Markup that never completes is dropped
+  rather than forwarded, since a truncated marker is still markup.
 - **WorkBuddy / CodeBuddy intl**: stop 9router from aborting healthy requests.
   Both providers inherited the 60s global connect default (`FETCH_CONNECT_TIMEOUT_MS`)
   and the 360s stream-idle default, but the bundled CodeBuddy CLI they mirror

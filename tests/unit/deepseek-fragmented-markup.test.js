@@ -71,4 +71,30 @@ describe("fragmented native markup across SSE deltas", () => {
       expect(out).not.toMatch(/tool\u2581/);
     }
   });
+
+  it("DSML wrapper header is held, not leaked as prose", async () => {
+    // Production leak: the wrapper line reached the client while the invoke
+    // that followed was still streaming.
+    const dsml = `<｜DSML｜ calls>\n<｜DSML｜ invoke name="read">\n<｜DSML｜ parameter name="path">a.js</｜DSML｜ parameter>\n</｜DSML｜ invoke>\n</｜DSML｜ calls>`;
+    const slices = [];
+    for (let i = 0; i < dsml.length; i += 9) slices.push(dsml.slice(i, i + 9));
+    const out = await run(buildSSE(slices));
+    expect(out).toContain('"tool_calls"');
+    expect(out).not.toMatch(/DSML/);
+  });
+
+  it("fence with the leading angle bracket already consumed still parses", async () => {
+    // Production leak: upstream emitted `|DSML| calls>` with no `<`.
+    const bare = `｜DSML｜ calls>\n｜DSML｜ invoke name="read">\n｜DSML｜ parameter name="path">a.js</｜DSML｜ parameter>\n</｜DSML｜ invoke>\n</｜DSML｜ calls>`;
+    const out = await run(buildSSE([bare]));
+    expect(out).toContain('"tool_calls"');
+    expect(out).not.toMatch(/DSML/);
+  });
+
+  it("truncated markup is dropped, never forwarded as text", async () => {
+    // A stream that dies mid-marker: the held fragment is markup, so it must
+    // not reach the client as prose.
+    const out = await run(buildSSE([`｜DSML｜ calls>`]));
+    expect(out).not.toMatch(/DSML/);
+  });
 });

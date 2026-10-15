@@ -63,50 +63,66 @@ const TB = "\u2581";
 // U+FF5C FULLWIDTH VERTICAL LINE, the DSML fence.
 const FW = "\uFF5C";
 
-// A native marker always begins with `<` followed by U+FF5C or `|`. Anything
-// else after `<` is ordinary text ("a < b"), so only these force a holdback.
-const FENCE_CHARS = new Set([FW, "|"]);
-
 // One or two fullwidth pipes (as emitted), or their ASCII stand-ins (as some
 // transports normalize them).
 const FENCE = `(?:${FW}{1,2}|\\|{1,2})`;
 
-const TOKENBAR_START = new RegExp(`<\\|tool${TB}call${TB}begin\\|>`, "g");
-const TOKENBAR_END = new RegExp(`<\\|tool${TB}call${TB}end\\|>`, "g");
-const TOKENBAR_CALLS_START = new RegExp(`<\\|tool${TB}calls${TB}begin\\|>`, "g");
-const TOKENBAR_CALLS_END = new RegExp(`<\\|tool${TB}calls${TB}end\\|>`, "g");
-const DSML_INVOKE_START = new RegExp(`<${FENCE}DSML${FENCE}\\s*invoke\\s+name=`, "g");
-const DSML_INVOKE_END = new RegExp(`<\\/${FENCE}DSML${FENCE}\\s*invoke>`, "g");
+// Every token that opens or closes a marker. The leading `<` is OPTIONAL: the
+// model sometimes emits the fence with the `<` already consumed by an earlier
+// delta (seen in production as `|DSML| calls>`), and a bare fence must still be
+// recognized or the markup leaks as prose.
+//
+// Both dialects nest (a wrapper around one or more calls), so these are scanned
+// as a token stream and classified, rather than matched as open/close pairs. A
+// single regex is required: matching opens and closes separately makes a close
+// tag's inner text look like an open (`</|DSML| calls>` contains `|DSML| calls>`),
+// which leaves the depth permanently above zero.
+const TOKEN_RE = new RegExp(
+  [
+    `<?\\/?\\|tool${TB}calls?${TB}(?:begin|end)\\|>`,
+    `<?\\/?${FENCE}DSML${FENCE}\\s*(?:calls|invoke)[^>]*>`,
+  ].join("|"),
+  "g"
+);
 
-// A trailing fragment this short could still be the start of a marker; longer
-// than this it cannot be, so it is released as text.
-const MAX_MARKER_TAIL_LEN = 64;
+// Does this text contain markup at all? Used to decide whether a held tail is
+// user-facing prose or a marker that must be dropped.
+const MARKUP_LIKE = new RegExp(`(?:${FW}{1,2}|\\|{1,2})DSML|\\|tool${TB}`);
 
-// A confirmed open marker is held until it closes, bounded so a malformed
-// stream cannot pin unbounded memory.
+// A bare fence is a confirmed marker start, so it is held on identity up to this
+// bound; beyond it the stream is malformed and released so it cannot stall.
 const MAX_OPEN_MARKER_LEN = 64 * 1024;
 
-/** Start index of the last match of a global regex, or -1 when it never matches. */
-function lastMatchStart(re, text) {
-  re.lastIndex = 0;
-  let at = -1;
-  let m;
-  while ((m = re.exec(text)) !== null) {
-    at = m.index;
-    // Guard against a zero-length match looping forever.
-    if (m[0].length === 0) re.lastIndex++;
-  }
-  return at;
+// A trailing fragment this short could still become a marker; longer than this
+// it cannot be, so it is released as text.
+const MAX_MARKER_TAIL_LEN = 64;
+
+/** True when `text` carries any native tool-call markup. */
+export function looksLikeMarkup(text) {
+  return typeof text === "string" && MARKUP_LIKE.test(text);
+}
+
+/**
+ * Classify a matched token as a close (true) or an open (false).
+ *
+ * Two close shapes exist: a DSML slash form (`</|DSML| calls>`), and the
+ * token-bar `end` form (`<|tool_call_end|>`). Everything else opens.
+ */
+function isCloseToken(token) {
+  if (/^<\//.test(token)) return true;
+  if (/end\|>/.test(token)) return true;
+  return false;
 }
 
 /**
  * Index of an *unterminated* marker start, or -1 when everything present is
  * either complete or plain text.
  *
- * The wrapper `<|tool_calls_begin|>` is checked first: a call inside it is still
- * open until its own end tag arrives, and the wrapper stays open until
- * `calls_end`. Holding from the wrapper start covers both, so the partial
- * arguments of an in-flight call can never be forwarded as prose.
+ * Scans open/close tokens in stream order and tracks nesting depth: the marker
+ * is open when the depth ends above zero, and it starts at the position of the
+ * first unmatched open. A depth counter is required because the dialects nest —
+ * "last open vs last close" would report the wrapper as closed as soon as its
+ * first inner call closed, and the wrapper text would then leak.
  *
  * @param {string} text
  * @returns {number}
@@ -114,26 +130,24 @@ function lastMatchStart(re, text) {
 export function findOpenMarkerStart(text) {
   if (typeof text !== "string" || !text) return -1;
 
-  const callsStart = lastMatchStart(TOKENBAR_CALLS_START, text);
-  if (callsStart !== -1) {
-    const callsEnd = lastMatchStart(TOKENBAR_CALLS_END, text);
-    if (callsEnd < callsStart) return callsStart;
+  let depth = 0;
+  let startAt = -1;
+  TOKEN_RE.lastIndex = 0;
+  let m;
+  while ((m = TOKEN_RE.exec(text)) !== null) {
+    if (isCloseToken(m[0])) {
+      if (depth > 0) depth -= 1;
+      // A stray close with nothing open is ignored.
+      if (depth === 0) startAt = -1;
+    } else {
+      if (depth === 0) startAt = m.index;
+      depth += 1;
+    }
+    // Guard against a zero-length match looping forever.
+    if (m[0].length === 0) TOKEN_RE.lastIndex++;
   }
 
-  let open = -1;
-  const tbStart = lastMatchStart(TOKENBAR_START, text);
-  if (tbStart !== -1) {
-    const tbEnd = lastMatchStart(TOKENBAR_END, text);
-    if (tbEnd < tbStart) open = tbStart;
-  }
-
-  const dsmlStart = lastMatchStart(DSML_INVOKE_START, text);
-  if (dsmlStart !== -1) {
-    const dsmlEnd = lastMatchStart(DSML_INVOKE_END, text);
-    if (dsmlEnd < dsmlStart && (open === -1 || dsmlStart < open)) open = dsmlStart;
-  }
-
-  return open;
+  return depth > 0 ? startAt : -1;
 }
 
 /**
@@ -142,12 +156,11 @@ export function findOpenMarkerStart(text) {
  *
  * Two things are held:
  *
- *   1. An open marker, from its start to the end of the buffer, until the
- *      terminating token arrives. A marker carries its whole argument payload,
- *      so this is held on identity, not length.
- *   2. A tail that could still *become* a marker: a trailing `<`, or `<` plus a
- *      fence character. This one is length-bounded, since without a marker
- *      signature it is only a guess.
+ *   1. A marker, from its start to the end of the buffer, until it closes. A
+ *      marker carries its whole argument payload, so this is held on identity.
+ *   2. A tail that could still *become* a marker: a trailing `<`, `<` plus a
+ *      fence character, or a bare fence. This one is length-bounded, since
+ *      without a marker signature it is only a guess.
  *
  * Content with neither is returned whole, so ordinary responses stream through
  * untouched.
@@ -170,13 +183,17 @@ export function takeEmittableContent(pending) {
 
   // 2. A tail that may still begin a marker.
   let cut = -1;
+
+  // A bare fence (no leading `<`) is already unambiguous.
+  const bare = MARKUP_LIKE.exec(pending);
+  if (bare) cut = bare.index;
+
+  // A trailing `<`, or `<` plus a fence character, may open one next delta.
   for (let i = 0; i < pending.length; i++) {
     if (pending[i] !== "<") continue;
     const next = pending[i + 1];
-    // `<` at the very end: the next delta decides whether it starts a marker.
-    // `<` + fence char: may be a marker.
-    if (next === undefined || FENCE_CHARS.has(next)) {
-      cut = i;
+    if (next === undefined || next === FW || next === "|") {
+      if (cut === -1 || i < cut) cut = i;
       break;
     }
     // `<` + anything else is literal; keep scanning.
@@ -185,6 +202,9 @@ export function takeEmittableContent(pending) {
   if (cut === -1) return { emit: pending, hold: "" };
 
   const hold = pending.slice(cut);
-  if (hold.length > MAX_MARKER_TAIL_LEN) return { emit: pending, hold: "" };
+  // A bare fence is a real marker start, so it gets the generous bound; a lone
+  // `<` is only a guess and gets the small one.
+  const limit = MARKUP_LIKE.test(hold) ? MAX_OPEN_MARKER_LEN : MAX_MARKER_TAIL_LEN;
+  if (hold.length > limit) return { emit: pending, hold: "" };
   return { emit: pending.slice(0, cut), hold };
 }
