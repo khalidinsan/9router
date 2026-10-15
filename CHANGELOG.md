@@ -33,6 +33,23 @@
   API like 1.2.
 
 ## Fixes
+- **WorkBuddy / CodeBuddy intl**: stop 9router from aborting healthy requests.
+  Both providers inherited the 60s global connect default (`FETCH_CONNECT_TIMEOUT_MS`)
+  and the 360s stream-idle default, but the bundled CodeBuddy CLI they mirror
+  allows 1200s for both (`CODEBUDDY_STREAM_TIMEOUT_MS` /
+  `CODEBUDDY_FIRST_TOKEN_TIMEOUT_MS`, both `12e5` in `codebuddy-lite-wb.mjs`).
+  Agent turns routinely ship 500k+ token contexts whose prefill alone takes
+  40-60s, so the wall was cutting live requests: 197 successful turns had landed
+  in the 40-60s TTFT band, and the `504` logs read `186295ms` — exactly
+  `3 × 60s + 2 × 3s`, i.e. the gateway's own retry arithmetic, not an upstream
+  answer. `workbuddy` now uses `timeoutMs: 180_000`, `stallTimeoutMs: 600_000`
+  and `retry["504"].attempts: 0` (one base URL, so an in-place retry only
+  re-sends the same slow payload to the same account — fail fast and rotate
+  accounts instead, matching the antigravity policy); `codebuddy-intl` gets the
+  same `timeoutMs`. The fingerprint also moves `2.137.1` → `2.156.0` to match
+  the installed WorkBuddy AI 5.7.6 bundle. The `500 invoke model error` seen
+  alongside these is genuinely upstream (`extError.internal_server_error` with a
+  Tencent `requestId`) and is unaffected.
 - **Step 5 Preview**: stop inheriting the Step 3.x floor. The generic `*step-*`
   capability pattern pinned every Step model at 128k context / 64k output and
   no vision, but Step 5 Preview is StepFun's 1M-context multimodal flagship

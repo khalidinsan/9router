@@ -25,6 +25,9 @@ export default {
     forceStream: true,
     // CodeBuddy intl speaks the same unified OpenAI reasoning_effort shape as CN.
     thinkingFormat: "openai",
+    // Same Tencent gateway family as workbuddy, same slow-prefill profile on
+    // large agent contexts. See registry/workbuddy.js for the CLI evidence.
+    timeoutMs: 180_000,
     headers: {
       "User-Agent": "IDE/2.108.1 CodeBuddy/2.108.1",
       "X-Product": "SaaS",

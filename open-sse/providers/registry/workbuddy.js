@@ -58,6 +58,18 @@ export default {
     baseUrl: `${WORKBUDDY_BASE_URL}/v2/chat/completions`,
     forceStream: true,
     thinkingFormat: "openai",
+    // The bundled CLI allows 1200s for both first token and stream idle
+    // (CODEBUDDY_STREAM_TIMEOUT_MS / CODEBUDDY_FIRST_TOKEN_TIMEOUT_MS, both
+    // 12e5 in codebuddy-lite-wb.mjs). The 60s global connect default was
+    // aborting healthy requests: agent turns routinely ship 500k+ token
+    // contexts whose prefill alone takes 40-60s. 180s keeps most of that
+    // headroom without holding a slot for the CLI's full 20 minutes.
+    timeoutMs: 180_000,
+    // The CLI's stream-idle allowance is also 1200s (same constants). WorkBuddy
+    // stalls were the single largest timeout source for this provider (17 in
+    // one day), so raise it well above the 360s global default — reasoning
+    // models can sit quiet for minutes mid-turn on huge contexts.
+    stallTimeoutMs: 600_000,
     headers: workbuddyChatHeaders(),
     auth: {
       combined: true,
@@ -66,6 +78,15 @@ export default {
     },
     usage: {
       url: `${WORKBUDDY_BASE_URL}/v2/billing/meter/get-user-resource`,
+    },
+    // workbuddy has a single base URL, so an in-place retry re-sends the same
+    // slow payload to the same account. A 504 here is this gateway's own
+    // no-response-header timeout (timeoutMs), so the default 2 retries only
+    // multiply the wall clock (3 x 180s + delays = ~9min) without improving the
+    // odds. Fail fast and let account fallback rotate instead. Mirrors the
+    // antigravity policy.
+    retry: {
+      "504": { attempts: 0 },
     },
     clientVersion: WORKBUDDY_CLIENT_VERSION,
     productName: WORKBUDDY_PRODUCT_NAME,

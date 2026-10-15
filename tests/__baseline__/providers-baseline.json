@@ -1045,6 +1045,7 @@
     "baseUrl": "https://www.codebuddy.ai/v2/chat/completions",
     "forceStream": true,
     "thinkingFormat": "openai",
+    "timeoutMs": 180000,
     "headers": {
       "User-Agent": "IDE/2.108.1 CodeBuddy/2.108.1",
       "X-Product": "SaaS",
@@ -1172,12 +1173,14 @@
     "baseUrl": "https://www.workbuddy.ai/v2/chat/completions",
     "forceStream": true,
     "thinkingFormat": "openai",
+    "timeoutMs": 180000,
+    "stallTimeoutMs": 600000,
     "headers": {
-      "User-Agent": "CLI/2.137.1 WorkBuddy AI/2.137.1",
+      "User-Agent": "CLI/2.156.0 WorkBuddy AI/2.156.0",
       "X-Product": "SaaS",
       "X-IDE-Type": "CLI",
       "X-IDE-Name": "CLI",
-      "X-IDE-Version": "2.137.1",
+      "X-IDE-Version": "2.156.0",
       "x-requested-with": "XMLHttpRequest",
       "x-codebuddy-request": "1",
       "X-Domain": "www.workbuddy.ai"
@@ -1190,7 +1193,12 @@
     "usage": {
       "url": "https://www.workbuddy.ai/v2/billing/meter/get-user-resource"
     },
-    "clientVersion": "2.137.1",
+    "retry": {
+      "504": {
+        "attempts": 0
+      }
+    },
+    "clientVersion": "2.156.0",
     "productName": "WorkBuddy AI",
     "format": "openai",
     "tokenUrl": "https://www.workbuddy.ai/v2/plugin/auth/token"
@@ -1209,5 +1217,44 @@
     "baseUrl": "https://apihub.agnes-ai.com/v1/chat/completions",
     "validateUrl": "https://apihub.agnes-ai.com/v1/models",
     "format": "openai"
+  },
+  "commandcode-provider": {
+    "baseUrl": "https://api.commandcode.ai/provider/v1/chat/completions",
+    "headers": {},
+    "usage": {
+      "url": "https://api.commandcode.ai/alpha/billing/credits",
+      "subscriptionsUrl": "https://api.commandcode.ai/alpha/billing/subscriptions"
+    },
+    "format": "openai",
+    "transports": [
+      {
+        "format": "openai",
+        "baseUrl": "https://api.commandcode.ai/provider/v1/chat/completions",
+        "auth": {
+          "combined": true,
+          "header": "Authorization",
+          "scheme": "bearer"
+        }
+      },
+      {
+        "format": "claude",
+        "baseUrl": "https://api.commandcode.ai/provider/v1/messages",
+        "auth": {
+          "combined": true,
+          "header": "x-api-key",
+          "scheme": "raw",
+          "anthropicVersion": true
+        }
+      },
+      {
+        "format": "openai-responses",
+        "baseUrl": "https://api.commandcode.ai/provider/v1/responses",
+        "auth": {
+          "combined": true,
+          "header": "Authorization",
+          "scheme": "bearer"
+        }
+      }
+    ]
   }
 }

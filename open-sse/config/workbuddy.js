@@ -1,15 +1,19 @@
 /**
  * WorkBuddy AI wire constants.
  *
- * Captured from the CodeBuddy Code CLI (2.137.1) that WorkBuddy 5.5.2 bundles,
- * by proxying a live chat turn through a local capture server. Keep these in
- * sync with the app if Tencent bumps the client version — the gateway accepts
- * older fingerprints, but it is the identity the access token was minted for.
+ * Captured from the CodeBuddy Code CLI that WorkBuddy bundles, by proxying a
+ * live chat turn through a local capture server. Keep these in sync with the
+ * app if Tencent bumps the client version — the gateway accepts older
+ * fingerprints, but it is the identity the access token was minted for.
+ *
+ * Version bumped 2.137.1 → 2.156.0 to match the installed WorkBuddy AI 5.7.6
+ * (/Applications/WorkBuddy AI.app .../cli/package.json
+ * publishConfig.customPackage.version).
  */
 export const WORKBUDDY_BASE_URL =
   process.env.WORKBUDDY_BASE_URL || "https://www.workbuddy.ai";
 
-export const WORKBUDDY_CLIENT_VERSION = "2.137.1";
+export const WORKBUDDY_CLIENT_VERSION = "2.156.0";
 export const WORKBUDDY_PRODUCT_NAME = "WorkBuddy AI";
 export const WORKBUDDY_OAUTH_PLATFORM = "workbuddy-ai";
 
