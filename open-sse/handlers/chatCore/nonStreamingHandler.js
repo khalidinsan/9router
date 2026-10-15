@@ -7,7 +7,7 @@ import { createErrorResult } from "../../utils/error.js";
 import { upstreamResponseHeaders } from "../../utils/upstreamHeaders.js";
 import { HTTP_STATUS } from "../../config/runtimeConfig.js";
 import { parseSSEToOpenAIResponse } from "./sseToJsonHandler.js";
-import { normalizeKimiToolCalls } from "../../utils/kimiToolParser.js";
+import { normalizeNativeToolCalls } from "../../utils/nativeToolCalls.js";
 import { unwrapClineEnvelope } from "../../shared/clineEnvelope.js";
 import { buildRequestDetail, extractRequestConfig, extractUsageFromResponse, saveUsageStats, formatDoneLine, fillEstimatedTokens } from "./requestDetail.js";
 import { appendRequestLog, saveRequestDetail } from "@/lib/usageDb.js";
@@ -348,17 +348,16 @@ export async function handleNonStreamingResponse({ providerResponse, provider, m
   // `choices`; skip the Chat-Completions-specific post-processing below for it.
   const isResponsesResponse = sourceFormat === FORMATS.OPENAI_RESPONSES && translatedResponse?.object === "response";
 
-  // Native Kimi tool-call markup sometimes leaks into `content` instead of being
-  // returned as a structured `tool_calls` array. Convert it for Kimi-family
-  // models before the finish_reason fixup.
-  const isKimiModel = /kimi-k2\./i.test(model || "");
-  if (isKimiModel && Array.isArray(translatedResponse?.choices)) {
+  // Native tool-call markup sometimes leaks into `content` instead of being
+  // returned as a structured `tool_calls` array (Kimi `functions.NAME{...}`,
+  // DeepSeek DSML / token-bar). Convert it before the finish_reason fixup.
+  if (Array.isArray(translatedResponse?.choices)) {
     for (const choice of translatedResponse.choices) {
       const msg = choice?.message;
       if (!msg || msg.role !== "assistant") continue;
-      const { message: normalized, hasTools } = normalizeKimiToolCalls(msg);
-      if (hasTools) {
-        choice.message = normalized;
+      const normalized = normalizeNativeToolCalls(model, msg);
+      if (normalized) {
+        choice.message = normalized.message;
       }
     }
   }

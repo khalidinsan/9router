@@ -3,6 +3,7 @@ import { restoreToolNames } from "../../utils/opencodeFingerprint.js";
 import { createErrorResult } from "../../utils/error.js";
 import { HTTP_STATUS } from "../../config/runtimeConfig.js";
 import { FORMATS } from "../../translator/formats.js";
+import { normalizeNativeToolCalls } from "../../utils/nativeToolCalls.js";
 import { translateResponse, initState } from "../../translator/index.js";
 import { PROVIDERS } from "../../config/providers.js";
 import { buildRequestDetail, extractRequestConfig, saveUsageStats, formatDoneLine } from "./requestDetail.js";
@@ -164,6 +165,20 @@ export function parseSSEToOpenAIResponse(rawSSE, fallbackModel) {
   if (reasoningParts.length > 0) message.reasoning_content = reasoningParts.join("");
   if (toolCallMap.size > 0) {
     message.tool_calls = [...toolCallMap.entries()].sort((a, b) => a[0] - b[0]).map(([, tc]) => tc);
+  }
+
+  // A forced-stream provider whose model leaked its native tool-call markup as
+  // content (DeepSeek DSML / token-bar, Kimi) produced no structured tool_calls,
+  // so recover them here. Without this a non-stream client sees the raw markup
+  // as the answer. Runs after assembly so it also covers fragmented markup.
+  if (toolCallMap.size === 0 && message.content) {
+    const normalized = normalizeNativeToolCalls(fallbackModel, message);
+    if (normalized) {
+      message.tool_calls = normalized.message.tool_calls;
+      if (normalized.message.content === undefined) message.content = null;
+      else message.content = normalized.message.content;
+      finishReason = "tool_calls";
+    }
   }
 
   const result = {

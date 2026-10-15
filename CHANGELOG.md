@@ -33,6 +33,25 @@
   API like 1.2.
 
 ## Fixes
+- **DeepSeek V4.1 Flash**: recover native tool-call markup that leaks into
+  `content`. The model intermittently emits its raw token format instead of
+  populating `tool_calls`, so the client rendered the markup as text and never
+  ran the tool. Two dialects ship from the same model family, and both are
+  handled: DeepSeek's DSML XML-ish form fenced with U+FF5C — with ONE pipe per
+  side via Token Harbor (`<｜DSML｜ invoke name="read">`) and TWO via WorkBuddy
+  (`<｜｜DSML｜｜ invoke name="read">`) — and the raw token-bar form
+  (`<|tool▁call▁begin|>name<|tool▁sep|>{...}`), which also appears with a
+  hallucinated `<|tool▁output▁begin|>` tail. Malformed `calls_begin` spellings
+  and dropped close tags are tolerated. Leading prose is preserved as content;
+  only the markup is stripped. The new `utils/deepseekToolParser.js` joins the
+  existing Kimi parser behind a shared `utils/nativeToolCalls.js` dialect
+  registry, wired into all three response paths: the streaming transform (both
+  passthrough and translate modes), the non-streaming handler, and
+  `parseSSEToOpenAIResponse` for forced-stream providers serving a JSON client.
+  Previously only the Kimi dialect was handled, and only in two of the three
+  paths — a forced-stream provider (WorkBuddy) answering a `stream:false`
+  client returned the raw markup verbatim. Samples in the test are verbatim
+  captures from production `requestDetails`.
 - **WorkBuddy / CodeBuddy intl**: stop 9router from aborting healthy requests.
   Both providers inherited the 60s global connect default (`FETCH_CONNECT_TIMEOUT_MS`)
   and the 360s stream-idle default, but the bundled CodeBuddy CLI they mirror

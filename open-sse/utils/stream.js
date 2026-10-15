@@ -6,7 +6,7 @@ import { parseSSELine, hasValuableContent, fixInvalidId, formatSSE } from "./str
 import { getOpenAIResponsesEventName, isOpenAIResponsesTerminalEvent, formatIncompleteOpenAIResponsesStreamFailure } from "./responsesStreamHelpers.js";
 import { dbg, isDebugEnabled } from "./debugLog.js";
 import { extractToolNames, fuzzyMatchToolName } from "../translator/concerns/toolCall.js";
-import { normalizeKimiToolCalls } from "./kimiToolParser.js";
+import { normalizeNativeToolCalls, nativeToolCallParsersFor } from "./nativeToolCalls.js";
 
 import { SSE_DONE, SSE_HEADERS, SSE_HEADERS_NO_BUFFER } from "./sseConstants.js";
 
@@ -37,11 +37,11 @@ export function buildOpenAIToolCallsChunk(toolCalls, messageId, modelName) {
 }
 
 /**
- * Emit a synthetic tool_calls chunk for native Kimi markup that leaked into
- * streaming content. Returns true when a chunk was emitted. No-op when
+ * Emit a synthetic tool_calls chunk for native tool-call markup that leaked
+ * into streaming content. Returns true when a chunk was emitted. No-op when
  * sourceFormat is not OpenAI.
  */
-export function emitKimiToolCallsChunk(controller, toolCalls, state, modelName, sourceFormat, reqLogger) {
+export function emitNativeToolCallsChunk(controller, toolCalls, state, modelName, sourceFormat, reqLogger) {
   if (!toolCalls || toolCalls.length === 0) return false;
   if (sourceFormat !== FORMATS.OPENAI) return false;
 
@@ -123,11 +123,14 @@ export function createSSEStream(options = {}) {
   let sseEmittedCount = 0;
   const eventTypeCounts = {};
 
-  // Track native Kimi tool-call markup that leaks into streaming content.
-  // When detected, a synthetic tool_calls chunk is emitted before [DONE].
-  const isKimiModel = /kimi-k2\./i.test(model || "");
-  let kimiToolCalls = null;
-  let kimiToolCallsEmitted = false;
+  // Track native tool-call markup that leaks into streaming content (Kimi
+  // `functions.NAME{...}`, DeepSeek DSML / token-bar). When detected, a synthetic
+  // tool_calls chunk is emitted before [DONE]. Applies in both stream modes:
+  // DeepSeek leaks were observed through Token Harbor's openai→openai
+  // passthrough as well as WorkBuddy's translate path.
+  const nativeToolCallsEnabled = nativeToolCallParsersFor(model).length > 0;
+  let nativeToolCalls = nativeToolCallsEnabled ? null : undefined;
+  let nativeToolCallsEmitted = false;
 
   // Track Responses API event framing for same-format passthrough (codex)
   let currentOpenAIResponsesEvent = null;
@@ -271,6 +274,30 @@ export function createSSEStream(options = {}) {
                 accumulatedThinking += reasoning;
               }
 
+              // Native DeepSeek markup leaking into passthrough content. Kimi is
+              // handled in the translate branch below; both dialects route through
+              // the same parser list so a model id only has to be declared once.
+              if (nativeToolCalls !== undefined && content && typeof content === "string") {
+                const normalized = normalizeNativeToolCalls(model, { role: "assistant", content });
+                if (normalized) {
+                  nativeToolCalls = normalized.message.tool_calls;
+                  // Swap the raw markup for any leading prose; drop it when the
+                  // markup was the entire delta so the user never sees token soup.
+                  if (normalized.message.content) {
+                    parsed.choices[0].delta.content = normalized.message.content;
+                    totalContentLength -= content.length;
+                    accumulatedContent = accumulatedContent.slice(0, accumulatedContent.length - content.length);
+                    totalContentLength += normalized.message.content.length;
+                    accumulatedContent += normalized.message.content;
+                  } else {
+                    delete parsed.choices[0].delta.content;
+                    totalContentLength -= content.length;
+                    accumulatedContent = accumulatedContent.slice(0, accumulatedContent.length - content.length);
+                  }
+                  fieldsInjected = true;
+                }
+              }
+
               const extracted = extractUsage(parsed);
               if (extracted) {
                 usage = mergeUsage(usage, extracted);
@@ -279,7 +306,16 @@ export function createSSEStream(options = {}) {
               responsesTerminal = isOpenAIResponsesTerminalEvent(currentOpenAIResponsesEvent, parsed);
 
               const isFinishChunk = parsed.choices?.[0]?.finish_reason;
-              if (isFinishChunk && !hasValidUsage(parsed.usage)) {
+              // Native markup leaked and no structured tool_calls arrived: swap the
+              // upstream finish chunk for a synthetic tool_calls chunk so the client
+              // actually runs the tool instead of printing the raw markup.
+              if (nativeToolCalls && isFinishChunk && !nativeToolCallsEmitted) {
+                const chunk = buildOpenAIToolCallsChunk(nativeToolCalls, null, model);
+                if (hasValidUsage(usage)) chunk.usage = filterUsageForFormat(addBufferToUsage(usage), FORMATS.OPENAI);
+                output = `data: ${JSON.stringify(chunk)}\n`;
+                injectedUsage = true;
+                nativeToolCallsEmitted = true;
+              } else if (isFinishChunk && !hasValidUsage(parsed.usage)) {
                 const estimated = estimateUsage(body, totalContentLength, FORMATS.OPENAI);
                 parsed.usage = filterUsageForFormat(estimated, FORMATS.OPENAI);
                 output = `data: ${JSON.stringify(parsed)}\n`;
@@ -383,28 +419,30 @@ export function createSSEStream(options = {}) {
           accumulatedContent += parsed.choices[0].delta.content;
         }
 
-        // Detect and correct native Kimi tool-call markup that leaks into the
-        // content stream instead of being emitted as structured tool_calls.
-        if (isKimiModel && normalizeKimiToolCalls && parsed.choices?.[0]?.delta?.content) {
+        // Detect and correct native tool-call markup that leaks into the content
+        // stream instead of being emitted as structured tool_calls. Kimi and
+        // DeepSeek each have their own dialect; the parser list routes each model
+        // family to its parser.
+        if (nativeToolCalls !== undefined && parsed.choices?.[0]?.delta?.content) {
           const originalDelta = parsed.choices[0].delta.content;
-          const { message: normalized, hasTools } = normalizeKimiToolCalls({
+          const normalized = normalizeNativeToolCalls(model, {
             role: "assistant",
             content: originalDelta,
           });
-          if (hasTools) {
-            kimiToolCalls = normalized.tool_calls;
+          if (normalized) {
+            nativeToolCalls = normalized.message.tool_calls;
             // Replace the raw markup with any leading prose so the user doesn't
             // see the native token soup. If there is no prose, drop the content.
-            parsed.choices[0].delta.content = normalized.content || undefined;
+            parsed.choices[0].delta.content = normalized.message.content || undefined;
             if (!parsed.choices[0].delta.content) {
               delete parsed.choices[0].delta.content;
             }
             // Adjust accumulated content to reflect the stripped markup.
             totalContentLength -= originalDelta.length;
             accumulatedContent = accumulatedContent.slice(0, accumulatedContent.length - originalDelta.length);
-            if (normalized.content) {
-              totalContentLength += normalized.content.length;
-              accumulatedContent += normalized.content;
+            if (normalized.message.content) {
+              totalContentLength += normalized.message.content.length;
+              accumulatedContent += normalized.message.content;
             }
           }
         }
@@ -462,15 +500,15 @@ export function createSSEStream(options = {}) {
           for (const item of translated) {
             if (item === null || item === undefined) continue;
 
-            // If native Kimi tool calls were detected in this chunk stream and
-            // this is the finish chunk, replace it with a structured tool_calls
-            // chunk so the client sees the correct finish_reason.
+            // Native markup leaked and no structured tool_calls arrived: swap the
+            // finish chunk for a synthetic tool_calls chunk so the client sees the
+            // correct finish_reason and actually runs the tool.
             const isFinishChunk = item.type === "message_delta" || item.choices?.[0]?.finish_reason;
-            if (kimiToolCalls && isFinishChunk && sourceFormat === FORMATS.OPENAI) {
-              const emitted = emitKimiToolCallsChunk(controller, kimiToolCalls, state, model, sourceFormat, reqLogger);
+            if (nativeToolCalls && isFinishChunk && sourceFormat === FORMATS.OPENAI) {
+              const emitted = emitNativeToolCallsChunk(controller, nativeToolCalls, state, model, sourceFormat, reqLogger);
               if (emitted) {
                 sseEmittedCount++;
-                kimiToolCallsEmitted = true;
+                nativeToolCallsEmitted = true;
               }
               continue;
             }
@@ -588,19 +626,19 @@ export function createSSEStream(options = {}) {
           }
         }
 
-        // Fallback: if native Kimi tool-call markup leaked into the accumulated
+        // Fallback: if native tool-call markup leaked into the accumulated
         // content but no finish chunk triggered emission, synthesize a final
         // tool_calls chunk now. This covers fragmented markup and passthrough.
-        if (!kimiToolCallsEmitted && isKimiModel && normalizeKimiToolCalls) {
-          const { hasTools, message: normalized } = normalizeKimiToolCalls({
+        if (!nativeToolCallsEmitted && nativeToolCallsEnabled) {
+          const normalized = normalizeNativeToolCalls(model, {
             role: "assistant",
             content: accumulatedContent,
           });
-          if (hasTools) {
-            const emitted = emitKimiToolCallsChunk(controller, normalized.tool_calls, state, model, sourceFormat, reqLogger);
+          if (normalized) {
+            const emitted = emitNativeToolCallsChunk(controller, normalized.message.tool_calls, state, model, sourceFormat, reqLogger);
             if (emitted) {
               sseEmittedCount++;
-              kimiToolCallsEmitted = true;
+              nativeToolCallsEmitted = true;
             }
           }
         }
@@ -631,7 +669,7 @@ export function createSSEStream(options = {}) {
   });
 }
 
-export function createSSETransformStreamWithLogger(targetFormat, sourceFormat, provider = null, reqLogger = null, toolNameMap = null, model = null, connectionId = null, body = null, onStreamComplete = null, apiKey = null, normalizeKimiToolCalls = null, customToolNames = null, credentials = null) {
+export function createSSETransformStreamWithLogger(targetFormat, sourceFormat, provider = null, reqLogger = null, toolNameMap = null, model = null, connectionId = null, body = null, onStreamComplete = null, apiKey = null, customToolNames = null, credentials = null) {
   return createSSEStream({
     mode: STREAM_MODE.TRANSLATE,
     targetFormat,
@@ -645,12 +683,11 @@ export function createSSETransformStreamWithLogger(targetFormat, sourceFormat, p
     body,
     onStreamComplete,
     apiKey,
-    normalizeKimiToolCalls,
     credentials
   });
 }
 
-export function createPassthroughStreamWithLogger(provider = null, reqLogger = null, model = null, connectionId = null, body = null, onStreamComplete = null, apiKey = null, normalizeKimiToolCalls = null) {
+export function createPassthroughStreamWithLogger(provider = null, reqLogger = null, model = null, connectionId = null, body = null, onStreamComplete = null, apiKey = null) {
   return createSSEStream({
     mode: STREAM_MODE.PASSTHROUGH,
     provider,
@@ -659,7 +696,6 @@ export function createPassthroughStreamWithLogger(provider = null, reqLogger = n
     connectionId,
     body,
     onStreamComplete,
-    apiKey,
-    normalizeKimiToolCalls
+    apiKey
   });
 }
