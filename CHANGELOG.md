@@ -1,6 +1,17 @@
 # Unreleased
 
 ## Features
+- **Provider connections**: bulk enable, disable, delete, and test for the ticked
+  rows. The list already had per-row checkboxes and a Select All, but the only
+  bulk action was delete, and each action was sent as its own request. The new
+  `POST /api/providers/bulk` takes the ids the client already holds and applies
+  one action to the whole set in a single round trip, reporting per-id outcomes
+  so a partial failure is surfaced instead of silently swallowed (a grok-cli
+  account needing re-auth comes back as a failure rather than a false "enabled").
+  Select All now stays visible while rows are ticked and its box is tri-state
+  (checked / indeterminate / empty), so it can never be replaced by the action
+  bar that used to hide it. Enable All and Disable All sit in the header because
+  their scope is the whole provider, not the selection.
 - **Quota tracker**: show the subscription plan on each account card. The usage
   API already returned `plan` and the dashboard stored it, but nothing rendered
   it — the only component that read it (`ProviderLimitCard`) is not imported

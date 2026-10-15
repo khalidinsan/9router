@@ -83,6 +83,12 @@ export default function ProviderDetailPage() {
   const [oneByOneResults, setOneByOneResults] = useState({});
   const [oneByOneSummary, setOneByOneSummary] = useState(null);
   const stopOneByOneRef = useRef(false);
+  // Bulk actions over the ticked rows (enable/disable/delete) plus the
+  // selection-scoped test run, which reuses the one-by-one progress plumbing.
+  const [bulkActionRunning, setBulkActionRunning] = useState(null);
+  // `indeterminate` is a DOM property, not an attribute, so it cannot be set
+  // from JSX: the select-all box needs a ref to show the partial state.
+  const selectAllRef = useRef(null);
   // grok-cli only: re-probe auto-disabled (402/403/quota) → auto-enable on success
   const [reprobeDisabledRunning, setReprobeDisabledRunning] = useState(false);
   const [reprobeDisabledStopping, setReprobeDisabledStopping] = useState(false);
@@ -704,11 +710,11 @@ export default function ProviderDetailPage() {
     }
   };
 
-  const handleRunOneByOneTest = async () => {
-    if (oneByOneRunning || connections.length === 0) return;
+  const handleRunOneByOneTest = async (targets = connections) => {
+    if (oneByOneRunning || targets.length === 0) return;
 
     const queuedState = Object.fromEntries(
-      connections.map((connection) => [connection.id, { state: "queued", error: null }]),
+      targets.map((connection) => [connection.id, { state: "queued", error: null }]),
     );
 
     stopOneByOneRef.current = false;
@@ -716,16 +722,16 @@ export default function ProviderDetailPage() {
     setOneByOneStopping(false);
     setOneByOneCurrentConnectionId(null);
     setOneByOneResults(queuedState);
-    setOneByOneSummary({ total: connections.length, completed: 0, passed: 0, failed: 0, stopped: false });
+    setOneByOneSummary({ total: targets.length, completed: 0, passed: 0, failed: 0, stopped: false });
 
     let passed = 0;
     let failed = 0;
 
     try {
-      for (let index = 0; index < connections.length; index += 1) {
+      for (let index = 0; index < targets.length; index += 1) {
         if (stopOneByOneRef.current) {
           setOneByOneSummary({
-            total: connections.length,
+            total: targets.length,
             completed: index,
             passed,
             failed,
@@ -734,7 +740,7 @@ export default function ProviderDetailPage() {
           break;
         }
 
-        const connection = connections[index];
+        const connection = targets[index];
         setOneByOneCurrentConnectionId(connection.id);
         setOneByOneResults((prev) => ({
           ...prev,
@@ -771,14 +777,14 @@ export default function ProviderDetailPage() {
         }
 
         setOneByOneSummary({
-          total: connections.length,
+          total: targets.length,
           completed: index + 1,
           passed,
           failed,
           stopped: false,
         });
 
-        if (index < connections.length - 1) {
+        if (index < targets.length - 1) {
           await sleep(ONE_BY_ONE_DELAY_MS);
         }
       }
@@ -814,6 +820,20 @@ export default function ProviderDetailPage() {
     });
   };
 
+  // Shared runner for the selection-scoped bulk actions. One request for the
+  // whole set instead of N; the route reports per-id outcomes so a partial
+  // failure is surfaced rather than silently swallowed.
+  const runBulkAction = async (action, ids) => {
+    const res = await fetch("/api/providers/bulk", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action, ids }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data?.error || `Request failed (${res.status})`);
+    return data;
+  };
+
   const handleBulkDelete = () => {
     const count = selectedConnectionIds.length;
     if (count === 0) return;
@@ -822,22 +842,78 @@ export default function ProviderDetailPage() {
       message: `Delete ${count} connection${count > 1 ? "s" : ""}? This cannot be undone.`,
       onConfirm: async () => {
         setConfirmState(null);
-        let failed = 0;
         const idsToDelete = [...selectedConnectionIds];
-        for (const id of idsToDelete) {
-          try {
-            const res = await fetch(`/api/providers/${id}`, { method: "DELETE" });
-            if (!res.ok) failed += 1;
-          } catch (error) {
-            console.log("Error deleting connection:", error);
-            failed += 1;
+        setBulkActionRunning("delete");
+        try {
+          const { results } = await runBulkAction("delete", idsToDelete);
+          const failedIds = new Set(results.filter((r) => !r.ok).map((r) => r.id));
+          setConnections(prev => prev.filter(c => !idsToDelete.includes(c.id) || failedIds.has(c.id)));
+          setSelectedConnectionIds([]);
+          if (failedIds.size > 0) {
+            alert(`Deleted ${idsToDelete.length - failedIds.size} connection(s), ${failedIds.size} failed.`);
           }
+        } catch (error) {
+          console.log("Error deleting connections:", error);
+          alert(`Delete failed: ${error.message}`);
+        } finally {
+          setBulkActionRunning(null);
         }
-        setConnections(prev => prev.filter(c => !idsToDelete.includes(c.id)));
-        setSelectedConnectionIds([]);
-        if (failed > 0) alert(`Deleted ${idsToDelete.length - failed} connection(s), ${failed} failed.`);
       }
     });
+  };
+
+  // Enable/disable the ticked rows. Applied optimistically so the toggles move
+  // immediately, then reconciled against the per-id results (a grok-cli account
+  // needing re-auth comes back as a failure and must not look enabled).
+  const handleBulkSetActive = async (isActive) => {
+    const ids = [...selectedConnectionIds];
+    if (ids.length === 0) return;
+    setBulkActionRunning(isActive ? "enable" : "disable");
+    setConnections(prev => prev.map(c => ids.includes(c.id) ? { ...c, isActive } : c));
+    try {
+      const { results } = await runBulkAction(isActive ? "enable" : "disable", ids);
+      const failedIds = new Set(results.filter((r) => !r.ok).map((r) => r.id));
+      if (failedIds.size > 0) {
+        setConnections(prev => prev.map(c => failedIds.has(c.id) ? { ...c, isActive: !isActive } : c));
+        const firstError = results.find((r) => !r.ok)?.error;
+        alert(`${failedIds.size} of ${ids.length} could not be ${isActive ? "enabled" : "disabled"}.${firstError ? `\n\n${firstError}` : ""}`);
+      }
+    } catch (error) {
+      console.log("Error updating connection status:", error);
+      setConnections(prev => prev.map(c => ids.includes(c.id) ? { ...c, isActive: !isActive } : c));
+      alert(`Update failed: ${error.message}`);
+    } finally {
+      setBulkActionRunning(null);
+    }
+  };
+
+  // Provider-wide enable/disable, independent of the selection.
+  const handleSetAllActive = async (isActive) => {
+    const ids = connections.map((c) => c.id);
+    if (ids.length === 0) return;
+    setBulkActionRunning(isActive ? "enable-all" : "disable-all");
+    setConnections(prev => prev.map(c => ({ ...c, isActive })));
+    try {
+      const { results } = await runBulkAction(isActive ? "enable" : "disable", ids);
+      const failedIds = new Set(results.filter((r) => !r.ok).map((r) => r.id));
+      if (failedIds.size > 0) {
+        setConnections(prev => prev.map(c => failedIds.has(c.id) ? { ...c, isActive: !isActive } : c));
+        const firstError = results.find((r) => !r.ok)?.error;
+        alert(`${failedIds.size} of ${ids.length} could not be ${isActive ? "enabled" : "disabled"}.${firstError ? `\n\n${firstError}` : ""}`);
+      }
+    } catch (error) {
+      console.log("Error updating all connections:", error);
+      setConnections(prev => prev.map(c => ({ ...c, isActive: !isActive })));
+      alert(`Update failed: ${error.message}`);
+    } finally {
+      setBulkActionRunning(null);
+    }
+  };
+
+  const handleTestSelected = () => {
+    const targets = connections.filter((c) => selectedConnectionIds.includes(c.id));
+    if (targets.length === 0) return;
+    handleRunOneByOneTest(targets);
   };
 
   const handleOAuthSuccess = () => {
@@ -937,6 +1013,15 @@ export default function ProviderDetailPage() {
 
   const selectedConnections = connections.filter((conn) => selectedConnectionIds.includes(conn.id));
   const allSelected = connections.length > 0 && selectedConnectionIds.length === connections.length;
+
+  // Tri-state select-all: partial selection shows the indeterminate dash rather
+  // than an empty box, so the user can tell "some ticked" from "none ticked".
+  useEffect(() => {
+    if (selectAllRef.current) {
+      selectAllRef.current.indeterminate =
+        selectedConnectionIds.length > 0 && !allSelected;
+    }
+  }, [selectedConnectionIds, allSelected]);
 
   const toggleSelectConnection = (connectionId) => {
     setSelectedConnectionIds((prev) => (
@@ -2066,6 +2151,30 @@ export default function ProviderDetailPage() {
           <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <h2 className="text-lg font-semibold">Connections</h2>
             <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:gap-4">
+              {connections.length > 0 && (
+                <>
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    icon="toggle_on"
+                    onClick={() => handleSetAllActive(true)}
+                    disabled={!!bulkActionRunning || oneByOneRunning || reprobeDisabledRunning}
+                    title={`Enable all ${connections.length} connections for this provider`}
+                  >
+                    Enable All
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    icon="toggle_off"
+                    onClick={() => handleSetAllActive(false)}
+                    disabled={!!bulkActionRunning || oneByOneRunning || reprobeDisabledRunning}
+                    title={`Disable all ${connections.length} connections for this provider`}
+                  >
+                    Disable All
+                  </Button>
+                </>
+              )}
               {connections.length > 0 && proxyPools.length > 0 && (
                 <Button
                   size="sm"
@@ -2078,21 +2187,11 @@ export default function ProviderDetailPage() {
               )}
               {connections.length > 0 && (
                 <>
-                  {selectedConnectionIds.length > 0 && (
-                    <Button
-                      size="sm"
-                      variant="danger"
-                      icon="delete"
-                      onClick={handleBulkDelete}
-                    >
-                      Delete Selected ({selectedConnectionIds.length})
-                    </Button>
-                  )}
                   <Button
                     size="sm"
                     variant="secondary"
                     icon="sync"
-                    onClick={handleRunOneByOneTest}
+                    onClick={() => handleRunOneByOneTest()}
                     disabled={oneByOneRunning || reprobeDisabledRunning}
                   >
                     {oneByOneRunning ? "Testing Connection One-by-One..." : "Test Connection One-by-One"}
@@ -2274,9 +2373,14 @@ export default function ProviderDetailPage() {
                 </div>
               )}
               {connections.length > 0 && (
-                <div className="mb-3 flex items-center gap-2 border-b border-black/[0.03] pb-2 dark:border-white/[0.03]">
-                  <label className="flex cursor-pointer items-center gap-1.5 text-xs text-text-muted hover:text-primary">
+                <div className="mb-3 flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-black/[0.03] pb-2 dark:border-white/[0.03]">
+                  {/* Select All is permanent: it is the control that refills the
+                      selection, so it must never be replaced by the action bar.
+                      Its box is tri-state: checked when every row is ticked,
+                      indeterminate on a partial selection. */}
+                  <label className="flex shrink-0 cursor-pointer items-center gap-1.5 text-xs text-text-muted hover:text-primary">
                     <input
+                      ref={selectAllRef}
                       type="checkbox"
                       checked={allSelected}
                       onChange={toggleSelectAllConnections}
@@ -2284,6 +2388,63 @@ export default function ProviderDetailPage() {
                     />
                     Select All
                   </label>
+                  {selectedConnectionIds.length > 0 && (
+                    <>
+                      <span className="shrink-0 text-xs font-medium text-text-main">
+                        {selectedConnectionIds.length} selected
+                      </span>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <Button
+                          size="sm"
+                          variant="secondary"
+                          icon="toggle_on"
+                          onClick={() => handleBulkSetActive(true)}
+                          disabled={!!bulkActionRunning || oneByOneRunning}
+                          loading={bulkActionRunning === "enable"}
+                        >
+                          Enable
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="secondary"
+                          icon="toggle_off"
+                          onClick={() => handleBulkSetActive(false)}
+                          disabled={!!bulkActionRunning || oneByOneRunning}
+                          loading={bulkActionRunning === "disable"}
+                        >
+                          Disable
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="secondary"
+                          icon="sync"
+                          onClick={handleTestSelected}
+                          disabled={!!bulkActionRunning || oneByOneRunning}
+                        >
+                          Test
+                        </Button>
+                        {/* Destructive action sits last, separated by the gap. */}
+                        <Button
+                          size="sm"
+                          variant="danger"
+                          icon="delete"
+                          onClick={handleBulkDelete}
+                          disabled={!!bulkActionRunning || oneByOneRunning}
+                          loading={bulkActionRunning === "delete"}
+                        >
+                          Delete
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          onClick={clearSelection}
+                          disabled={!!bulkActionRunning}
+                        >
+                          Clear
+                        </Button>
+                      </div>
+                    </>
+                  )}
                 </div>
               )}
               {connectionsList}
