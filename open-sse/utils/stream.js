@@ -6,7 +6,7 @@ import { parseSSELine, hasValuableContent, fixInvalidId, formatSSE } from "./str
 import { getOpenAIResponsesEventName, isOpenAIResponsesTerminalEvent, formatIncompleteOpenAIResponsesStreamFailure } from "./responsesStreamHelpers.js";
 import { dbg, isDebugEnabled } from "./debugLog.js";
 import { extractToolNames, fuzzyMatchToolName } from "../translator/concerns/toolCall.js";
-import { normalizeNativeToolCalls, nativeToolCallParsersFor } from "./nativeToolCalls.js";
+import { normalizeNativeToolCalls, nativeToolCallParsersFor, takeEmittableContent, findOpenMarkerStart } from "./nativeToolCalls.js";
 
 import { SSE_DONE, SSE_HEADERS, SSE_HEADERS_NO_BUFFER } from "./sseConstants.js";
 
@@ -131,6 +131,9 @@ export function createSSEStream(options = {}) {
   const nativeToolCallsEnabled = nativeToolCallParsersFor(model).length > 0;
   let nativeToolCalls = nativeToolCallsEnabled ? null : undefined;
   let nativeToolCallsEmitted = false;
+  // Tail of the content stream held back because it may still become a native
+  // marker (markup is routinely split across deltas).
+  let nativeHold = "";
 
   // Track Responses API event framing for same-format passthrough (codex)
   let currentOpenAIResponsesEvent = null;
@@ -265,37 +268,54 @@ export function createSSEStream(options = {}) {
               const reasoning = delta?.reasoning_content;
 
               const content = delta?.content;
-              if (content && typeof content === "string") {
-                totalContentLength += content.length;
-                accumulatedContent += content;
-              }
               if (reasoning && typeof reasoning === "string") {
                 totalContentLength += reasoning.length;
                 accumulatedThinking += reasoning;
               }
 
-              // Native DeepSeek markup leaking into passthrough content. Kimi is
-              // handled in the translate branch below; both dialects route through
-              // the same parser list so a model id only has to be declared once.
+              // Native markup leaks as ordinary content and is routinely split
+              // across deltas, so a delta can end mid-marker (`<|tool`). Hold back
+              // any tail that could still become a marker, parse the rest, and
+              // re-parse the carry-over when the next delta completes it. Only the
+              // text actually forwarded is counted, so usage estimates stay honest.
               if (nativeToolCalls !== undefined && content && typeof content === "string") {
-                const normalized = normalizeNativeToolCalls(model, { role: "assistant", content });
-                if (normalized) {
-                  nativeToolCalls = normalized.message.tool_calls;
-                  // Swap the raw markup for any leading prose; drop it when the
-                  // markup was the entire delta so the user never sees token soup.
-                  if (normalized.message.content) {
-                    parsed.choices[0].delta.content = normalized.message.content;
-                    totalContentLength -= content.length;
-                    accumulatedContent = accumulatedContent.slice(0, accumulatedContent.length - content.length);
-                    totalContentLength += normalized.message.content.length;
-                    accumulatedContent += normalized.message.content;
-                  } else {
-                    delete parsed.choices[0].delta.content;
-                    totalContentLength -= content.length;
-                    accumulatedContent = accumulatedContent.slice(0, accumulatedContent.length - content.length);
+                const raw = nativeHold + content;
+                nativeHold = "";
+                let parsedNow = normalizeNativeToolCalls(model, { role: "assistant", content: raw });
+                let emitted;
+
+                if (parsedNow) {
+                  // Prose before the markup is still the model's answer.
+                  emitted = parsedNow.message.content || "";
+                  // A call is confirmed but the stream may still be inside the
+                  // wrapper. Anything after this point belongs to the markup
+                  // (the remaining arguments), never to the client.
+                  const openAt = findOpenMarkerStart(raw);
+                  if (openAt !== -1) nativeHold = raw.slice(openAt);
+                } else {
+                  const split = takeEmittableContent(raw);
+                  nativeHold = split.hold;
+                  emitted = split.emit;
+                  if (emitted) {
+                    parsedNow = normalizeNativeToolCalls(model, { role: "assistant", content: emitted });
+                    if (parsedNow) emitted = parsedNow.message.content || "";
                   }
-                  fieldsInjected = true;
                 }
+
+                if (parsedNow) nativeToolCalls = parsedNow.message.tool_calls;
+
+                if (emitted) {
+                  parsed.choices[0].delta.content = emitted;
+                  totalContentLength += emitted.length;
+                  accumulatedContent += emitted;
+                } else {
+                  delete parsed.choices[0].delta.content;
+                }
+
+                if (nativeHold || parsedNow) fieldsInjected = true;
+              } else if (content && typeof content === "string") {
+                totalContentLength += content.length;
+                accumulatedContent += content;
               }
 
               const extracted = extractUsage(parsed);
@@ -306,6 +326,23 @@ export function createSSEStream(options = {}) {
               responsesTerminal = isOpenAIResponsesTerminalEvent(currentOpenAIResponsesEvent, parsed);
 
               const isFinishChunk = parsed.choices?.[0]?.finish_reason;
+              // Any held tail that never became a marker is ordinary text: emit it
+              // once the stream ends, not on every line, or the holdback above
+              // would be undone the moment it is set.
+              if (nativeHold && isFinishChunk) {
+                if (!nativeToolCalls && nativeToolCallsEnabled) {
+                  const late = normalizeNativeToolCalls(model, { role: "assistant", content: nativeHold });
+                  if (late) nativeToolCalls = late.message.tool_calls;
+                }
+                if (!nativeToolCalls && nativeHold) {
+                  const leftover = `data: ${JSON.stringify({ ...parsed, choices: [{ index: 0, delta: { content: nativeHold }, finish_reason: null }] })}\n`;
+                  reqLogger?.appendConvertedChunk?.(leftover);
+                  controller.enqueue(sharedEncoder.encode(leftover));
+                  totalContentLength += nativeHold.length;
+                  accumulatedContent += nativeHold;
+                }
+                nativeHold = "";
+              }
               // Native markup leaked and no structured tool_calls arrived: swap the
               // upstream finish chunk for a synthetic tool_calls chunk so the client
               // actually runs the tool instead of printing the raw markup.

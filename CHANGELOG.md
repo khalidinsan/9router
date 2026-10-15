@@ -63,6 +63,17 @@
   paths — a forced-stream provider (WorkBuddy) answering a `stream:false`
   client returned the raw markup verbatim. Samples in the test are verbatim
   captures from production `requestDetails`.
+- **DeepSeek markup split across stream deltas**: hold the tail until the marker
+  closes. The recovery above only matched when a whole marker arrived inside one
+  SSE delta, but the model emits the markup in small pieces, so a delta routinely
+  ends mid-token (`<|tool`, `▁call▁begin|>`) and detection missed the call. Worse,
+  the parsers tolerate a missing end tag (a truncated capture is still worth
+  recovering), so an in-flight call parsed with *partial* arguments and the rest
+  of those arguments was forwarded to the client as prose. The stream now
+  withholds an unterminated marker, plus any tail that could still become one,
+  until it completes; held text that never becomes a marker is flushed on the
+  finish chunk. Verified against a mock upstream that fragments the markup into
+  12-character deltas.
 - **WorkBuddy / CodeBuddy intl**: stop 9router from aborting healthy requests.
   Both providers inherited the 60s global connect default (`FETCH_CONNECT_TIMEOUT_MS`)
   and the 360s stream-idle default, but the bundled CodeBuddy CLI they mirror
