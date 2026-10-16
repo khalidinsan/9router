@@ -308,7 +308,7 @@ export class AntigravityExecutor extends BaseExecutor {
     // thinking-only messages with no text/toolCall). Google rejects them
     // with 400 "Request contains an invalid argument".
     ?.filter(c => (c?.parts?.length ?? 0) > 0);
-    const contents = normalizeGeminiContents(rawContents);
+    const contents = normalizeGeminiContents(rawContents, model);
 
     // Sanitize tool schemas and function names before sending to Antigravity.
     let tools = body.request?.tools;

@@ -3,6 +3,14 @@ import { PROVIDERS, PROVIDER_OAUTH } from "./providers.js";
 // Fork: keep AGY CLI fingerprint (not IDE UA). createRequire is for Kimi dual-auth headers.
 import { createRequire } from "module";
 
+// Nous Portal requires attribution for some API-key models. Use a neutral
+// router identity rather than exposing a credential or claiming another client.
+export const NOUS_ATTRIBUTION = {
+  hostname: "inference-api.nousresearch.com",
+  chatCompletionsPath: "/v1/chat/completions",
+  tags: ["product=9router", "client=9router", "user=9router"],
+};
+
 // === Gemini CLI === derive từ registry gemini-cli.transport
 export const GEMINI_CLI_VERSION = PROVIDERS["gemini-cli"]?.cliVersion;
 export const GEMINI_CLI_API_CLIENT = PROVIDERS["gemini-cli"]?.apiClient;
@@ -136,7 +144,7 @@ export const AG_DEFAULT_TOOLS = new Set([
 // Match the official agy CLI User-Agent so Google accepts the request for
 // consumer-authenticated accounts that have no GCP project ID.
 export const ANTIGRAVITY_HEADERS = {
-  "User-Agent": `antigravity/cli/1.1.27 (aidev_client; os_type=${platform()}; arch=${arch()}; cl=976543523; auth_method=consumer)`
+  "User-Agent": `antigravity/cli/1.3.6 (aidev_client; os_type=${platform()}; arch=${arch()}; cl=999748552; auth_method=consumer)`
 };
 
 // Cloud Code Assist discovery/onboarding endpoints differ by client ecosystem.

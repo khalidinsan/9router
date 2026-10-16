@@ -144,9 +144,13 @@ async function runHeavyStartup() {
     .catch((e) => console.log("[GrokMaint] start failed:", e.message));
 }
 
+// Cheap local check: keeps the scheduler module (and its provider graph) unloaded
+// when nothing opted in. An enabled schedule counts on its own.
 function hasQuotaAutoPingEnabled(settings) {
-  return [settings?.claudeAutoPing, settings?.codexAutoPing]
-    .some((config) => Object.values(config?.connections || {}).some(Boolean));
+  return [settings?.claudeAutoPing, settings?.codexAutoPing].some((config) => (
+    Object.values(config?.connections || {}).some(Boolean)
+    || Object.values(config?.schedules || {}).some((schedule) => schedule?.enabled === true)
+  ));
 }
 
 // autoStartMitm() was removed deliberately — see the comment in initializeApp().

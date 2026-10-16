@@ -7,9 +7,10 @@ import { resolveTimeZone, buildChartEdges, startOfDayInTz } from "../../tz.js";
 
 function maskApiKey(key) {
   if (!key || typeof key !== "string") return null;
-  if (key.length <= 12) return key.charAt(0) + "***";
+  const trimmed = key.trim();
+  if (trimmed.length <= 12) return trimmed.charAt(0) + "***";
   // Keep the tail: keys sharing a machine-id prefix (team keys) must not collide.
-  return key.slice(0, 8) + "***" + key.slice(-4);
+  return trimmed.slice(0, 8) + "***" + trimmed.slice(-4);
 }
 
 // Stable, non-reversible group id for an API key. Masked prefixes MUST NOT
@@ -438,7 +439,9 @@ export async function getUsageStats(period = "all", timeZone) {
   let allApiKeys = [];
   try { allApiKeys = await getApiKeys(); } catch {}
   const apiKeyMap = {};
-  for (const k of allApiKeys) apiKeyMap[k.key] = { name: k.name, id: k.id, createdAt: k.createdAt };
+  for (const k of allApiKeys) {
+    if (k.key) apiKeyMap[k.key.trim()] = { name: k.name, id: k.id, createdAt: k.createdAt };
+  }
 
   // recentRequests from live history (last 100 entries enough for 20 deduped)
   const recentRows = db.all(`SELECT timestamp, provider, model, tokens, status FROM usageHistory ORDER BY id DESC LIMIT 100`);
@@ -700,8 +703,8 @@ export async function getUsageStats(period = "all", timeZone) {
 
     for (const r of filtered) {
       const tokens = parseJson(r.tokens, {}) || {};
-      const promptTokens = tokens.prompt_tokens || 0;
-      const completionTokens = tokens.completion_tokens || 0;
+      const promptTokens = tokens.prompt_tokens || tokens.input_tokens || r.promptTokens || 0;
+      const completionTokens = tokens.completion_tokens || tokens.output_tokens || r.completionTokens || 0;
       const cachedTokens = tokens.cached_tokens || tokens.cache_read_input_tokens || 0;
       const entryCost = r.cost || 0;
       const providerDisplayName = providerNodeNameMap[r.provider] || r.provider;

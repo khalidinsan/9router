@@ -273,7 +273,7 @@ describe("fetchAntigravityWeeklyQuota", () => {
     // Fork: CLI fingerprint + MITM anti-loop flag on all quota traffic
     // (the IDE UA is only for web-search).
     const { platform, arch } = await import("os");
-    const forkUA = `antigravity/cli/1.1.27 (aidev_client; os_type=${platform()}; arch=${arch()}; cl=976543523; auth_method=consumer)`;
+    const forkUA = `antigravity/cli/1.3.6 (aidev_client; os_type=${platform()}; arch=${arch()}; cl=999748552; auth_method=consumer)`;
     expect(proxyAwareFetch).toHaveBeenCalledWith(
       "https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary",
       expect.objectContaining({

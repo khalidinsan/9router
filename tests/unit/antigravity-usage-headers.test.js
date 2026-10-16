@@ -16,7 +16,7 @@ vi.mock("../../open-sse/utils/proxyFetch.js", () => ({
   proxyAwareFetch,
 }));
 
-const AGY_CLI_UA = `antigravity/cli/1.1.27 (aidev_client; os_type=${platform()}; arch=${arch()}; cl=976543523; auth_method=consumer)`;
+const AGY_CLI_UA = `antigravity/cli/1.3.6 (aidev_client; os_type=${platform()}; arch=${arch()}; cl=999748552; auth_method=consumer)`;
 
 describe("Antigravity usage headers", () => {
   beforeEach(() => proxyAwareFetch.mockClear());

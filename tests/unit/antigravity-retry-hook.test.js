@@ -7,7 +7,7 @@ import { platform, arch } from "os";
 
 const MAX_RETRY_AFTER_MS = 5000;
 const TRANSIENT_MAX_MS = 3000;
-const FORK_UA = `antigravity/cli/1.1.27 (aidev_client; os_type=${platform()}; arch=${arch()}; cl=976543523; auth_method=consumer)`;
+const FORK_UA = `antigravity/cli/1.3.6 (aidev_client; os_type=${platform()}; arch=${arch()}; cl=999748552; auth_method=consumer)`;
 
 function res(status, headers = {}, body = null) {
   return {

@@ -33,10 +33,13 @@ export default {
     // 60s connect timeout was the dominant contributor to multi-minute retries.
     timeoutMs: 10_000,
     headers: {
-      // Match the official agy CLI User-Agent (MITM-verified against agy 1.1.27:
-      // `antigravity/cli/1.1.27 (... cl=976543523 ...)`). Google rejects requests from
-      // consumer-authenticated accounts when the old "antigravity/X.X.X" UA is used.
-      "User-Agent": `antigravity/cli/1.1.27 (aidev_client; os_type=${platform()}; arch=${arch()}; cl=976543523; auth_method=consumer)`,
+      // Match the official agy CLI User-Agent. Captured live from agy 1.3.6 via a
+      // mitmproxy CONNECT on daily-cloudcode-pa.googleapis.com:
+      // `antigravity/cli/1.3.6 (aidev_client; os_type=…; arch=…; cl=999748552; auth_method=consumer)`.
+      // Google rejects requests from consumer-authenticated accounts when the old
+      // "antigravity/X.X.X" UA is used. Bump `cl=` together with the version: both
+      // are static constants compiled into the agy binary.
+      "User-Agent": `antigravity/cli/1.3.6 (aidev_client; os_type=${platform()}; arch=${arch()}; cl=999748552; auth_method=consumer)`,
     },
     retry: {
       // 429 = quota exhausted with minutes-long reset: retrying in place only
@@ -76,6 +79,7 @@ export default {
     clientSecret: "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",
   },
   models: [
+    { id: "gemini-4-argon-high", name: "Gemini 4 Argon (High)", upstreamModelId: "gemini-4-argon-high(high)" },
     { id: "gemini-3.8-flash-high", name: "Gemini 3.8 Flash (High)", upstreamModelId: "gemini-3.8-flash-high(high)" },
     { id: "gemini-3.8-flash-medium", name: "Gemini 3.8 Flash (Medium)", upstreamModelId: "gemini-3.8-flash-medium(medium)" },
     { id: "gemini-3.8-flash-low", name: "Gemini 3.8 Flash (Low)", upstreamModelId: "gemini-3.8-flash-low(low)" },
