@@ -44,6 +44,27 @@
   API like 1.2.
 
 ## Fixes
+- **WorkBuddy**: send the official conversation headers so model calls pass
+  channel verification. Accounts the gateway has risk-flagged answer every call
+  with HTTP 400 `{code:11128, msg:"conversation id missing"}` — displayTips:
+  "This call failed channel verification, possibly because it was not sent from
+  an official client." The account is not banned: the same token still bills,
+  and healthy accounts stream fine with the identical minimal request. The
+  bundled CLI (2.161.0) attaches six conversation headers to every model call
+  from its fetch adapter — `X-Conversation-ID`,
+  `X-Conversation-Request-ID`, `X-Conversation-Message-ID`, `X-Request-ID`,
+  `X-Agent-Intent: craft`, `X-Agent-Type: main` — and a live bisect against a
+  flagged account showed the deciding field is a **non-empty
+  `X-Conversation-Request-ID`**: all six present but that one empty → 11128;
+  with it filled (any value) the gateway accepts and the call proceeds to its
+  real quota/billing result. 9router now emits all six on every chat request,
+  with UUIDv7 ids to match the client's time-ordered format (`01a1422b-67cd-...`),
+  one stable `X-Conversation-ID` per (connection, first user message) so every
+  turn of a chat reports the same conversation, and fresh per-request
+  message/request ids. Verified live: the flagged account moves from 11128 to
+  its genuine 429 quota answer, a healthy account still returns 200 streaming.
+  The fingerprint also moves 2.156.0 → 2.161.0 for the installed WorkBuddy AI
+  5.8.4.
 - **DeepSeek V4.1 Flash**: recover native tool-call markup that leaks into
   `content`. The model intermittently emits its raw token format instead of
   populating `tool_calls`, so the client rendered the markup as text and never

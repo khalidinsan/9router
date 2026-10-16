@@ -1188,11 +1188,11 @@
     "timeoutMs": 180000,
     "stallTimeoutMs": 600000,
     "headers": {
-      "User-Agent": "CLI/2.156.0 WorkBuddy AI/2.156.0",
+      "User-Agent": "CLI/2.161.0 WorkBuddy AI/2.161.0",
       "X-Product": "SaaS",
       "X-IDE-Type": "CLI",
       "X-IDE-Name": "CLI",
-      "X-IDE-Version": "2.156.0",
+      "X-IDE-Version": "2.161.0",
       "x-requested-with": "XMLHttpRequest",
       "x-codebuddy-request": "1",
       "X-Domain": "www.workbuddy.ai"
@@ -1210,7 +1210,7 @@
         "attempts": 0
       }
     },
-    "clientVersion": "2.156.0",
+    "clientVersion": "2.161.0",
     "productName": "WorkBuddy AI",
     "format": "openai",
     "tokenUrl": "https://www.workbuddy.ai/v2/plugin/auth/token"
