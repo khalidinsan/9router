@@ -7,6 +7,13 @@ import { probeBedrockCredentials } from "open-sse/executors/bedrock.js";
 import { resolveOllamaLocalHost, PROVIDERS } from "open-sse/config/providers.js";
 import { CODEX_CLI_VERSION } from "open-sse/config/appConstants.js";
 import { kiroCliRefreshUserAgent } from "open-sse/config/kiroClient.js";
+import {
+  PERCH_APP_URL,
+  PERCH_AUTH_CONFIG_PATH,
+  PERCH_TICKET_PATH,
+  PERCH_LOCALE_HEADER,
+  perchUserAgent,
+} from "open-sse/config/perch.js";
 import { GROK_CLI_PAGER_USER_AGENT, GROK_CLI_VERSION } from "open-sse/config/grokCli.js";
 import {
   NOUS_CHAT_COMPLETIONS_URL,
@@ -925,6 +932,37 @@ async function testApiKeyConnection(connection, effectiveProxy = null) {
         }, effectiveProxy);
         const valid = res.status !== 401 && res.status !== 403;
         return { valid, error: valid ? null : "Invalid API key" };
+      }
+      case "perch": {
+        // Perch has no /models route. The cheapest accepted-or-not probe is the
+        // CLI auth config (public, no token) followed by a ticket mint: the mint
+        // answers 401/403 for a rejected session and 200 for a live one, and
+        // unlike a model call it spends no allowance.
+        const configRes = await fetchWithConnectionProxy(
+          `${PERCH_APP_URL}${PERCH_AUTH_CONFIG_PATH}`,
+          { headers: { Accept: "application/json" } },
+          effectiveProxy,
+        );
+        if (!configRes.ok) return { valid: false, error: "Perch auth config unreachable" };
+        const res = await fetchWithConnectionProxy(
+          `${PERCH_APP_URL}${PERCH_TICKET_PATH}`,
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${connection.accessToken || connection.apiKey}`,
+              "User-Agent": perchUserAgent(),
+              [PERCH_LOCALE_HEADER]: "en",
+            },
+            body: JSON.stringify({ surface: "cli", profile: "standard" }),
+          },
+          effectiveProxy,
+        );
+        if (res.status === 401 || res.status === 403) {
+          return { valid: false, error: "Perch session rejected — re-run `perch login`" };
+        }
+        // 429 means the session IS valid; the account is just between turns.
+        return { valid: true, error: null };
       }
       case "workbuddy": {
         // WorkBuddy exposes no /models route; the billing meter endpoint answers

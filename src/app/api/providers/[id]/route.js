@@ -6,6 +6,7 @@ import {
   deleteProviderConnection,
 } from "@/models";
 import { buildGrokCliManualEnableUpdate } from "open-sse/services/grokCliSafety.js";
+import { parsePerchCredential } from "open-sse/config/perch.js";
 import { toProviderConnectionResponse, usesAwsCredentialForm } from "@/lib/providerConnectionResponse";
 
 function normalizeProxyConfig(body = {}) {
@@ -135,6 +136,20 @@ export async function PUT(request, { params }) {
       }
     }
     if (apiKey && existing.authType === "apikey") updateData.apiKey = apiKey;
+    // Perch stores its CLI session split across accessToken/refreshToken (see
+    // POST /api/providers). Re-pasting a fresh session is the recovery path
+    // after a sign-out, so accept the same credential shape on edit.
+    if (existing.provider === "perch" && (body.accessToken || apiKey)) {
+      const parsed = parsePerchCredential(body.accessToken || apiKey);
+      if (parsed.accessToken) {
+        updateData.accessToken = parsed.accessToken;
+        if (parsed.refreshToken) updateData.refreshToken = parsed.refreshToken;
+        if (parsed.expiresAt) updateData.expiresAt = parsed.expiresAt;
+        updateData.authType = "apikey";
+        updateData.testStatus = testStatus ?? "unknown";
+        updateData.lastError = null;
+      }
+    }
     if (testStatus !== undefined) updateData.testStatus = testStatus;
     if (lastError !== undefined) updateData.lastError = lastError;
     if (lastErrorAt !== undefined) updateData.lastErrorAt = lastErrorAt;

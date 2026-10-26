@@ -31,6 +31,7 @@ import WindsurfExecutor from "./windsurf.js";
 import { DefaultExecutor } from "./default.js";
 import { MinimaxCodeExecutor } from "./minimax-code.js";
 import { DevinCliExecutor } from "./devin-cli.js";
+import { PerchExecutor } from "./perch.js";
 
 const executors = {
   antigravity: new AntigravityExecutor(),
@@ -71,6 +72,7 @@ const executors = {
   "minimax-code": new MinimaxCodeExecutor("minimax-code"),
   "minimax-code-global": new MinimaxCodeExecutor("minimax-code-global"),
   "devin-cli": new DevinCliExecutor(),
+  perch: new PerchExecutor(),
   bedrock: new BedrockExecutor(),
   br: new BedrockExecutor(), // Alias for bedrock
   // Second Bedrock entry for xAI's Grok, which speaks OpenAI Chat Completions rather than the

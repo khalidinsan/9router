@@ -15,6 +15,7 @@ import {
   refreshCodebuddyToken,
   refreshCodebuddyIntlToken,
   refreshWorkbuddyToken,
+  refreshPerchToken,
   refreshTraeToken,
   refreshZedToken,
   refreshWindsurfToken,
@@ -38,6 +39,7 @@ export {
   refreshCodebuddyToken,
   refreshCodebuddyIntlToken,
   refreshWorkbuddyToken,
+  refreshPerchToken,
   refreshTraeToken,
   refreshZedToken,
   refreshWindsurfToken,
@@ -153,6 +155,7 @@ const REFRESH_HANDLERS = {
   "codebuddy-cn": (c, log) => refreshCodebuddyToken(c.refreshToken, log),
   "codebuddy-intl": (c, log) => refreshCodebuddyIntlToken(c.refreshToken, log),
   workbuddy: (c, log) => refreshWorkbuddyToken(c.refreshToken, log),
+  perch: (c, log) => refreshPerchToken(c.refreshToken, log),
   trae: (c, log) => refreshTraeToken(c.refreshToken, c, log),
   cline: (c, log) => refreshClineToken(c.refreshToken, log),
   // ClinePass shares Cline's WorkOS auth endpoints, so the same refresh works.

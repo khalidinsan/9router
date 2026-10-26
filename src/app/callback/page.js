@@ -33,9 +33,27 @@ function CallbackContent() {
     // (same origin) or the Codex helper that listens on a fixed loopback port.
     // Any other origin is treated as hostile (drive-by attacker that opened
     // the popup against the well-known redirect_uri to phish the code).
+    //
+    // The loopback twin is included because some providers must redirect to
+    // 127.0.0.1 while the dashboard is opened on localhost (Perch's Supabase
+    // project allowlists only 127.0.0.1). Both are loopback on this machine,
+    // so a code delivered between them crosses no trust boundary.
+    const loopbackTwin = (() => {
+      try {
+        const url = new URL(window.location.origin);
+        if (url.hostname === "localhost") url.hostname = "127.0.0.1";
+        else if (url.hostname === "127.0.0.1") url.hostname = "localhost";
+        else return null;
+        return url.origin;
+      } catch {
+        return null;
+      }
+    })();
+
     const expectedOrigins = [
       window.location.origin, // Same origin (for most providers)
       "http://localhost:1455", // Codex specific port
+      ...(loopbackTwin ? [loopbackTwin] : []),
     ];
 
     // Method 1: postMessage to opener (popup mode)

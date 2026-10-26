@@ -3,6 +3,7 @@ import { OAUTH_ENDPOINTS, GITHUB_COPILOT, buildKimiHeaders } from "../../config/
 import { proxyAwareFetch } from "../../utils/proxyFetch.js";
 import { dedupRefresh } from "./dedup.js";
 import { workbuddyRefreshHeaders } from "../../config/workbuddy.js";
+import { PERCH_APP_URL, PERCH_AUTH_CONFIG_PATH } from "../../config/perch.js";
 import { buildExternalIdpRefreshParams } from "../../../src/lib/oauth/kiroExternalIdp.js";
 import { kiroCliRefreshUserAgent } from "../../config/kiroClient.js";
 
@@ -894,5 +895,77 @@ export async function refreshNousToken(refreshToken, log) {
       log?.error?.("TOKEN_REFRESH", `Error refreshing Nous token: ${error.message}`);
       return null;
     }
+  }, log);
+}
+
+// Perch refresh — Supabase GoTrue refresh_token grant.
+//
+// The Perch CLI stores { accessToken, refreshToken, expiresAt } in the macOS
+// keychain and refreshes through the project's GoTrue endpoint using the
+// project's PUBLIC anon key, which the app publishes at
+// /api/perch-terminal/cli-auth/config (no auth needed). Tokens live 1 hour and
+// the refresh token is stable across rotations, so a stored one keeps working
+// until the user signs out.
+let _perchAuthConfig = null;
+
+async function perchAuthConfig(log) {
+  if (_perchAuthConfig) return _perchAuthConfig;
+  try {
+    const response = await proxyAwareFetch(`${PERCH_APP_URL}${PERCH_AUTH_CONFIG_PATH}`, {
+      method: "GET",
+      headers: { Accept: "application/json" },
+    });
+    if (!response.ok) return null;
+    const data = await response.json();
+    if (!data?.supabaseUrl || !data?.supabaseAnonKey) return null;
+    _perchAuthConfig = { url: data.supabaseUrl, anonKey: data.supabaseAnonKey };
+    return _perchAuthConfig;
+  } catch (error) {
+    log?.warn?.("TOKEN_REFRESH", `Perch auth config fetch failed: ${error?.message || error}`);
+    return null;
+  }
+}
+
+export async function refreshPerchToken(refreshToken, log) {
+  if (!refreshToken) return null;
+  return dedupRefresh("perch", refreshToken, async () => {
+    const config = await perchAuthConfig(log);
+    if (!config) {
+      log?.error?.("TOKEN_REFRESH", "Perch refresh skipped: no Supabase config");
+      return null;
+    }
+    const response = await proxyAwareFetch(
+      `${config.url}/auth/v1/token?grant_type=refresh_token`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          apikey: config.anonKey,
+          Authorization: `Bearer ${config.anonKey}`,
+        },
+        body: JSON.stringify({ refresh_token: refreshToken }),
+      }
+    );
+    if (!response.ok) {
+      const text = await response.text().catch(() => "");
+      log?.error?.("TOKEN_REFRESH", "Failed to refresh Perch token", {
+        status: response.status,
+        error: text.slice(0, 200),
+      });
+      return null;
+    }
+    const data = await response.json().catch(() => null);
+    if (!data?.access_token) {
+      log?.error?.("TOKEN_REFRESH", "Perch refresh returned no access token");
+      return null;
+    }
+    log?.info?.("TOKEN_REFRESH", "Successfully refreshed Perch token", {
+      expiresIn: data.expires_in,
+    });
+    return {
+      accessToken: data.access_token,
+      refreshToken: data.refresh_token || refreshToken,
+      expiresIn: data.expires_in,
+    };
   }, log);
 }

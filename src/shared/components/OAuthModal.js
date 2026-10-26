@@ -367,6 +367,13 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
         redirectUri = "http://localhost:1455/auth/callback";
       } else if (provider === "xai") {
         redirectUri = "http://127.0.0.1:56121/callback";
+      } else if (provider === "perch") {
+        // Perch's Supabase project allowlists 127.0.0.1, not localhost: a
+        // `localhost` redirect_to is silently replaced with the project's
+        // site_url (chat.perchai.app/sign-in?auth=error) instead of coming
+        // back to us. Same origin for the dashboard, so the popup relay and
+        // the OAuth cookie both still work.
+        redirectUri = `http://127.0.0.1:${appPort}/callback`;
       } else {
         redirectUri = `http://localhost:${appPort}/callback`;
       }
@@ -600,7 +607,10 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
 
     // Method 1: postMessage from popup
     const handleMessage = (event) => {
-      // Allow messages from same origin or localhost (any port)
+      // Allow messages from same origin or localhost (any port).
+      // The loopback twin counts: some providers must redirect to 127.0.0.1
+      // while the dashboard runs on localhost, so the popup's origin differs
+      // from ours even though both are this machine.
       const isLocalhost = event.origin.includes("localhost") || event.origin.includes("127.0.0.1");
       const isSameOrigin = event.origin === window.location.origin;
       if (!isLocalhost && !isSameOrigin) return;

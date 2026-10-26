@@ -9,6 +9,7 @@ import {
 import { APIKEY_PROVIDERS } from "@/shared/constants/config";
 import { AI_PROVIDERS, FREE_TIER_PROVIDERS, WEB_COOKIE_PROVIDERS, isOpenAICompatibleProvider, isAnthropicCompatibleProvider, isCustomEmbeddingProvider } from "@/shared/constants/providers";
 import { normalizeProviderId, normalizeProviderSpecificData } from "@/lib/providerNormalization";
+import { parsePerchCredential, PERCH_APP_URL } from "open-sse/config/perch.js";
 import { toProviderConnectionResponse } from "@/lib/providerConnectionResponse";
 
 export const dynamic = "force-dynamic";
@@ -85,6 +86,49 @@ export async function POST(request) {
   try {
     const body = await request.json();
     const provider = normalizeProviderId(body.provider);
+
+    // Perch: the connection carries the Perch CLI session. The credential field
+    // holds that session verbatim (the JSON the keychain stores), so split it
+    // into accessToken + refreshToken here — a bare access token would die in an
+    // hour, and only a stored refresh token keeps the connection alive.
+    if (provider === "perch") {
+      const parsed = parsePerchCredential(body.apiKey ?? body.accessToken);
+      if (!parsed.accessToken) {
+        return NextResponse.json({ error: "Perch session is required" }, { status: 400 });
+      }
+      const expiresAt =
+        (typeof body.expiresAt === "string" && body.expiresAt.trim()
+          ? body.expiresAt.trim()
+          : null) || parsed.expiresAt;
+      const connection = await createProviderConnection({
+        provider: "perch",
+        // Matches the registry's category so the dashboard's API-key section
+        // (which stats by authType) actually shows the connection. Token refresh
+        // is keyed on the provider id, not this field.
+        authType: "apikey",
+        name:
+          (typeof body.name === "string" && body.name.trim()) ||
+          body.email ||
+          "Perch Terminal",
+        email: body.email || null,
+        displayName: body.displayName || body.email || "Perch Terminal",
+        apiKey: "",
+        accessToken: parsed.accessToken,
+        refreshToken: parsed.refreshToken,
+        expiresAt,
+        isActive: true,
+        testStatus: "unknown",
+        priority: body.priority || 1,
+        providerSpecificData: {
+          authMethod: "cli_session",
+          userId: parsed.userId,
+          workspaceId: parsed.workspaceId,
+          appUrl: PERCH_APP_URL,
+          ...(body.providerSpecificData || {}),
+        },
+      });
+      return NextResponse.json({ connection }, { status: 201 });
+    }
 
     // Farm import: Grok Build OAuth tokens → grok-cli connection (same as device login).
     // Body: { provider: "grok-cli", accessToken, refreshToken?, idToken?, email?, name?, displayName?, expiresIn?, expiresAt?, scope? }
