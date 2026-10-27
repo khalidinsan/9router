@@ -91,6 +91,9 @@ graphify-out/*
 .kiro/
 9router-*
 
+# WorkBuddy local workspace state (agent notes, not source)
+.workbuddy-ai/
+
 # Local sensitive / temp files
 .engine-token.txt
 .tmp-prov.json
