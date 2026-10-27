@@ -81,6 +81,7 @@ export default {
     },
 
     // ── Official TUI menu (distinct models; do not collapse 4.6 → 4.5) ──
+    { id: "grok-4.7", name: "Grok 4.7" },
     { id: "grok-4.6", name: "Grok 4.6" },
     { id: "grok-4.6-build", name: "Grok 4.6 Build", upstreamModelId: "grok-4.6" },
     { id: "grok-4.6-high", name: "Grok 4.6 (High)", upstreamModelId: "grok-4.6" },

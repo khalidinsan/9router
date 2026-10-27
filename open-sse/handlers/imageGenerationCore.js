@@ -97,7 +97,7 @@ export async function handleImageGenerationCore({
         mapped >= 400 && mapped < 600 ? mapped : HTTP_STATUS.BAD_GATEWAY;
       const errMsg = formatProviderError(error, provider, model, status);
       log?.debug?.("IMAGE", `Executor error status=${status}: ${errMsg}`);
-      return createErrorResult(status, errMsg);
+      return createErrorResult(status, errMsg, error.resetsAtMs);
     }
   }
 

@@ -71,8 +71,11 @@ describe("OpenAI → CommandCode", () => {
         { type: "image_url", image_url: { url: "data:image/png;base64,BBBB" } },
       ] }],
     });
-    const img = out.params.messages.find((m) => m.role === "user").content.find((b) => b.type === "image");
-    expect(img).toBeDefined();
-    expect(img.source).toEqual({ type: "base64", media_type: "image/png", data: "BBBB" });
+    expect(JSON.stringify(out)).toContain("BBBB");
+    expect(JSON.stringify(out)).not.toContain("[image omitted]");
+    expect(out.params.messages[0].content).toEqual([
+      { type: "text", text: "look" },
+      { type: "image", image: "data:image/png;base64,BBBB", mimeType: "image/png", mediaType: "image/png" },
+    ]);
   });
 });

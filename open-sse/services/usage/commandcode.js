@@ -30,6 +30,7 @@ const WHOAMI_URL = USAGE.whoamiUrl || deriveWhoamiUrl(CREDITS_URL);
 
 const PLAN_LABELS = {
   "individual-go": "Go",
+  "individual-go-v1": "Go",
   "individual-goat": "GOAT",
   "individual-pro": "Pro",
   "individual-pro-v1": "Pro",
@@ -50,6 +51,7 @@ const PLAN_LABELS = {
  */
 const PLAN_MONTHLY_CREDITS = {
   "individual-go": 10,
+  "individual-go-v1": 10,
   "individual-goat": 70,
   "individual-pro": 80,
   "individual-pro-v1": 80,
@@ -59,8 +61,24 @@ const PLAN_MONTHLY_CREDITS = {
   "teams-pro": 40,
 };
 
-function withQuery(route, params) {
-  const query = new URLSearchParams(
+const PLAN_ID_ALIASES = {
+  go: "individual-go",
+  "go-v1": "individual-go-v1",
+  goat: "individual-goat",
+  pro: "individual-pro",
+  provider: "individual-provider",
+  max: "individual-max",
+  ultra: "individual-ultra",
+};
+
+function normalizePlanId(planId) {
+  if (typeof planId !== "string") return null;
+  const normalized = planId.trim().toLowerCase();
+  return PLAN_ID_ALIASES[normalized] || normalized || null;
+}
+
+function qs(route, params) {
+  const s = new URLSearchParams(
     Object.entries(params || {}).filter(([, v]) => v != null),
   ).toString();
   if (!query) return route;
@@ -78,10 +96,14 @@ function formatCodexWindow(window) {
   const used = cap > 0 ? roundPct((usedAbs / cap) * 100) : window.exceeded ? 100 : 0;
   return {
     used,
-    total: 100,
-    remaining: Math.max(0, 100 - used),
-    resetAt: parseResetTime(window.resetAt ?? window.reset_at ?? null),
+    total,
+    percentage: total > 0 ? Math.round((used / total) * 100) : 0,
+    colorPercentage: total > 0 ? Math.round(((total - used) / total) * 100) : 100,
+    percentageIsUsed: true,
+    remaining: Math.max(0, total - used),
     unlimited: false,
+    resetAt: parseResetTime(win.resetAt),
+    emptyMessage: used === 0 && !win.resetAt ? "No usage in this window" : null,
   };
 }
 
@@ -188,13 +210,39 @@ export async function getCommandCodeUsage(apiKey = null, proxyOptions = null) {
       };
     }
 
-    const credits = await creditsRes.json().catch(() => null);
-    if (!credits || typeof credits !== "object") {
-      return { message: "Command Code usage response was not JSON." };
-    }
+    const creditsBody = await creditsRes.json().catch(() => ({}));
+    const subsBody = await subsRes.json().catch(() => ({}));
+    const rawPlanId = subsBody?.data?.planId ?? null;
+    const planId = normalizePlanId(rawPlanId);
+    const plan = (planId && PLAN_NAMES[planId]) || rawPlanId || "Command Code";
+    const cap = planId ? (PLAN_CAPS[planId] || 0) : 0;
+    const c = creditsBody?.credits || {};
+    const remaining =
+      toFiniteNumber(c.monthlyCredits, 0) +
+      toFiniteNumber(c.purchasedCredits, 0) +
+      toFiniteNumber(c.freeCredits, 0);
+    const used = cap > 0 ? Math.max(0, cap - remaining) : 0;
+    const total = cap > 0 ? cap : remaining;
 
-    const subscription = subsRes?.ok ? await subsRes.json().catch(() => null) : null;
-    return parseCommandCodeUsage(credits, subscription);
+    const quotas = {};
+    quotas.Credits = {
+      name: "Monthly",
+      used,
+      total,
+      percentage: cap > 0 ? Math.round((used / cap) * 100) : 0,
+      colorPercentage: cap > 0 ? Math.round((remaining / cap) * 100) : 100,
+      percentageIsUsed: true,
+      remaining,
+      unlimited: cap <= 0,
+      resetAt: parseResetTime(subsBody?.data?.currentPeriodEnd),
+    };
+
+    const fiveHour = windowQuota(creditsBody?.windowLimits?.fiveHour);
+    if (fiveHour) quotas["Session (5h)"] = { ...fiveHour, name: "5-hour limit" };
+    const weekly = windowQuota(creditsBody?.windowLimits?.weekly);
+    if (weekly) quotas.Weekly = { ...weekly, name: "Weekly limit" };
+
+    return { plan, quotas };
   } catch (error) {
     return { message: `Failed to fetch Command Code usage: ${error.message}` };
   }

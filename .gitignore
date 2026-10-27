@@ -110,3 +110,5 @@ debug.log
 
 # Disposable data dir used by the vitest suite (tests/vitest.config.js)
 .tmp-test-data/
+
+.scratch/
