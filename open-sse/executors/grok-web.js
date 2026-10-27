@@ -397,38 +397,6 @@ export class GrokWebExecutor extends BaseExecutor {
 
     const traceId = randomHex(16);
     const spanId = randomHex(8);
-    const headers = {
-      Accept: "*/*",
-      "Accept-Encoding": "gzip, deflate, br, zstd",
-      "Accept-Language": "en-US,en;q=0.9",
-      Baggage: "sentry-environment=production,sentry-release=d6add6fb0460641fd482d767a335ef72b9b6abb8,sentry-public_key=b311e0f2690c81f25e2c4cf6d4f7ce1c",
-      "Cache-Control": "no-cache",
-      "Content-Type": "application/json",
-      Origin: "https://grok.com",
-      Pragma: "no-cache",
-      Referer: "https://grok.com/",
-      "Sec-Ch-Ua": '"Chromium";v="146", "Not(A:Brand";v="24"',
-      "Sec-Ch-Ua-Mobile": "?0",
-      "Sec-Ch-Ua-Platform": '"macOS"',
-      "Sec-Fetch-Dest": "empty",
-      "Sec-Fetch-Mode": "cors",
-      "Sec-Fetch-Site": "same-origin",
-      "User-Agent": GROK_TLS_USER_AGENT,
-      "x-statsig-id": generateStatsigId(),
-      "Browser-Id": crypto.randomUUID(),
-      "x-xai-request-id": crypto.randomUUID(),
-      traceparent: `00-${traceId}-${spanId}-00`,
-    };
-
-    // Full cookie header: sso + paired sso-rw + cf_clearance/__cf_bm when the
-    // pasted blob carries them (Grok's anti-bot and Cloudflare both need them).
-    if (credentials.apiKey) {
-      const cookieHeader = buildGrokCookieHeader(credentials.apiKey);
-      if (cookieHeader) headers["Cookie"] = cookieHeader;
-    }
-
-    const traceId = randomHex(16);
-    const spanId = randomHex(8);
     const headers = buildGrokWebHeaders({
       cookie,
       userAgent: GROK_USER_AGENT,
