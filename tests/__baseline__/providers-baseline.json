@@ -1196,11 +1196,11 @@
     "timeoutMs": 180000,
     "stallTimeoutMs": 600000,
     "headers": {
-      "User-Agent": "CLI/2.161.0 WorkBuddy AI/2.161.0",
+      "User-Agent": "WorkBuddy/5.8.4 CLI/2.161.0",
       "X-Product": "SaaS",
-      "X-IDE-Type": "CLI",
-      "X-IDE-Name": "CLI",
-      "X-IDE-Version": "2.161.0",
+      "X-IDE-Type": "WorkBuddy",
+      "X-IDE-Name": "WorkBuddy",
+      "X-IDE-Version": "5.8.4",
       "x-requested-with": "XMLHttpRequest",
       "x-codebuddy-request": "1",
       "X-Domain": "www.workbuddy.ai"
@@ -1385,5 +1385,23 @@
     },
     "clientId": "hermes-cli",
     "tokenUrl": "https://portal.nousresearch.com/api/oauth/token"
+  },
+  "perch": {
+    "baseUrl": "https://app.perchai.app/api/perch-terminal/model-call",
+    "format": "openai",
+    "forceStream": true,
+    "timeoutMs": 180000,
+    "stallTimeoutMs": 600000,
+    "headers": {},
+    "auth": {
+      "combined": true,
+      "header": "Authorization",
+      "scheme": "bearer"
+    },
+    "retry": {
+      "429": 1,
+      "502": 1,
+      "503": 1
+    }
   }
 }

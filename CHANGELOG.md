@@ -65,6 +65,23 @@
   its genuine 429 quota answer, a healthy account still returns 200 streaming.
   The fingerprint also moves 2.156.0 → 2.161.0 for the installed WorkBuddy AI
   5.8.4.
+- **WorkBuddy**: match the 5.8.4 desktop fingerprint instead of the standalone
+  CLI one. Read out of the installed bundle rather than a single capture: the
+  desktop spawns the bundled `@genie/agent-cli` (2.161.0) with
+  `CLIENT_INFO_PLATFORM=WorkBuddy`, `CLIENT_INFO_PLATFORM_VERSION=5.8.4`,
+  `CLIENT_INFO_IDE_TYPE=WorkBuddy` and `CLIENT_INFO_USER_AGENT_EXTENSION=CLI/2.161.0`,
+  and the CLI composes its UA from those, so a live sidecar sends
+  `User-Agent: WorkBuddy/5.8.4 CLI/2.161.0` — not
+  `CLI/2.161.0 WorkBuddy AI/2.161.0`. `X-IDE-Type`/`X-IDE-Name` follow the
+  desktop platform (`WorkBuddy`) and `X-IDE-Version` is the desktop version
+  (5.8.4). Two conversation headers the CLI also stamps are now sent:
+  `X-Root-Request-ID` (mirrors the conversation request id) and
+  `X-Agent-Purpose: conversation`. `X-Conversation-ID` is a UUIDv4 like the
+  CLI's session ids (the `*.jsonl` files under `~/.workbuddy-ai/projects`),
+  while the per-request message/request ids stay bare-hex UUIDv7 — the CLI
+  validates client-supplied request ids as "lowercase UUIDv7 encoded as 32
+  hexadecimal characters" and its own live `requestId` is 32 hex
+  (`01a17b38a11e7517bd1a81950cb643fe`).
 - **DeepSeek V4.1 Flash**: recover native tool-call markup that leaks into
   `content`. The model intermittently emits its raw token format instead of
   populating `tool_calls`, so the client rendered the markup as text and never

@@ -1,19 +1,49 @@
 /**
  * WorkBuddy AI wire constants.
  *
- * Captured from the CodeBuddy Code CLI that WorkBuddy bundles, by proxying a
- * live chat turn through a local capture server. Keep these in sync with the
- * app if Tencent bumps the client version — the gateway accepts older
- * fingerprints, but it is the identity the access token was minted for.
+ * Verified against the installed WorkBuddy AI 5.8.4 bundle
+ * (/Applications/WorkBuddy AI.app) rather than only a one-off capture:
  *
- * Version bumped 2.137.1 → 2.156.0 → 2.161.0 to match the installed
- * WorkBuddy AI 5.8.4 (/Applications/WorkBuddy AI.app .../cli/package.json
- * publishConfig.customPackage.version).
+ *  - `Contents/Info.plist` → CFBundleShortVersionString 5.8.4
+ *  - `cli/product.json` → genieVersion 5.8.4, platform "CLI",
+ *    endpoint https://www.workbuddy.ai
+ *  - `cli/package.json` → version 0.0.0, but
+ *    publishConfig.customPackage.version 2.161.0 (the bundled
+ *    `@genie/agent-cli`, a.k.a. CodeBuddy Code). The desktop reads exactly
+ *    those two fields to build the client fingerprint
+ *    (`resolveBundledCliVersion` in app.asar).
+ *
+ * The desktop launches the CLI sidecar with CLIENT_INFO_* env vars
+ * (`getCachedBaseEnv` in app.asar):
+ *
+ *   CLIENT_INFO_PLATFORM=WorkBuddy      CLIENT_INFO_PLATFORM_VERSION=5.8.4
+ *   CLIENT_INFO_IDE_TYPE=WorkBuddy      CLIENT_INFO_PRODUCT_NAME=WorkBuddy AI
+ *   CLIENT_INFO_PRODUCT_VERSION=5.8.4   CLIENT_INFO_PLUGIN_NAME=workbuddy-desktop
+ *   CLIENT_INFO_USER_AGENT_EXTENSION=CLI/2.161.0
+ *
+ * and the CLI's UserAgentHttpInterceptor composes
+ * `<platform>/<platformVersion> <product>/<productVersion> <extension>`.
+ * A live sidecar on 5.8.4 therefore sends exactly:
+ *
+ *   User-Agent: WorkBuddy/5.8.4 CLI/2.161.0
+ *
+ * (confirmed in ~/.workbuddy-ai/logs ... `[CloudProductManager] fetch cloud
+ * product request headers: {"user-agent":"WorkBuddy/5.8.4 CLI/2.161.0",...}`).
+ * The renderer process sends `workbuddy-ai/5.8.4 workbuddy-ai/5.8.4 CLI/2.161.0`.
+ *
+ * Bump BOTH numbers when Tencent ships a new desktop build: the gateway
+ * accepts older fingerprints, but this is the identity the access token was
+ * minted for.
  */
 export const WORKBUDDY_BASE_URL =
   process.env.WORKBUDDY_BASE_URL || "https://www.workbuddy.ai";
 
+/** Bundled `@genie/agent-cli` (CodeBuddy Code) version — the UA extension. */
 export const WORKBUDDY_CLIENT_VERSION = "2.161.0";
+
+/** Desktop app version (CFBundleShortVersionString / product.json genieVersion). */
+export const WORKBUDDY_APP_VERSION = "5.8.4";
+
 export const WORKBUDDY_PRODUCT_NAME = "WorkBuddy AI";
 export const WORKBUDDY_OAUTH_PLATFORM = "workbuddy-ai";
 
@@ -23,21 +53,33 @@ export const WORKBUDDY_CONVERSATION_HEADERS = {
   conversationRequestId: "X-Conversation-Request-ID",
   conversationMessageId: "X-Conversation-Message-ID",
   requestId: "X-Request-ID",
+  rootRequestId: "X-Root-Request-ID",
   agentIntent: "X-Agent-Intent",
   agentType: "X-Agent-Type",
+  agentPurpose: "X-Agent-Purpose",
 };
 
 export const WORKBUDDY_AGENT_INTENT = "craft";
 export const WORKBUDDY_AGENT_TYPE = "main";
+/**
+ * `resolveModelCallAgentType` (CLI) → "main" for a plain chat turn, and the
+ * purpose enum's `Conversation = "conversation"` is what the CLI echoes in
+ * X-Agent-Purpose for it.
+ */
+export const WORKBUDDY_AGENT_PURPOSE = "conversation";
 
-/** Chat-turn headers, including the CLI fingerprint and the account identity. */
+/** Chat-turn headers, including the desktop+CLI fingerprint. */
 export function workbuddyChatHeaders(extra = {}) {
   const headers = {
-    "User-Agent": `CLI/${WORKBUDDY_CLIENT_VERSION} ${WORKBUDDY_PRODUCT_NAME}/${WORKBUDDY_CLIENT_VERSION}`,
+    // Desktop-sidecar fingerprint: platform/platformVersion + UA extension.
+    "User-Agent": `WorkBuddy/${WORKBUDDY_APP_VERSION} CLI/${WORKBUDDY_CLIENT_VERSION}`,
     "X-Product": "SaaS",
-    "X-IDE-Type": "CLI",
-    "X-IDE-Name": "CLI",
-    "X-IDE-Version": WORKBUDDY_CLIENT_VERSION,
+    // Desktop-launched CLI reports the desktop platform as its IDE identity
+    // (CLIENT_INFO_IDE_TYPE / CLIENT_INFO_PLATFORM), and X-IDE-Version is the
+    // desktop version, not the CLI version.
+    "X-IDE-Type": "WorkBuddy",
+    "X-IDE-Name": "WorkBuddy",
+    "X-IDE-Version": WORKBUDDY_APP_VERSION,
     "x-requested-with": "XMLHttpRequest",
     "x-codebuddy-request": "1",
     "X-Domain": new URL(WORKBUDDY_BASE_URL).host,
@@ -87,22 +129,40 @@ export function workbuddyRefreshHeaders(refreshToken, extra = {}) {
  * failed channel verification, possibly because it was not sent from an
  * official client."
  *
- * Captured from the installed WorkBuddy AI 5.8.4 bundle (CLI 2.161.0): every
- * model call through `axiosToFetchAdapter` carries all six headers below, and
- * `X-Conversation-Request-ID` is a *non-empty* id (`conversationRequestId` of
- * the run). Empty/absent → 11128. The other five values may be plain UUIDs;
- * ids are emitted as UUIDv7 to match the client exactly (its ids are
- * time-ordered: `01a1422b-67cd-7137-...`). `X-Conversation-Message-ID` and
- * `X-Request-ID` share one value, as the client sends them.
+ * Read out of the installed WorkBuddy AI 5.8.4 bundle (CLI 2.161.0): every
+ * model call through `axiosToFetchAdapter` carries the headers below, and
+ * `X-Conversation-Request-ID` must be a *non-empty* id — the CLI validates its
+ * own client-supplied ids as "lowercase UUIDv7 encoded as 32 hexadecimal
+ * characters" (`assertClientConversationRequestId`), and generates them with
+ * `uuidv7().replace(/-/g, "")`. Empty/absent → 11128.
+ *
+ *  - X-Conversation-ID       = session id, a plain UUIDv4 (see the `*.jsonl`
+ *                              session files under ~/.workbuddy-ai/projects)
+ *  - X-Conversation-Request-ID = bare-hex UUIDv7, fresh per turn
+ *  - X-Conversation-Message-ID = X-Request-ID = bare-hex UUIDv7, fresh per call
+ *                              (live log: `requestId=01a17b38a11e7517bd1a81950cb643fe`)
+ *  - X-Root-Request-ID       = meta.rootRequestId || conversationRequestId
+ *  - X-Agent-Intent          = session meta "codebuddy.ai/mode" || "craft"
+ *  - X-Agent-Type            = "main" (team / subagent only for those runs)
+ *  - X-Agent-Purpose         = "conversation" for a normal chat turn
  */
-export function workbuddyConversationHeaders({ conversationId, conversationRequestId, messageId }) {
+export function workbuddyConversationHeaders({
+  conversationId,
+  conversationRequestId,
+  messageId,
+  rootRequestId,
+  agentPurpose = WORKBUDDY_AGENT_PURPOSE,
+}) {
   const h = WORKBUDDY_CONVERSATION_HEADERS;
   return {
     [h.conversationId]: conversationId,
     [h.conversationRequestId]: conversationRequestId,
     [h.conversationMessageId]: messageId,
     [h.requestId]: messageId,
+    // `resolveRootRequestId`: meta.rootRequestId || conversationRequestId.
+    [h.rootRequestId]: rootRequestId || conversationRequestId,
     [h.agentIntent]: WORKBUDDY_AGENT_INTENT,
     [h.agentType]: WORKBUDDY_AGENT_TYPE,
+    ...(agentPurpose ? { [h.agentPurpose]: agentPurpose } : {}),
   };
 }
