@@ -29,6 +29,12 @@ export default function RoutingPage() {
   // Modals state
   const [showAddRouteModal, setShowAddRouteModal] = useState(false);
   const [showAddAliasModal, setShowAddAliasModal] = useState(false);
+  // When set, the same modal edits an existing row instead of creating one. The
+  // value is the ORIGINAL key, which is what makes a rename detectable: both
+  // APIs upsert by key, so changing the key means writing the new one and
+  // deleting the old.
+  const [editingRoute, setEditingRoute] = useState(null);
+  const [editingAlias, setEditingAlias] = useState(null);
   const [pendingDeleteRoute, setPendingDeleteRoute] = useState(null);
   const [pendingDeleteAlias, setPendingDeleteAlias] = useState(null);
 
@@ -95,6 +101,20 @@ export default function RoutingPage() {
   );
 
   // ── Route handlers ─────────────────────────────────────────────
+  const openRouteModal = (item = null) => {
+    setRouteError("");
+    setEditingRoute(item ? item.source : null);
+    setFrom(item ? item.source : "");
+    setTo(item ? item.target : "");
+    setShowAddRouteModal(true);
+  };
+
+  const closeRouteModal = () => {
+    setShowAddRouteModal(false);
+    setEditingRoute(null);
+    setRouteError("");
+  };
+
   const handleSaveRoute = async () => {
     const src = from.trim();
     const dst = to.trim();
@@ -113,14 +133,35 @@ export default function RoutingPage() {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Failed to save route");
 
-      addNotification({ type: "success", message: `Route configured: ${src} → ${dst}` });
+      // A rename leaves the old key behind, because the write above only ever
+      // creates the new one. Drop it so the card does not appear twice.
+      const renamed = editingRoute && editingRoute !== src;
+      if (renamed) {
+        const del = await fetch(`/api/models/routing?from=${encodeURIComponent(editingRoute)}`, { method: "DELETE" });
+        if (!del.ok) {
+          addNotification({
+            type: "warning",
+            message: `Route "${src}" saved, but the old "${editingRoute}" could not be removed.`,
+            duration: 8000,
+          });
+        }
+      }
+
+      addNotification({
+        type: "success",
+        message: renamed
+          ? `Route renamed: ${editingRoute} → ${src}`
+          : editingRoute
+            ? `Route updated: ${src} → ${dst}`
+            : `Route configured: ${src} → ${dst}`,
+      });
       for (const warning of data.warnings || []) {
         addNotification({ type: "warning", message: warning, duration: 8000 });
       }
 
       setFrom("");
       setTo("");
-      setShowAddRouteModal(false);
+      closeRouteModal();
       await loadData();
     } catch (e) {
       setRouteError(e.message);
@@ -167,6 +208,20 @@ export default function RoutingPage() {
   };
 
   // ── Alias handlers ─────────────────────────────────────────────
+  const openAliasModal = (item = null) => {
+    setAliasError("");
+    setEditingAlias(item ? item.name : null);
+    setAlias(item ? item.name : "");
+    setAliasModel(item ? item.target : "");
+    setShowAddAliasModal(true);
+  };
+
+  const closeAliasModal = () => {
+    setShowAddAliasModal(false);
+    setEditingAlias(null);
+    setAliasError("");
+  };
+
   const handleSaveAlias = async () => {
     const name = alias.trim();
     const target = aliasModel.trim();
@@ -189,10 +244,31 @@ export default function RoutingPage() {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Failed to save alias");
 
-      addNotification({ type: "success", message: `Alias created: "${name}" → ${target}` });
+      // Same rename rule as routes: PUT upserts by name, so the old name has to
+      // be deleted explicitly or both aliases stay resolvable.
+      const renamed = editingAlias && editingAlias !== name;
+      if (renamed) {
+        const del = await fetch(`/api/models/alias?alias=${encodeURIComponent(editingAlias)}`, { method: "DELETE" });
+        if (!del.ok) {
+          addNotification({
+            type: "warning",
+            message: `Alias "${name}" saved, but the old "${editingAlias}" could not be removed.`,
+            duration: 8000,
+          });
+        }
+      }
+
+      addNotification({
+        type: "success",
+        message: renamed
+          ? `Alias renamed: "${editingAlias}" → "${name}"`
+          : editingAlias
+            ? `Alias updated: "${name}" → ${target}`
+            : `Alias created: "${name}" → ${target}`,
+      });
       setAlias("");
       setAliasModel("");
-      setShowAddAliasModal(false);
+      closeAliasModal();
       await loadData();
     } catch (e) {
       setAliasError(e.message);
@@ -244,10 +320,7 @@ export default function RoutingPage() {
           {tab === "routing" ? (
             <Button
               icon="add"
-              onClick={() => {
-                setRouteError("");
-                setShowAddRouteModal(true);
-              }}
+              onClick={() => openRouteModal()}
               className="w-full sm:w-auto"
             >
               Create Route
@@ -255,10 +328,7 @@ export default function RoutingPage() {
           ) : (
             <Button
               icon="add"
-              onClick={() => {
-                setAliasError("");
-                setShowAddAliasModal(true);
-              }}
+              onClick={() => openAliasModal()}
               className="w-full sm:w-auto"
             >
               Create Alias
@@ -282,10 +352,7 @@ export default function RoutingPage() {
                 </p>
                 <Button
                   icon="add"
-                  onClick={() => {
-                    setRouteError("");
-                    setShowAddRouteModal(true);
-                  }}
+                  onClick={() => openRouteModal()}
                 >
                   Create First Route
                 </Button>
@@ -351,6 +418,13 @@ export default function RoutingPage() {
                         </span>
                       </button>
                       <button
+                        onClick={() => openRouteModal(item)}
+                        className="rounded p-1.5 text-text-muted transition-colors hover:bg-surface-2 hover:text-primary"
+                        title="Edit route"
+                      >
+                        <span className="material-symbols-outlined text-[18px]">edit</span>
+                      </button>
+                      <button
                         onClick={() => setPendingDeleteRoute(item.source)}
                         className="rounded p-1.5 text-text-muted transition-colors hover:bg-red-500/10 hover:text-red-500"
                         title="Delete route"
@@ -396,10 +470,7 @@ export default function RoutingPage() {
                 </p>
                 <Button
                   icon="add"
-                  onClick={() => {
-                    setAliasError("");
-                    setShowAddAliasModal(true);
-                  }}
+                  onClick={() => openAliasModal()}
                 >
                   Create First Alias
                 </Button>
@@ -445,6 +516,13 @@ export default function RoutingPage() {
                         </span>
                       </button>
                       <button
+                        onClick={() => openAliasModal(item)}
+                        className="rounded p-1 text-text-muted transition-colors hover:bg-surface-2 hover:text-primary"
+                        title="Edit alias"
+                      >
+                        <span className="material-symbols-outlined text-[16px]">edit</span>
+                      </button>
+                      <button
                         onClick={() => setPendingDeleteAlias(item.name)}
                         className="rounded p-1 text-text-muted transition-colors hover:bg-red-500/10 hover:text-red-500"
                         title="Delete alias"
@@ -460,18 +538,15 @@ export default function RoutingPage() {
         </>
       )}
 
-      {/* ── Modal: Create Route ───────────────────────────────── */}
+      {/* ── Modal: Create / Edit Route ────────────────────────── */}
       <Modal
         isOpen={showAddRouteModal}
-        onClose={() => {
-          setShowAddRouteModal(false);
-          setRouteError("");
-        }}
-        title="Create Model Route"
+        onClose={closeRouteModal}
+        title={editingRoute ? "Edit Model Route" : "Create Model Route"}
         size="md"
         footer={
           <div className="flex items-center justify-end gap-2">
-            <Button variant="ghost" onClick={() => setShowAddRouteModal(false)}>
+            <Button variant="ghost" onClick={closeRouteModal}>
               Cancel
             </Button>
             <Button
@@ -480,7 +555,7 @@ export default function RoutingPage() {
               loading={saving}
               icon="alt_route"
             >
-              {saving ? "Saving…" : "Save Route"}
+              {saving ? "Saving..." : editingRoute ? "Save Changes" : "Save Route"}
             </Button>
           </div>
         }
@@ -504,6 +579,15 @@ export default function RoutingPage() {
             <p className="mt-1 text-[11px] text-text-muted">
               The model ID clients or agents will send in requests.
             </p>
+            {editingRoute && editingRoute !== from.trim() && (
+              <p className="mt-1.5 flex items-start gap-1.5 text-[11px] text-amber-600 dark:text-amber-400">
+                <span className="material-symbols-outlined text-[14px]">swap_horiz</span>
+                <span>
+                  Renames the route: <code className="font-mono">{editingRoute}</code> is removed and{" "}
+                  <code className="font-mono">{from.trim() || "…"}</code> takes its place.
+                </span>
+              </p>
+            )}
           </div>
 
           <div className="flex items-center justify-center py-0.5">
@@ -547,15 +631,12 @@ export default function RoutingPage() {
       {/* ── Modal: Create Alias ───────────────────────────────── */}
       <Modal
         isOpen={showAddAliasModal}
-        onClose={() => {
-          setShowAddAliasModal(false);
-          setAliasError("");
-        }}
-        title="Create Model Alias"
+        onClose={closeAliasModal}
+        title={editingAlias ? "Edit Model Alias" : "Create Model Alias"}
         size="md"
         footer={
           <div className="flex items-center justify-end gap-2">
-            <Button variant="ghost" onClick={() => setShowAddAliasModal(false)}>
+            <Button variant="ghost" onClick={closeAliasModal}>
               Cancel
             </Button>
             <Button
@@ -564,7 +645,7 @@ export default function RoutingPage() {
               loading={saving}
               icon="label"
             >
-              {saving ? "Saving…" : "Save Alias"}
+              {saving ? "Saving..." : editingAlias ? "Save Changes" : "Save Alias"}
             </Button>
           </div>
         }
@@ -583,6 +664,15 @@ export default function RoutingPage() {
             <p className="mt-1 text-[11px] text-text-muted">
               Short name without slashes (e.g. <code>deepseek</code>, <code>my-model</code>).
             </p>
+            {editingAlias && editingAlias !== alias.trim() && (
+              <p className="mt-1.5 flex items-start gap-1.5 text-[11px] text-amber-600 dark:text-amber-400">
+                <span className="material-symbols-outlined text-[14px]">swap_horiz</span>
+                <span>
+                  Renames the alias: <code className="font-mono">{editingAlias}</code> is removed and{" "}
+                  <code className="font-mono">{alias.trim() || "…"}</code> takes its place.
+                </span>
+              </p>
+            )}
           </div>
 
           <div>

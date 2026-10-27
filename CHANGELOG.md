@@ -1,6 +1,15 @@
 # Unreleased
 
 ## Features
+- **Routing**: edit an existing route or alias. The cards only offered
+  enable/disable, copy and delete, so changing a target meant deleting the row
+  and recreating it, which momentarily dropped the mapping. Both modals now open
+  prefilled in edit mode (title and button label change, the key field stays
+  editable), and the save path handles a rename: the APIs upsert by key, so
+  writing a new name leaves the old one live, and the old key is deleted
+  explicitly. When the key differs from the original a hint states the rename
+  before it happens, and a failed cleanup is reported rather than silently
+  leaving two entries.
 - **Provider connections**: bulk enable, disable, delete, and test for the ticked
   rows. The list already had per-row checkboxes and a Select All, but the only
   bulk action was delete, and each action was sent as its own request. The new
