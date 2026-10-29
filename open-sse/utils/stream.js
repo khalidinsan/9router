@@ -148,6 +148,9 @@ export function createSSEStream(options = {}) {
   // Tail of the content stream held back because it may still become a native
   // marker (markup is routinely split across deltas).
   let nativeHold = "";
+  // Same holdback for the thinking channel. DeepSeek emits the identical DSML
+  // dialect in `reasoning_content`, and it reached the client verbatim.
+  let reasoningHold = "";
 
   // Track Responses API event framing for same-format passthrough (codex)
   let currentOpenAIResponsesEvent = null;
@@ -336,7 +339,24 @@ export function createSSEStream(options = {}) {
               const reasoning = delta?.reasoning_content;
 
               const content = delta?.content;
-              if (reasoning && typeof reasoning === "string") {
+              if (nativeToolCalls !== undefined && reasoning && typeof reasoning === "string") {
+                // The thinking channel leaks the same DSML dialect. Hold its tail
+                // with the identical rule; markup that never completes is dropped
+                // at the finish chunk rather than printed.
+                const rawReasoning = reasoningHold + reasoning;
+                reasoningHold = "";
+                const split = takeEmittableContent(rawReasoning);
+                reasoningHold = split.hold;
+                if (split.emit) {
+                  delta.reasoning_content = split.emit;
+                  totalContentLength += split.emit.length;
+                  accumulatedThinking += split.emit;
+                  fieldsInjected = true;
+                } else {
+                  delete delta.reasoning_content;
+                  fieldsInjected = true;
+                }
+              } else if (reasoning && typeof reasoning === "string") {
                 totalContentLength += reasoning.length;
                 accumulatedThinking += reasoning;
               }
@@ -413,6 +433,19 @@ export function createSSEStream(options = {}) {
                   accumulatedContent += nativeHold;
                 }
                 nativeHold = "";
+              }
+              // Same resolution for the thinking channel: a held tail is markup
+              // (dropped) or plain text that merely looked like a marker start.
+              if (reasoningHold && isFinishChunk) {
+                const tail = reasoningHold;
+                reasoningHold = "";
+                if (tail && !looksLikeMarkup(tail)) {
+                  const leftover = `data: ${JSON.stringify({ ...parsed, choices: [{ index: 0, delta: { reasoning_content: tail }, finish_reason: null }] })}\n`;
+                  reqLogger?.appendConvertedChunk?.(leftover);
+                  controller.enqueue(sharedEncoder.encode(leftover));
+                  totalContentLength += tail.length;
+                  accumulatedThinking += tail;
+                }
               }
               // Native markup leaked and no structured tool_calls arrived: swap the
               // upstream finish chunk for a synthetic tool_calls chunk so the client
@@ -529,41 +562,59 @@ export function createSSEStream(options = {}) {
           accumulatedThinking += parsed.delta.thinking;
         }
         
-        // OpenAI format - content
-        if (parsed.choices?.[0]?.delta?.content) {
+        // Native markup leaks through this lane too (commandcode → openai): a
+        // marker split across deltas reached the client as prose (`</|DSML| in`
+        // in production). Same holdback the passthrough lane uses — parse the
+        // carry-over together with the new delta and forward only what settled.
+        if (nativeToolCalls !== undefined && typeof parsed.choices?.[0]?.delta?.content === "string") {
+          const d = parsed.choices[0].delta;
+          const raw = nativeHold + d.content;
+          nativeHold = "";
+          let parsedNow = normalizeNativeToolCalls(model, { role: "assistant", content: raw });
+          let emitted;
+          if (parsedNow) {
+            // Prose before the markup is still the model's answer.
+            emitted = parsedNow.message.content || "";
+            const openAt = findOpenMarkerStart(raw);
+            if (openAt !== -1) nativeHold = raw.slice(openAt);
+          } else {
+            const split = takeEmittableContent(raw);
+            nativeHold = split.hold;
+            emitted = split.emit;
+            if (emitted) {
+              parsedNow = normalizeNativeToolCalls(model, { role: "assistant", content: emitted });
+              if (parsedNow) emitted = parsedNow.message.content || "";
+            }
+          }
+          if (parsedNow) nativeToolCalls = parsedNow.message.tool_calls;
+          if (emitted) {
+            d.content = emitted;
+            totalContentLength += emitted.length;
+            accumulatedContent += emitted;
+          } else {
+            delete d.content;
+          }
+        } else if (parsed.choices?.[0]?.delta?.content) {
           totalContentLength += parsed.choices[0].delta.content.length;
           accumulatedContent += parsed.choices[0].delta.content;
         }
 
-        // Detect and correct native tool-call markup that leaks into the content
-        // stream instead of being emitted as structured tool_calls. Kimi and
-        // DeepSeek each have their own dialect; the parser list routes each model
-        // family to its parser.
-        if (nativeToolCalls !== undefined && parsed.choices?.[0]?.delta?.content) {
-          const originalDelta = parsed.choices[0].delta.content;
-          const normalized = normalizeNativeToolCalls(model, {
-            role: "assistant",
-            content: originalDelta,
-          });
-          if (normalized) {
-            nativeToolCalls = normalized.message.tool_calls;
-            // Replace the raw markup with any leading prose so the user doesn't
-            // see the native token soup. If there is no prose, drop the content.
-            parsed.choices[0].delta.content = normalized.message.content || undefined;
-            if (!parsed.choices[0].delta.content) {
-              delete parsed.choices[0].delta.content;
-            }
-            // Adjust accumulated content to reflect the stripped markup.
-            totalContentLength -= originalDelta.length;
-            accumulatedContent = accumulatedContent.slice(0, accumulatedContent.length - originalDelta.length);
-            if (normalized.message.content) {
-              totalContentLength += normalized.message.content.length;
-              accumulatedContent += normalized.message.content;
-            }
+        // OpenAI format - reasoning, held the same way: the thinking channel
+        // carries the identical DSML dialect.
+        if (nativeToolCalls !== undefined && typeof parsed.choices?.[0]?.delta?.reasoning_content === "string") {
+          const d = parsed.choices[0].delta;
+          const raw = reasoningHold + d.reasoning_content;
+          reasoningHold = "";
+          const split = takeEmittableContent(raw);
+          reasoningHold = split.hold;
+          if (split.emit) {
+            d.reasoning_content = split.emit;
+            totalContentLength += split.emit.length;
+            accumulatedThinking += split.emit;
+          } else {
+            delete d.reasoning_content;
           }
-        }
-        // OpenAI format - reasoning
-        if (parsed.choices?.[0]?.delta?.reasoning_content) {
+        } else if (parsed.choices?.[0]?.delta?.reasoning_content) {
           totalContentLength += parsed.choices[0].delta.reasoning_content.length;
           accumulatedThinking += parsed.choices[0].delta.reasoning_content;
         }
@@ -620,6 +671,24 @@ export function createSSEStream(options = {}) {
             // finish chunk for a synthetic tool_calls chunk so the client sees the
             // correct finish_reason and actually runs the tool.
             const isFinishChunk = item.type === "message_delta" || item.choices?.[0]?.finish_reason;
+
+            // Resolve anything still held before the terminal chunk: markup that
+            // never completed is dropped, plain text that merely looked like a
+            // marker start is emitted.
+            if (isFinishChunk && (nativeHold || reasoningHold)) {
+              for (const field of ["content", "reasoning_content"]) {
+                const held = field === "content" ? nativeHold : reasoningHold;
+                if (field === "content") nativeHold = ""; else reasoningHold = "";
+                if (!held || looksLikeMarkup(held)) continue;
+                const tailOut = formatSSE(
+                  { ...item, choices: [{ index: 0, delta: { [field]: held }, finish_reason: null }] },
+                  sourceFormat,
+                );
+                reqLogger?.appendConvertedChunk?.(tailOut);
+                controller.enqueue(sharedEncoder.encode(tailOut));
+                sseEmittedCount++;
+              }
+            }
             if (nativeToolCalls && isFinishChunk && sourceFormat === FORMATS.OPENAI) {
               const emitted = emitNativeToolCallsChunk(controller, nativeToolCalls, state, model, sourceFormat, reqLogger);
               if (emitted) {

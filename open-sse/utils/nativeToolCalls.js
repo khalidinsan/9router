@@ -186,13 +186,22 @@ export function takeEmittableContent(pending) {
 
   // A bare fence (no leading `<`) is already unambiguous.
   const bare = MARKUP_LIKE.exec(pending);
-  if (bare) cut = bare.index;
+  if (bare) {
+    let at = bare.index;
+    // A DSML token may arrive with its opener already buffered (`</|DSML|`), or
+    // bare (`|DSML|`). Back up over the `<` and `/` so they are held with the
+    // fence — otherwise `</` was emitted as prose before the hold kicked in.
+    if (pending[at - 1] === "/" && pending[at - 2] === "<") at -= 2;
+    else if (pending[at - 1] === "<") at -= 1;
+    cut = at;
+  }
 
-  // A trailing `<`, or `<` plus a fence character, may open one next delta.
+  // A trailing `<`, `<` plus a fence character, or `<` plus `/` (itself cut from
+  // `</|DSML|`) may open one next delta.
   for (let i = 0; i < pending.length; i++) {
     if (pending[i] !== "<") continue;
     const next = pending[i + 1];
-    if (next === undefined || next === FW || next === "|") {
+    if (next === undefined || next === FW || next === "|" || (next === "/" && pending[i + 2] === undefined)) {
       if (cut === -1 || i < cut) cut = i;
       break;
     }

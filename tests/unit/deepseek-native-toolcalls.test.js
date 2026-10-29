@@ -155,3 +155,74 @@ describe("native DeepSeek tool-call markup recovery", () => {
     expect(body.choices[0].message.tool_calls).toBeUndefined();
   });
 });
+
+/**
+ * A marker the model never finishes is still markup. Production capture from
+ * `cmc/deepseek/deepseek-v4.1-flash`: the answer ended mid-token and the client
+ * rendered `</|DSML| in`. The holdback must cover every lane that can carry it —
+ * the translate lane (commandcode → openai) and the thinking channel both did
+ * not, because the guard only ever looked at `delta.content` in passthrough.
+ */
+describe("unterminated DSML never reaches the client", () => {
+  const TRUNCATED = "Let me fix the e2e spec.\n\n</|DSML| in";
+
+  /** Upstream SSE carrying one delta on the given channel. */
+  function channelSSE(field, text, model = "deepseek/deepseek-v4.1-flash") {
+    const chunk = (delta, finish = null) => ({
+      id: "chatcmpl-up",
+      object: "chat.completion.chunk",
+      created: 1,
+      model,
+      choices: [{ index: 0, delta, finish_reason: finish }],
+    });
+    return [
+      `data: ${JSON.stringify(chunk({ role: "assistant", [field]: text }))}`,
+      `data: ${JSON.stringify(chunk({}, "stop"))}`,
+      "data: [DONE]",
+      "",
+    ].join("\n\n");
+  }
+
+  const translateOptions = {
+    mode: "translate",
+    sourceFormat: "commandcode",
+    provider: "commandcode",
+    model: "deepseek/deepseek-v4.1-flash",
+  };
+
+  it("holds it in the translate lane (content)", async () => {
+    const out = await runStream(channelSSE("content", TRUNCATED), translateOptions);
+    expect(out).not.toMatch(/DSML/);
+    expect(out).not.toContain("|DSML|");
+    const text = parseChunks(out).map((c) => c.choices?.[0]?.delta?.content || "").join("");
+    expect(text).toBe("Let me fix the e2e spec.\n\n");
+  });
+
+  it("holds it in the translate lane (reasoning_content)", async () => {
+    const out = await runStream(channelSSE("reasoning_content", TRUNCATED), translateOptions);
+    expect(out).not.toMatch(/DSML/);
+    const text = parseChunks(out).map((c) => c.choices?.[0]?.delta?.reasoning_content || "").join("");
+    expect(text).toBe("Let me fix the e2e spec.\n\n");
+  });
+
+  it("holds it in the passthrough lane (reasoning_content)", async () => {
+    const out = await runStream(channelSSE("reasoning_content", TRUNCATED), {
+      model: "deepseek/deepseek-v4.1-flash",
+    });
+    expect(out).not.toMatch(/DSML/);
+  });
+
+  it("still streams a complete call that lands on the thinking channel", async () => {
+    // Whole marker inside one delta: dropped, never printed as prose.
+    const out = await runStream(channelSSE("reasoning_content", `${DSML_SINGLE}`), translateOptions);
+    expect(out).not.toMatch(/DSML/);
+  });
+
+  it("keeps a literal trailing `</` that is not a marker", async () => {
+    // A delta that ends in markup-looking text but the stream simply stops:
+    // the model meant `<em>`, the answer ends, nothing is lost silently.
+    const out = await runStream(channelSSE("content", "close the tag </em>"), translateOptions);
+    const text = parseChunks(out).map((c) => c.choices?.[0]?.delta?.content || "").join("");
+    expect(text).toBe("close the tag </em>");
+  });
+});

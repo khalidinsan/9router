@@ -53,6 +53,29 @@
   API like 1.2.
 
 ## Fixes
+- **Command Code quota**: restore the usage parser the v0.5.111 merge split in
+  half. The query helper was renamed to `qs` while its three call sites kept the
+  old `withQuery` name, so every request threw `withQuery is not defined` and the
+  quota page reported "Failed to fetch Command Code usage". The same block had
+  also lost `windowQuota`, `PLAN_NAMES` and `PLAN_CAPS`, and `formatCodexWindow`
+  was left reading an undefined `total` — fixing the name alone would have moved
+  the crash one line down. The fork's single parser is restored
+  (`parseCommandCodeUsage`: 5h/weekly as percent bars, Monthly as a dollar pot
+  sized from the plan allotment), with upstream's real improvement folded in:
+  short plan ids (`go`, `go-v1`) resolve through `normalizePlanId`, so the
+  monthly row is sized instead of silently disappearing. Verified against the
+  live billing endpoints (`whoami` → 200 with `org: null`, `credits`, and
+  `subscriptions` reporting `individual-go-v1`).
+- **DeepSeek DSML**: stop an unterminated marker reaching the client. The
+  holdback that withholds a partial fence ran only in the passthrough lane and
+  only on `delta.content`, so Command Code's translate lane
+  (`commandcode → openai`) forwarded a truncated `</|DSML| in` as prose — a
+  production capture from `cmc/deepseek/deepseek-v4.1-flash`. The thinking
+  channel was never guarded on either lane, and `takeEmittableContent` cut at the
+  fence rather than at the `<`, emitting a bare `</` before holding. Both lanes
+  now hold `content` and `reasoning_content` alike, the opener is held with its
+  fence, and a held tail is dropped at the finish chunk unless it is ordinary
+  text.
 - **WorkBuddy**: send the official conversation headers so model calls pass
   channel verification. Accounts the gateway has risk-flagged answer every call
   with HTTP 400 `{code:11128, msg:"conversation id missing"}` — displayTips:
