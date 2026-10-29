@@ -77,8 +77,8 @@ function normalizePlanId(planId) {
   return PLAN_ID_ALIASES[normalized] || normalized || null;
 }
 
-function qs(route, params) {
-  const s = new URLSearchParams(
+function withQuery(route, params) {
+  const query = new URLSearchParams(
     Object.entries(params || {}).filter(([, v]) => v != null),
   ).toString();
   if (!query) return route;
@@ -96,14 +96,10 @@ function formatCodexWindow(window) {
   const used = cap > 0 ? roundPct((usedAbs / cap) * 100) : window.exceeded ? 100 : 0;
   return {
     used,
-    total,
-    percentage: total > 0 ? Math.round((used / total) * 100) : 0,
-    colorPercentage: total > 0 ? Math.round(((total - used) / total) * 100) : 100,
-    percentageIsUsed: true,
-    remaining: Math.max(0, total - used),
+    total: 100,
+    remaining: Math.max(0, 100 - used),
+    resetAt: parseResetTime(window.resetAt ?? window.reset_at ?? null),
     unlimited: false,
-    resetAt: parseResetTime(win.resetAt),
-    emptyMessage: used === 0 && !win.resetAt ? "No usage in this window" : null,
   };
 }
 
@@ -125,7 +121,7 @@ export function parseCommandCodeUsage(credits, subscription = null) {
     ? credits.credits
     : {};
   const sub = subscriptionPayload(subscription);
-  const planId = typeof sub?.planId === "string" ? sub.planId : "";
+  const planId = normalizePlanId(typeof sub?.planId === "string" ? sub.planId : null) || "";
   const plan = PLAN_LABELS[planId] || (planId ? planId : "Command Code");
 
   const quotas = {};
@@ -210,39 +206,13 @@ export async function getCommandCodeUsage(apiKey = null, proxyOptions = null) {
       };
     }
 
-    const creditsBody = await creditsRes.json().catch(() => ({}));
-    const subsBody = await subsRes.json().catch(() => ({}));
-    const rawPlanId = subsBody?.data?.planId ?? null;
-    const planId = normalizePlanId(rawPlanId);
-    const plan = (planId && PLAN_NAMES[planId]) || rawPlanId || "Command Code";
-    const cap = planId ? (PLAN_CAPS[planId] || 0) : 0;
-    const c = creditsBody?.credits || {};
-    const remaining =
-      toFiniteNumber(c.monthlyCredits, 0) +
-      toFiniteNumber(c.purchasedCredits, 0) +
-      toFiniteNumber(c.freeCredits, 0);
-    const used = cap > 0 ? Math.max(0, cap - remaining) : 0;
-    const total = cap > 0 ? cap : remaining;
+    const credits = await creditsRes.json().catch(() => null);
+    if (!credits || typeof credits !== "object") {
+      return { message: "Command Code usage response was not JSON." };
+    }
 
-    const quotas = {};
-    quotas.Credits = {
-      name: "Monthly",
-      used,
-      total,
-      percentage: cap > 0 ? Math.round((used / cap) * 100) : 0,
-      colorPercentage: cap > 0 ? Math.round((remaining / cap) * 100) : 100,
-      percentageIsUsed: true,
-      remaining,
-      unlimited: cap <= 0,
-      resetAt: parseResetTime(subsBody?.data?.currentPeriodEnd),
-    };
-
-    const fiveHour = windowQuota(creditsBody?.windowLimits?.fiveHour);
-    if (fiveHour) quotas["Session (5h)"] = { ...fiveHour, name: "5-hour limit" };
-    const weekly = windowQuota(creditsBody?.windowLimits?.weekly);
-    if (weekly) quotas.Weekly = { ...weekly, name: "Weekly limit" };
-
-    return { plan, quotas };
+    const subscription = subsRes?.ok ? await subsRes.json().catch(() => null) : null;
+    return parseCommandCodeUsage(credits, subscription);
   } catch (error) {
     return { message: `Failed to fetch Command Code usage: ${error.message}` };
   }

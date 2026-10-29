@@ -257,25 +257,18 @@ describe("getUsageForProvider(commandcode)", () => {
       apiKey: "user_test",
     });
 
-    // remaining = 12.5 + 1 + 0.5 = 14; cap GOAT = 70; used = 56
-    expect(usage.quotas.Credits).toMatchObject({
-      used: 56,
-      total: 70,
-      percentage: 80,
-      unlimited: false,
-    });
-    expect(usage.quotas["Session (5h)"]).toMatchObject({
-      used: 2,
-      total: 10,
-      percentage: 20,
-      unlimited: false,
-    });
-    expect(usage.quotas.Weekly).toMatchObject({
-      used: 20,
-      total: 70,
-      percentage: 29,
-    });
-    expect(new Date(usage.quotas.Credits.resetAt).toISOString()).toBe("2026-10-01T00:00:00.000Z");
+    const urls = proxyAwareFetch.mock.calls.map(([url]) => String(url));
+    expect(urls.some((u) => u.startsWith(CREDITS_URL))).toBe(true);
+    expect(urls.some((u) => u.startsWith(SUBS_URL))).toBe(true);
+
+    // fiveHour 2/10 and weekly 20/70 render as 0-100 percent bars; the Monthly
+    // dollar pot is sized from the plan allotment minus remaining.
+    expect(usage.quotas.session).toMatchObject({ used: 20, total: 100, remaining: 80 });
+    expect(usage.quotas.weekly).toMatchObject({ used: 29, total: 100, remaining: 71 });
+    // The Monthly pot measures the plan allotment only: used = cap - monthlyCredits.
+    // Purchased/free credits are a separate spendable balance, not allotment.
+    expect(usage.quotas.Monthly).toMatchObject({ used: 57.5, total: 70 });
+    expect(usage.quotas.Monthly.resetAt).toBe("2026-10-01T00:00:00.000Z");
   });
 
   it("recognizes the API's short Go plan id", async () => {
@@ -286,12 +279,11 @@ describe("getUsageForProvider(commandcode)", () => {
     });
 
     expect(usage.plan).toBe("Go");
-    expect(usage.quotas.Credits).toMatchObject({
+    expect(usage.quotas.Monthly).toMatchObject({
       total: 10,
-      remaining: 6.39,
       unlimited: false,
     });
-    expect(usage.quotas.Credits.used).toBeCloseTo(3.61, 10);
+    expect(usage.quotas.Monthly.used).toBeCloseTo(3.61, 10);
   });
 
   it("recognizes the API's individual Go v1 plan id", async () => {
@@ -321,23 +313,20 @@ describe("getUsageForProvider(commandcode)", () => {
     });
 
     expect(usage.plan).toBe("Go");
-    expect(usage.quotas.Credits).toMatchObject({
+    expect(usage.quotas.Monthly).toMatchObject({
       total: 10,
-      percentage: 36,
-      remaining: 6.389691728,
       unlimited: false,
     });
-    expect(usage.quotas.Credits.used).toBeCloseTo(3.610308272, 10);
-    expect(usage.quotas["Session (5h)"]).toMatchObject({
+    expect(usage.quotas.Monthly.used).toBeCloseTo(3.6103, 4);
+    expect(usage.quotas.session).toMatchObject({
       used: 0,
-      total: 3,
-      percentage: 0,
-      emptyMessage: "No usage in this window",
+      total: 100,
+      remaining: 100,
     });
-    expect(usage.quotas.Weekly).toMatchObject({
-      used: 2.296017498,
-      total: 6,
-      percentage: 38,
+    expect(usage.quotas.weekly).toMatchObject({
+      used: 38,
+      total: 100,
+      remaining: 62,
     });
   });
 
