@@ -10,6 +10,7 @@
 
 import { proxyAwareFetch } from "../../utils/proxyFetch.js";
 import { U, parseResetTime, toFiniteNumber } from "./shared.js";
+import { buildCommandCodeHeaders } from "../../shared/commandCodeHeaders.js";
 
 const USAGE = U("commandcode");
 const CREDITS_URL = USAGE.url || "https://api.commandcode.ai/alpha/billing/credits";
@@ -161,10 +162,7 @@ export async function getCommandCodeUsage(apiKey = null, proxyOptions = null) {
     return { message: "Command Code API key not available. Add a key to view usage." };
   }
 
-  const headers = {
-    Authorization: `Bearer ${apiKey.trim()}`,
-    Accept: "application/json",
-  };
+  const headers = buildCommandCodeHeaders({ apiKey: apiKey.trim(), accept: "application/json" });
 
   try {
     const whoamiRes = await proxyAwareFetch(

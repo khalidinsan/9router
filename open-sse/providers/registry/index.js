@@ -148,6 +148,9 @@ import p152 from "./runcrate.js";
 import p153 from "./genspark.js";
 import p154 from "./commandcode-provider.js";
 import p155 from "./perch.js";
+// Upstream's v0.5.112 addition takes the next free slot so the fork's three
+// above keep their existing numbers.
+import p159 from "./nace.js";
 export default [
   agentrouter,
   p0,
@@ -274,14 +277,12 @@ export default [
   p120,
   p121,
   p122,
-  p125,
   p126,
   p127,
   p129,
   p130,
   p131,
   p132,
-  p133,
   p134,
   p135,
   p136,
@@ -300,4 +301,5 @@ export default [
   p153,
   p154,
   p155,
+  p159,
 ];
