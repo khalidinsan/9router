@@ -211,3 +211,42 @@ describe("XML invoke markup never reaches the client", () => {
  * payload stayed invisible for minutes and then landed in one burst. The
  * emitter streams it as OpenAI deltas instead.
  */
+
+/**
+ * A tool payload is data, not prose. Before the ceiling was raised, a block
+ * larger than 64 KB was released as visible text: production saw a 30k-token
+ * `write` call whose markup reached the client, truncated mid-tag (`write">`).
+ */
+describe("XML invoke with a payload past the old 64 KB ceiling", () => {
+  it("still parses the call instead of leaking the markup", async () => {
+    const body = "A".repeat(150_000);
+    const block = [
+      "<function_calls>",
+      '<invoke name="write">',
+      '<parameter name="path">app/besar.php</parameter>',
+      `<parameter name="content">${body}</parameter>`,
+      "</invoke>",
+      "</function_calls>",
+    ].join("\n");
+
+    const chunk = (delta, finish = null) => ({
+      id: "c", object: "chat.completion.chunk", created: 1, model: "claude-opus-5.5-thinking",
+      choices: [{ index: 0, delta, finish_reason: finish }],
+    });
+    let sse = "";
+    for (let i = 0; i < block.length; i += 8000) {
+      sse += `data: ${JSON.stringify(chunk({ content: block.slice(i, i + 8000) }))}\n\n`;
+    }
+    sse += `data: ${JSON.stringify(chunk({}, "stop"))}\n\n`;
+    sse += "data: [DONE]\n\n";
+
+    const out = await runStream(sse);
+    expect(out).not.toContain("<parameter");
+    expect(out).not.toContain("<invoke");
+    const chunks = parseChunks(out);
+    const withTools = chunks.find((c) => c.choices?.[0]?.delta?.tool_calls);
+    expect(withTools).toBeDefined();
+    const text = chunks.map((c) => c.choices?.[0]?.delta?.content || "").join("");
+    expect(text).not.toContain("AAAA");
+  });
+});

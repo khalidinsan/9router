@@ -204,6 +204,17 @@ export function createSSEStream(options = {}) {
       appendRequestLog({ model, provider, connectionId, tokens: null, status: "200 OK" }).catch(() => { });
     }
 
+    // Diagnostic: markup that survived to the client means a tool call failed to
+    // parse. Capturing the real text is the only way to fix the dialect variant
+    // instead of guessing — the stored request preview is 200 chars.
+    if (/<parameter\s+name=|<invoke\s+name=|<\/invoke>/.test(accumulatedContent)) {
+      const head = accumulatedContent.slice(0, 400).replace(/\n/g, "\\n");
+      const tail = accumulatedContent.slice(-300).replace(/\n/g, "\\n");
+      console.error(
+        `[MARKUP-LEAK] provider=${provider} model=${model} len=${accumulatedContent.length} calls=${nativeToolCalls?.length ?? 0}\n  HEAD: ${head}\n  TAIL: ${tail}`
+      );
+    }
+
     if (onStreamComplete) {
       onStreamComplete({
         content: accumulatedContent,

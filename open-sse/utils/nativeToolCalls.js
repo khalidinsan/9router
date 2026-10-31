@@ -104,9 +104,12 @@ const MARKUP_LIKE = new RegExp(`(?:${FW}{1,2}|\\|{1,2})DSML|\\|tool${TB}|<functi
 // held while it is still a prefix of one of these.
 const XML_TAG_STARTS = ["<function_calls>", "<invoke", "<parameter", "<get_tool_name>"];
 
-// A bare fence is a confirmed marker start, so it is held on identity up to this
-// bound; beyond it the stream is malformed and released so it cannot stall.
-const MAX_OPEN_MARKER_LEN = 64 * 1024;
+// A tool call's arguments are payload, not prose: a `write` carrying a whole
+// file legitimately runs to hundreds of KB. The old 64 KB ceiling released the
+// block as visible text once it grew past it — production leak, a 30k-token
+// call whose markup reached the client. The ceiling now only guards genuinely
+// malformed streams, so it must sit above real payloads.
+const MAX_OPEN_MARKER_LEN = 4 * 1024 * 1024;
 
 // A trailing fragment this short could still become a marker; longer than this
 // it cannot be, so it is released as text.
