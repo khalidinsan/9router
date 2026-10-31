@@ -17,6 +17,7 @@
 
 import { normalizeKimiToolCalls } from "./kimiToolParser.js";
 import { normalizeDeepseekToolCalls } from "./deepseekToolParser.js";
+import { normalizeXmlInvokeToolCalls } from "./xmlInvokeToolParser.js";
 
 /**
  * Which parsers apply to `model`, in priority order.
@@ -29,6 +30,11 @@ export function nativeToolCallParsersFor(model) {
   if (/kimi-k2\./i.test(model || "")) parsers.push(normalizeKimiToolCalls);
   // DeepSeek V4.x, including the `:free` tiers on Token Harbor and WorkBuddy.
   if (/deepseek/i.test(model || "")) parsers.push(normalizeDeepseekToolCalls);
+  // Claude-family upstreams (Kiro's claude-opus-5.5* confirmed) emit
+  // `<function_calls><invoke name="…">` XML. The parser only acts when an
+  // `<invoke>` carries at least one `<parameter>`, so sample markup a client
+  // asked the model to write stays prose.
+  if (/claude|opus|sonnet|haiku/i.test(model || "")) parsers.push(normalizeXmlInvokeToolCalls);
   return parsers;
 }
 
@@ -81,13 +87,22 @@ const TOKEN_RE = new RegExp(
   [
     `<?\\/?\\|tool${TB}calls?${TB}(?:begin|end)\\|>`,
     `<?\\/?${FENCE}DSML${FENCE}\\s*(?:calls|invoke)[^>]*>`,
+    // The Claude/Kiro XML dialect nests the same way: a <function_calls>
+    // wrapper around one or more <invoke> blocks. Treating them as tokens keeps
+    // the depth counter honest, so a partially received block is held whole.
+    `<function_calls>|<\\/function_calls>`,
+    `<invoke\\s+name=["'][^"']*["'][^>]*>|<\\/invoke>`,
   ].join("|"),
   "g"
 );
 
 // Does this text contain markup at all? Used to decide whether a held tail is
 // user-facing prose or a marker that must be dropped.
-const MARKUP_LIKE = new RegExp(`(?:${FW}{1,2}|\\|{1,2})DSML|\\|tool${TB}`);
+const MARKUP_LIKE = new RegExp(`(?:${FW}{1,2}|\\|{1,2})DSML|\\|tool${TB}|<function_calls>|<invoke\\s+name=`);
+
+// Tags the XML dialect can start with. A delta that ends mid-tag (`<invo`) is
+// held while it is still a prefix of one of these.
+const XML_TAG_STARTS = ["<function_calls>", "<invoke", "<parameter", "<get_tool_name>"];
 
 // A bare fence is a confirmed marker start, so it is held on identity up to this
 // bound; beyond it the stream is malformed and released so it cannot stall.
@@ -206,6 +221,17 @@ export function takeEmittableContent(pending) {
       break;
     }
     // `<` + anything else is literal; keep scanning.
+  }
+
+  // A delta can also end mid-XML-tag (`<invo`), which the loop above treats as a
+  // literal `<` because the next character is a letter. Hold it while the
+  // fragment is still a prefix of a tag this module recognizes.
+  const lastLt = pending.lastIndexOf("<");
+  if (lastLt !== -1) {
+    const frag = pending.slice(lastLt);
+    if (!frag.includes(">") && XML_TAG_STARTS.some((t) => t.startsWith(frag) || frag.startsWith(t))) {
+      if (cut === -1 || lastLt < cut) cut = lastLt;
+    }
   }
 
   if (cut === -1) return { emit: pending, hold: "" };

@@ -128,8 +128,10 @@ describe("native DeepSeek tool-call markup recovery", () => {
     expect(out).not.toContain("tool_calls");
   });
 
-  it("does not touch markup for models outside the DeepSeek/Kimi families", async () => {
-    const out = await runStream(upstreamSSE(DSML_SINGLE, "claude-opus-5"), { model: "claude-opus-5" });
+  it("does not touch markup for models outside the DeepSeek/Kimi/Claude families", async () => {
+    // Claude ids now carry the XML `<invoke>` parser, so this guard needs a
+    // family that has no native-markup parser at all.
+    const out = await runStream(upstreamSSE(DSML_SINGLE, "gemini-3.8-flash"), { model: "gemini-3.8-flash" });
     expect(out).toMatch(/DSML/);
     expect(out).not.toContain("tool_calls");
   });

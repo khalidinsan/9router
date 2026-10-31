@@ -53,6 +53,19 @@
   API like 1.2.
 
 ## Fixes
+- **Kiro / Claude**: recover XML tool calls that leaked into assistant content.
+  Kiro's `claude-opus-5.5*` ids answer with `<function_calls><invoke name="…">`
+  and `<parameter name="…">` blocks instead of populating `tool_calls`, so the
+  client printed the markup and never ran the tool. The dialect had no parser:
+  `nativeToolCallParsersFor` only knew the Kimi and DeepSeek families, and the
+  streaming holdback only recognized the DSML/token-bar fences. A new
+  `xmlInvokeToolParser` extracts every `<invoke>`, keeps leading prose, tolerates
+  a missing `<function_calls>` wrapper, the garbled `<get_tool_name>` opener and
+  an unterminated final call, and refuses to act without a `<parameter>` so
+  sample markup a client asked for stays prose. The holdback now treats the XML
+  tags as markers too, including a delta split mid-tag (`<invo`), so a partial
+  block is never emitted. Verified live: four parallel `read` calls parse with
+  zero `<invoke>`/`<parameter>` leakage, streaming and non-streaming.
 - **Command Code quota**: restore the usage parser the v0.5.111 merge split in
   half. The query helper was renamed to `qs` while its three call sites kept the
   old `withQuery` name, so every request threw `withQuery is not defined` and the
