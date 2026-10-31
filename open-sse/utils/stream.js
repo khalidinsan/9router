@@ -10,6 +10,7 @@ import { getOpenAIResponsesEventName, isOpenAIResponsesTerminalEvent, formatInco
 import { dbg, isDebugEnabled } from "./debugLog.js";
 import { extractToolNames, fuzzyMatchToolName } from "../translator/concerns/toolCall.js";
 import { normalizeNativeToolCalls, nativeToolCallParsersFor, takeEmittableContent, findOpenMarkerStart, looksLikeMarkup } from "./nativeToolCalls.js";
+import { createXmlInvokeStreamEmitter } from "./xmlInvokeStream.js";
 
 import { SSE_DONE, SSE_HEADERS, SSE_HEADERS_NO_BUFFER } from "./sseConstants.js";
 
@@ -151,6 +152,10 @@ export function createSSEStream(options = {}) {
   // Same holdback for the thinking channel. DeepSeek emits the identical DSML
   // dialect in `reasoning_content`, and it reached the client verbatim.
   let reasoningHold = "";
+  // The XML dialect is emitted incrementally rather than held whole: a `write`
+  // call carrying a file body would otherwise stay invisible until it closes.
+  const xmlEmitter = /claude|opus|sonnet|haiku/i.test(model || "") ? createXmlInvokeStreamEmitter() : null;
+  let xmlStreamedCalls = false;
 
   // Track Responses API event framing for same-format passthrough (codex)
   let currentOpenAIResponsesEvent = null;
@@ -568,6 +573,16 @@ export function createSSEStream(options = {}) {
         // carry-over together with the new delta and forward only what settled.
         if (nativeToolCalls !== undefined && typeof parsed.choices?.[0]?.delta?.content === "string") {
           const d = parsed.choices[0].delta;
+          // Emit the XML dialect as it arrives. Holding the whole block reads as
+          // a frozen response: a `write` payload of 7.6 KB was measured landing
+          // entirely at the final millisecond of a 24 s request.
+          if (xmlEmitter) {
+            const frags = xmlEmitter.push(d.content);
+            if (frags.length) {
+              d.tool_calls = Array.isArray(d.tool_calls) ? d.tool_calls.concat(frags) : frags.slice();
+              xmlStreamedCalls = true;
+            }
+          }
           const raw = nativeHold + d.content;
           nativeHold = "";
           let parsedNow = normalizeNativeToolCalls(model, { role: "assistant", content: raw });
@@ -689,7 +704,17 @@ export function createSSEStream(options = {}) {
                 sseEmittedCount++;
               }
             }
-            if (nativeToolCalls && isFinishChunk && sourceFormat === FORMATS.OPENAI) {
+            if (xmlStreamedCalls && isFinishChunk) {
+              // Close whatever the payload left open (a truncated file body) so
+              // the concatenated arguments stay valid JSON, then report the real
+              // reason — the client must run the tool, not treat it as text.
+              const tailFrags = xmlEmitter.finish();
+              if (tailFrags.length) {
+                item.choices[0].delta = { ...(item.choices[0].delta || {}), tool_calls: tailFrags };
+              }
+              item.choices[0].finish_reason = "tool_calls";
+              if (state) state.finishReason = "tool_calls";
+            } else if (nativeToolCalls && isFinishChunk && sourceFormat === FORMATS.OPENAI) {
               const emitted = emitNativeToolCallsChunk(controller, nativeToolCalls, state, model, sourceFormat, reqLogger);
               if (emitted) {
                 sseEmittedCount++;

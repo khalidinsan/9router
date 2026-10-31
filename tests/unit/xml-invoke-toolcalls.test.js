@@ -5,6 +5,7 @@ import {
   hasXmlInvokeToolMarkup,
 } from "../../open-sse/utils/xmlInvokeToolParser.js";
 import { nativeToolCallParsersFor } from "../../open-sse/utils/nativeToolCalls.js";
+import { createXmlInvokeStreamEmitter } from "../../open-sse/utils/xmlInvokeStream.js";
 
 /**
  * Kiro's claude-opus-5.5* ids emit their tool calls as XML inside assistant
@@ -203,5 +204,66 @@ describe("XML invoke markup never reaches the client", () => {
   it("leaves a non-Claude model's markup untouched", async () => {
     const out = await runStream(upstreamSSE(CAPTURE, "gemini-3.8-flash"), { model: "gemini-3.8-flash", provider: "antigravity" });
     expect(out).toContain("function_calls");
+  });
+});
+
+/**
+ * The dialect used to be held whole until `</function_calls>`, so a `write`
+ * payload stayed invisible for minutes and then landed in one burst. The
+ * emitter streams it as OpenAI deltas instead.
+ */
+describe("XML invoke streams incrementally", () => {
+  it("emits the call skeleton before the block closes", () => {
+    const emitter = createXmlInvokeStreamEmitter();
+    const early = emitter.push('<function_calls>\n<invoke name="write">\n<parameter name="path">app/a.php</parameter>\n');
+    const names = early.filter((d) => d.function?.name).map((d) => d.function.name);
+    expect(names).toEqual(["write"]);
+    const args = early.map((d) => d.function?.arguments || "").join("");
+    expect(args).toBe('{"path":"app/a.php"');
+  });
+
+  it("keeps JSON valid for a value streamed across many deltas", () => {
+    const emitter = createXmlInvokeStreamEmitter();
+    const body = "<?php\nclass A {\n  public function b() { return \"x\"; }\n}\n";
+    const parts = [
+      '<function_calls><invoke name="write"><parameter name="path">a.php</parameter>',
+      '<parameter name="content">',
+      ...body.match(/[\s\S]{1,7}/g),
+      "</parameter></invoke></function_calls>",
+    ];
+    const fragments = [];
+    let sawNameEarly = false;
+    parts.forEach((p, i) => {
+      const out = emitter.push(p);
+      for (const d of out) {
+        if (d.function?.name) sawNameEarly = true;
+        if (d.function?.arguments) fragments.push(d.function.arguments);
+      }
+      // The skeleton must appear on the very first feed, not at the end.
+      if (i === 0) expect(sawNameEarly).toBe(true);
+    });
+    const parsed = JSON.parse(fragments.join(""));
+    expect(parsed.path).toBe("a.php");
+    expect(parsed.content).toBe(body);
+  });
+
+  it("closes an unterminated payload into valid JSON", () => {
+    const emitter = createXmlInvokeStreamEmitter();
+    const frags = [];
+    for (const p of ['<invoke name="write"><parameter name="path">a.php</parameter><parameter name="content">half a fi']) {
+      for (const d of emitter.push(p)) if (d.function?.arguments) frags.push(d.function.arguments);
+    }
+    for (const d of emitter.finish()) if (d.function?.arguments) frags.push(d.function.arguments);
+    const parsed = JSON.parse(frags.join(""));
+    expect(parsed.content).toBe("half a fi");
+  });
+
+  it("streams numbers and objects without quoting them", () => {
+    const emitter = createXmlInvokeStreamEmitter();
+    const frags = [];
+    const feed = (t) => { for (const d of emitter.push(t)) if (d.function?.arguments) frags.push(d.function.arguments); };
+    feed('<invoke name="t"><parameter name="n">42</parameter>');
+    feed('<parameter name="o">{"a":1}</parameter></invoke>');
+    expect(JSON.parse(frags.join(""))).toEqual({ n: 42, o: { a: 1 } });
   });
 });
