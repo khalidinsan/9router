@@ -250,3 +250,52 @@ describe("XML invoke with a payload past the old 64 KB ceiling", () => {
     expect(text).not.toContain("AAAA");
   });
 });
+
+/**
+ * The opener sometimes reaches us with its `<invoke name="` prefix missing —
+ * production capture, kiro claude-opus-5.5-thinking:
+ *   `…tasklist.\n\n\nwrite">\n<parameter name="path">…`
+ * The name and parameters survive, so the call must be recovered rather than
+ * printed to the user.
+ */
+describe("mangled opener recovery", () => {
+  it("recovers the write call from the production capture", () => {
+    const { message, hasTools } = normalizeXmlInvokeToolCalls({
+      role: "assistant",
+      content: `tasklist.\n\n\nwrite">\n<parameter name="path">/Users/khalid/x.md</parameter>\n<parameter name="i">Rewriting</parameter>\n</invoke>\n</function_calls>`,
+    });
+    expect(hasTools).toBe(true);
+    expect(message.content).toBe("tasklist.");
+    expect(message.tool_calls[0].function.name).toBe("write");
+    expect(JSON.parse(message.tool_calls[0].function.arguments)).toEqual({
+      path: "/Users/khalid/x.md",
+      i: "Rewriting",
+    });
+  });
+
+  it("recovers the `oke name=\"task\">` variant", () => {
+    const { message, hasTools } = normalizeXmlInvokeToolCalls({
+      role: "assistant",
+      content: `done.\n\noke name="task">\n<parameter name="i">Spawning</parameter>\n</invoke>`,
+    });
+    expect(hasTools).toBe(true);
+    expect(message.content).toBe("done.");
+    expect(message.tool_calls[0].function.name).toBe("task");
+  });
+
+  it("does not fire on prose that merely mentions the shape", () => {
+    const sample = `Use this: name="x"> then <parameter name="y">z</parameter>.`;
+    const { hasTools, message } = normalizeXmlInvokeToolCalls({ role: "assistant", content: sample });
+    expect(hasTools).toBe(false);
+    expect(message.content).toBe(sample);
+  });
+
+  it("leaves an intact call untouched", () => {
+    const { message } = normalizeXmlInvokeToolCalls({
+      role: "assistant",
+      content: `<function_calls>\n<invoke name="read">\n<parameter name="path">a.js</parameter>\n</invoke>\n</function_calls>`,
+    });
+    expect(message.content).toBeUndefined();
+    expect(message.tool_calls[0].function.name).toBe("read");
+  });
+});

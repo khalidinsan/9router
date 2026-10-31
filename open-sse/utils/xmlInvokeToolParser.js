@@ -48,6 +48,24 @@ export function hasXmlInvokeToolMarkup(content) {
   return typeof content === "string" && content.length > 0 && INVOKE_DETECT.test(content);
 }
 
+// A tool call whose opener lost its `<invoke name="` prefix still carries the
+// name and its parameters. Production capture (kiro, claude-opus-5.5-thinking):
+//
+//   …tasklist.\n\n\nwrite">\n<parameter name="path">…</parameter>
+//
+// i.e. the last 13 characters of `<invoke name="` are gone and the rest was
+// printed to the user. `oke name="task">` is the same loss seen from another
+// turn. Recovering here only runs when no intact `<invoke name=` exists, so it
+// cannot touch a well-formed call.
+const MANGLED_OPENER = /(?:^|[\s>])(?:<inv)?(?:oke\s+)?(?:name=)?["']?([A-Za-z_][A-Za-z0-9_]*)["']?\s*>\s*(?=<parameter\s+name=["'])/;
+
+/** Locate a mangled opener, returning the tool name and where it starts. */
+function findMangledOpener(content) {
+  const m = MANGLED_OPENER.exec(content);
+  if (!m) return null;
+  return { name: cleanToolName(m[1]), index: m.index + (m[0].length - m[0].trimStart().length) };
+}
+
 /** Strip a tool name of the trailing namespace some gateways prepend. */
 function cleanToolName(name) {
   return String(name || "").trim().replace(/^functions\./, "");
@@ -81,39 +99,65 @@ function coerceParamValue(raw) {
 export function normalizeXmlInvokeToolCalls(message) {
   if (!message || typeof message !== "object") return { message, hasTools: false };
   const content = message.content;
-  if (!hasXmlInvokeToolMarkup(content)) return { message, hasTools: false };
+  if (typeof content !== "string" || content.length === 0) return { message, hasTools: false };
   // An `<invoke>` without parameters is not a tool call — it is far more likely
   // to be sample markup the model was asked to write.
   if (!PARAM_DETECT.test(content)) return { message, hasTools: false };
 
+  const intact = hasXmlInvokeToolMarkup(content);
+  const mangled = intact ? null : findMangledOpener(content);
+  if (!intact && !mangled) return { message, hasTools: false };
+
   const calls = [];
-  INVOKE_OPEN.lastIndex = 0;
-  let open;
-  while ((open = INVOKE_OPEN.exec(content)) !== null && calls.length < MAX_CALLS) {
-    const name = cleanToolName(open[1]);
-    if (!name) continue;
+  if (intact) {
+    INVOKE_OPEN.lastIndex = 0;
+    let open;
+    while ((open = INVOKE_OPEN.exec(content)) !== null && calls.length < MAX_CALLS) {
+      const name = cleanToolName(open[1]);
+      if (!name) continue;
 
-    const bodyStart = INVOKE_OPEN.lastIndex;
-    const closeIdx = content.slice(bodyStart).search(INVOKE_CLOSE);
-    const body = closeIdx === -1 ? content.slice(bodyStart) : content.slice(bodyStart, bodyStart + closeIdx);
+      const bodyStart = INVOKE_OPEN.lastIndex;
+      const closeIdx = content.slice(bodyStart).search(INVOKE_CLOSE);
+      const body = closeIdx === -1 ? content.slice(bodyStart) : content.slice(bodyStart, bodyStart + closeIdx);
 
+      const args = {};
+      PARAM_RE.lastIndex = 0;
+      let p;
+      while ((p = PARAM_RE.exec(body)) !== null) {
+        args[p[1]] = coerceParamValue(p[2]);
+      }
+
+      calls.push({
+        id: generateToolCallId(0, calls.length, name),
+        type: "function",
+        function: { name, arguments: JSON.stringify(args) },
+      });
+    }
+  }
+
+  // Opener lost its `<invoke name="` prefix: the name and the parameter blocks
+  // are still there, so the call is recoverable instead of being printed.
+  if (calls.length === 0 && mangled) {
+    const body = content.slice(mangled.index);
     const args = {};
     PARAM_RE.lastIndex = 0;
     let p;
     while ((p = PARAM_RE.exec(body)) !== null) {
       args[p[1]] = coerceParamValue(p[2]);
     }
-
-    calls.push({
-      id: generateToolCallId(0, calls.length, name),
-      type: "function",
-      function: { name, arguments: JSON.stringify(args) },
-    });
+    if (Object.keys(args).length > 0) {
+      calls.push({
+        id: generateToolCallId(0, 0, mangled.name),
+        type: "function",
+        function: { name: mangled.name, arguments: JSON.stringify(args) },
+      });
+    }
   }
+
   if (calls.length === 0) return { message, hasTools: false };
 
   // Leading prose stays as content; the markup itself must not reach the user.
-  const start = content.search(BLOCK_START);
+  const start = intact ? content.search(BLOCK_START) : mangled.index;
   const prose = (start > 0 ? content.slice(0, start) : "").trim();
 
   const normalized = { ...message };
