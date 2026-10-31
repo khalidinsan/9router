@@ -53,6 +53,15 @@
   API like 1.2.
 
 ## Fixes
+- **Kiro**: keep the stream provably alive while a tool payload is being written.
+  Kiro fragments a tool call but delivers every fragment at the end of the
+  generation — instrumented executor: 119 `toolUseEvent` frames inside 12 ms, at
+  +14 s of an 18.9 s request — so the connection sits silent for as long as the
+  model takes to write the file. The gateway now emits an SSE comment line
+  (`: keepalive`, which clients ignore by spec) after 5 s of real silence,
+  scoped to `provider === "kiro"`: every other lane streams progressively and
+  would only get noise. Verified live: one comment during a 20.5 s kiro turn
+  with a large `write` payload, zero on WorkBuddy.
 - **Kiro / Claude**: recover XML tool calls that leaked into assistant content.
   Kiro's `claude-opus-5.5*` ids answer with `<function_calls><invoke name="…">`
   and `<parameter name="…">` blocks instead of populating `tool_calls`, so the

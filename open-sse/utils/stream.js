@@ -157,6 +157,21 @@ export function createSSEStream(options = {}) {
   const xmlEmitter = /claude|opus|sonnet|haiku/i.test(model || "") ? createXmlInvokeStreamEmitter() : null;
   let xmlStreamedCalls = false;
 
+  // A tool call's payload reaches us as one burst at the end of the generation
+  // (Kiro: 119 fragments inside 12 ms, 14 s in), so a connection can sit silent
+  // for minutes while the model is plainly still working. SSE comments keep it
+  // provably alive without inventing content — clients ignore lines starting
+  // with ':'. Emitted only after real silence, never before the first byte.
+  //
+  // Kiro-only on purpose: every other lane streams progressively, so a comment
+  // there would be noise for no benefit.
+  const KEEPALIVE_ENABLED = provider === "kiro";
+  const KEEPALIVE_INTERVAL_MS = options.keepaliveIntervalMs ?? 5000;
+  const KEEPALIVE_IDLE_MS = options.keepaliveIdleMs ?? KEEPALIVE_INTERVAL_MS;
+  let keepaliveTimer = null;
+  let lastActivityAt = Date.now();
+  let streamClosed = false;
+
   // Track Responses API event framing for same-format passthrough (codex)
   let currentOpenAIResponsesEvent = null;
   let openAIResponsesTerminalSeen = false;
@@ -175,6 +190,9 @@ export function createSSEStream(options = {}) {
   // closes right after the terminal event cancels the reader, and flush() never runs.
   const finalizeStream = () => {
     if (completionFlushTimer) { clearTimeout(completionFlushTimer); completionFlushTimer = null; }
+    streamClosed = true;
+    clearInterval(keepaliveTimer);
+    keepaliveTimer = null;
     if (finalized) return;
     finalized = true;
 
@@ -215,7 +233,24 @@ export function createSSEStream(options = {}) {
   };
 
   return new TransformStream({
+    start(controller) {
+      if (!KEEPALIVE_ENABLED) return;
+      keepaliveTimer = setInterval(() => {
+        if (streamClosed || Date.now() - lastActivityAt < KEEPALIVE_IDLE_MS) return;
+        try {
+          controller.enqueue(sharedEncoder.encode(": keepalive\n\n"));
+          lastActivityAt = Date.now();
+        } catch {
+          // The consumer went away; stop trying to write to it.
+          streamClosed = true;
+          clearInterval(keepaliveTimer);
+          keepaliveTimer = null;
+        }
+      }, KEEPALIVE_INTERVAL_MS);
+      keepaliveTimer?.unref?.();
+    },
     transform(chunk, controller) {
+      lastActivityAt = Date.now();
       if (!ttftAt) ttftAt = Date.now();
       const text = decoder.decode(chunk, { stream: true });
       buffer += text;
@@ -761,6 +796,9 @@ export function createSSEStream(options = {}) {
     },
 
     flush(controller) {
+      streamClosed = true;
+      clearInterval(keepaliveTimer);
+      keepaliveTimer = null;
       const evtSummary = Object.entries(eventTypeCounts).map(([k, v]) => `${k}=${v}`).join(",") || "none";
       dbg("SSE", `flush | provider=${provider} | model=${model} | recvLines=${sseLineCount} | emitted=${sseEmittedCount} | events=[${evtSummary}]`);
       trackPendingRequest(model, provider, connectionId, false, false, apiKey);
