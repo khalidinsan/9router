@@ -719,11 +719,31 @@ describe("Kiro terminal integrity recovery", () => {
     });
   });
 
-  it("rejects a raw chunk before concatenating beyond the protocol bound", async () => {
+  it.each([0, 7])("accepts coalesced valid frames past the per-frame bound after %i prefix bytes", async (prefix) => {
+    const frames = [
+      frame("assistantResponseEvent", { content: "first " }),
+      frame("assistantResponseEvent", { content: "second" }),
+      frame("messageStopEvent", { stopReason: "end_turn" })
+    ];
+    const bytes = concat(frames);
+    const input = prefix ? [bytes.subarray(0, prefix), bytes.subarray(prefix)] : [bytes];
+    const transformed = new KiroExecutor().transformEventStreamToSSE(
+      response(input),
+      "kr/claude-opus-4.8",
+      { maxRawBytes: Math.max(...frames.map(value => value.byteLength)) }
+    );
+    const body = await transformed.text();
+    expect(body).toContain('"content":"first "');
+    expect(body).toContain('"content":"second"');
+    expect(body).toContain('"finish_reason":"stop"');
+    expect(body).not.toContain('"error"');
+  });
+
+  it("rejects an individual frame beyond the protocol bound before buffering its body", async () => {
     let terminal;
     const executor = new KiroExecutor();
     const transformed = executor.transformEventStreamToSSE(
-      response([new Uint8Array(65)]),
+      response([frame("assistantResponseEvent", { content: "x".repeat(100) }).subarray(0, 12)]),
       "kr/claude-opus-4.8",
       {
         maxRawBytes: 64,
@@ -895,6 +915,33 @@ describe("Kiro terminal integrity recovery", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(body).toContain(long);
     expect(body).not.toContain("kiro_ellipsis_retry_failed");
+  });
+
+  it("does not append a retry response after a released stream stalls", async () => {
+    process.env.KIRO_TOOL_CALL_REPAIR_STALL_TIMEOUT_MS = "10";
+    const firstPart = "already delivered ".repeat(60);
+    const upstream = controlledResponse([frame("assistantResponseEvent", { content: firstPart })]);
+    fetchMock
+      .mockResolvedValueOnce(upstream.value)
+      .mockResolvedValueOnce(response([
+        frame("assistantResponseEvent", { content: "replacement response must not be appended" })
+      ]));
+
+    const result = await execute();
+    const reader = result.response.body.getReader();
+    await reader.read();
+    expect(new TextDecoder().decode((await reader.read()).value)).toContain(firstPart);
+    let remainder = "";
+    while (true) {
+      const next = await reader.read();
+      if (next.done) break;
+      remainder += new TextDecoder().decode(next.value);
+    }
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(remainder).toContain("kiro_missing_terminal");
+    expect(remainder).not.toContain("replacement response");
+    expect(remainder).not.toContain('"finish_reason":"stop"');
   });
 
   it("streams reasoning as it arrives instead of holding the whole thinking phase", async () => {

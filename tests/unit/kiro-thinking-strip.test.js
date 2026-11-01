@@ -113,6 +113,86 @@ describe("KiroExecutor thinking tag stripping", () => {
     expect(fullText).toBe("Here is my answer.  Yes, 42.");
   });
 
+  it("preserves visible text for every split of thinking delimiters", async () => {
+    const source = "Before <thinking>private reasoning</thinking>\nAfter ✅";
+    for (let split = 1; split < source.length; split++) {
+      const frames = [source.slice(0, split), source.slice(split)]
+        .map(content => createMockFrame("assistantResponseEvent", { content }));
+      const response = new KiroExecutor().transformEventStreamToSSE({
+        body: new ReadableStream({
+          start(controller) {
+            for (const frame of frames) controller.enqueue(frame);
+            controller.close();
+          }
+        })
+      }, "claude-test");
+      const output = await readAllSSE(response.body);
+      const chunks = output.split("\n")
+        .filter(line => line.startsWith("data: ") && line !== "data: [DONE]")
+        .map(line => JSON.parse(line.slice(6)));
+      expect(chunks.map(chunk => chunk.choices?.[0]?.delta.content || "").join(""), `split ${split}`)
+        .toBe("Before After ✅");
+      expect(chunks.some(chunk => chunk.error)).toBe(false);
+      expect(chunks.at(-1).choices?.[0]?.finish_reason).toBe("stop");
+    }
+  });
+
+  it("preserves text after a closing thinking delimiter split over many events", async () => {
+    const pieces = ["<thinking>private", ..."</thinking>", "\n", "Visible ", "answer."];
+    const response = new KiroExecutor().transformEventStreamToSSE({
+      body: new ReadableStream({
+        start(controller) {
+          for (const content of pieces) {
+            controller.enqueue(createMockFrame("assistantResponseEvent", { content }));
+          }
+          controller.close();
+        }
+      })
+    }, "claude-test");
+    const output = await readAllSSE(response.body);
+    const chunks = output.split("\n")
+      .filter(line => line.startsWith("data: ") && line !== "data: [DONE]")
+      .map(line => JSON.parse(line.slice(6)));
+    expect(chunks.map(chunk => chunk.choices?.[0]?.delta.content || "").join("")).toBe("Visible answer.");
+    expect(chunks.some(chunk => chunk.error)).toBe(false);
+    expect(chunks.at(-1).choices?.[0]?.finish_reason).toBe("stop");
+  });
+
+  it("flushes an unfinished literal opener and keeps native reasoning and tool arguments", async () => {
+    const input = { path: "✅.txt", content: "<thinking>literal tool input</thinking>" };
+    const frames = [
+      createMockFrame("reasoningContentEvent", { text: "Native reasoning stays complete." }),
+      createMockFrame("assistantResponseEvent", { content: "A<thinking>private</think" }),
+      createMockFrame("assistantResponseEvent", { content: "ing>\nB<thinking>more private</thinking>\nC <thin" }),
+      createMockFrame("toolUseEvent", { toolUseId: "write-1", name: "write_file", input }),
+      createMockFrame("messageStopEvent", { stopReason: "tool_use" })
+    ];
+    const response = new KiroExecutor().transformEventStreamToSSE({
+      body: new ReadableStream({
+        start(controller) {
+          for (const frame of frames) {
+            for (let offset = 0; offset < frame.byteLength; offset += 3) {
+              controller.enqueue(frame.subarray(offset, offset + 3));
+            }
+          }
+          controller.close();
+        }
+      })
+    }, "claude-test");
+    const output = await readAllSSE(response.body);
+    const chunks = output.split("\n")
+      .filter(line => line.startsWith("data: ") && line !== "data: [DONE]")
+      .map(line => JSON.parse(line.slice(6)));
+    expect(chunks.some(chunk => chunk.error)).toBe(false);
+    const deltas = chunks.flatMap(chunk => chunk.choices?.map(choice => choice.delta) || []);
+    expect(deltas.map(delta => delta.content || "").join("")).toBe("ABC <thin");
+    expect(deltas.map(delta => delta.reasoning_content || "").join("")).toBe("Native reasoning stays complete.");
+    const calls = deltas.flatMap(delta => delta.tool_calls || []);
+    expect(calls[0]).toMatchObject({ index: 0, id: "write-1", function: { name: "write_file" } });
+    expect(JSON.parse(calls.map(call => call.function.arguments || "").join(""))).toEqual(input);
+    expect(chunks.at(-1).choices?.[0]?.finish_reason).toBe("tool_calls");
+  });
+
   it("handles empty content after stripping when hasReasoningContent is true", async () => {
     const executor = new KiroExecutor();
     

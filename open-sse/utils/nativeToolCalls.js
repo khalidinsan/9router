@@ -17,7 +17,7 @@
 
 import { normalizeKimiToolCalls } from "./kimiToolParser.js";
 import { normalizeDeepseekToolCalls } from "./deepseekToolParser.js";
-import { normalizeXmlInvokeToolCalls } from "./xmlInvokeToolParser.js";
+import { normalizeXmlInvokeToolCalls, XML_INVOKE_OPENER_SOURCE } from "./xmlInvokeToolParser.js";
 
 /**
  * Which parsers apply to `model`, in priority order.
@@ -92,13 +92,14 @@ const TOKEN_RE = new RegExp(
     // the depth counter honest, so a partially received block is held whole.
     `<function_calls>|<\\/function_calls>`,
     `<invoke\\s+name=["'][^"']*["'][^>]*>|<\\/invoke>`,
+    XML_INVOKE_OPENER_SOURCE,
   ].join("|"),
   "g"
 );
 
 // Does this text contain markup at all? Used to decide whether a held tail is
 // user-facing prose or a marker that must be dropped.
-const MARKUP_LIKE = new RegExp(`(?:${FW}{1,2}|\\|{1,2})DSML|\\|tool${TB}|<function_calls>|<invoke\\s+name=`);
+const MARKUP_LIKE = new RegExp(`(?:${FW}{1,2}|\\|{1,2})DSML|\\|tool${TB}|<function_calls>|<invoke\\s+name=|${XML_INVOKE_OPENER_SOURCE}`);
 
 // Tags the XML dialect can start with. A delta that ends mid-tag (`<invo`) is
 // held while it is still a prefix of one of these.
@@ -184,9 +185,10 @@ export function findOpenMarkerStart(text) {
  * untouched.
  *
  * @param {string} pending
+ * @param {{prefixes: Set<string>, maxLength: number}|null} xmlOpeners partial openers for declared tools
  * @returns {{emit: string, hold: string}}
  */
-export function takeEmittableContent(pending) {
+export function takeEmittableContent(pending, xmlOpeners = null) {
   if (!pending) return { emit: "", hold: "" };
 
   // 1. An unterminated marker: hold from its start.
@@ -237,12 +239,27 @@ export function takeEmittableContent(pending) {
     }
   }
 
+  if (xmlOpeners) {
+    let tail = pending.trimEnd();
+    const lt = tail.lastIndexOf("<");
+    if (lt !== -1 && '<parameter name="'.startsWith(tail.slice(lt))) {
+      tail = tail.slice(0, lt).trimEnd();
+    }
+    for (let length = Math.min(tail.length, xmlOpeners.maxLength); length > 0; length--) {
+      const at = tail.length - length;
+      if (xmlOpeners.prefixes.has(tail.slice(at))) {
+        if (cut === -1 || at < cut) cut = at;
+        break;
+      }
+    }
+  }
+
   if (cut === -1) return { emit: pending, hold: "" };
 
   const hold = pending.slice(cut);
   // A bare fence is a real marker start, so it gets the generous bound; a lone
   // `<` is only a guess and gets the small one.
-  const limit = MARKUP_LIKE.test(hold) ? MAX_OPEN_MARKER_LEN : MAX_MARKER_TAIL_LEN;
+  const limit = looksLikeMarkup(hold) ? MAX_OPEN_MARKER_LEN : Math.max(MAX_MARKER_TAIL_LEN, xmlOpeners?.maxLength || 0);
   if (hold.length > limit) return { emit: pending, hold: "" };
   return { emit: pending.slice(0, cut), hold };
 }

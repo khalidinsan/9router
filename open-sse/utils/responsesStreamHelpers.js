@@ -31,15 +31,15 @@ export function buildAbortedResponsesTerminalBytes() {
 }
 
 // Synthesize a response.failed event for streams that close without a terminal event
-export function formatIncompleteOpenAIResponsesStreamFailure() {
+export function formatIncompleteOpenAIResponsesStreamFailure(error = null, responseId = null) {
   return formatSSE({
     event: "response.failed",
     data: {
       type: "response.failed",
       response: {
-        id: `resp_${Date.now()}`,
+        id: responseId || `resp_${Date.now()}`,
         status: "failed",
-        error: {
+        error: error || {
           type: "stream_error",
           code: "stream_disconnected",
           message: "stream closed before response.completed"

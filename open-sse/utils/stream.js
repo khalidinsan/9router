@@ -33,7 +33,7 @@ export function buildOpenAIToolCallsChunk(toolCalls, messageId, modelName) {
     model: modelName || null,
     choices: [{
       index: 0,
-      delta: { tool_calls: toolCalls },
+      delta: { tool_calls: toolCalls.map((call, index) => ({ ...call, index })) },
       finish_reason: "tool_calls",
     }],
   };
@@ -109,6 +109,25 @@ export function createSSEStream(options = {}) {
   // names that weak models (e.g. Kimi served via kimchi) emit in the response
   // (e.g. "functionsread" instead of "read"). Computed once per stream.
   const validToolNames = body?.tools ? extractToolNames(body.tools) : null;
+  // A damaged XML opener can start at any character of `<invoke name="`.
+  // Only declared tool names are candidates, so ordinary prose is not withheld wholesale.
+  const xmlOpeners = /claude|opus|sonnet|haiku/i.test(model || "") && validToolNames?.length
+    ? { prefixes: new Set(), maxLength: 0 }
+    : null;
+  if (xmlOpeners) {
+    for (const name of validToolNames) {
+      for (const quote of ['"', "'"]) {
+        const header = `<invoke name=${quote}`;
+        for (let offset = 0; offset <= header.length; offset++) {
+          const opener = `${header.slice(offset)}${name}${quote}>`;
+          xmlOpeners.maxLength = Math.max(xmlOpeners.maxLength, opener.length);
+          for (let length = 1; length <= opener.length; length++) {
+            xmlOpeners.prefixes.add(opener.slice(0, length));
+          }
+        }
+      }
+    }
+  }
 
   // Tool-call ids already sent to the client, keyed by the tool-call index.
   // A late fragment that opens a NEW index without an id must not reach the
@@ -151,6 +170,7 @@ export function createSSEStream(options = {}) {
   // Same holdback for the thinking channel. DeepSeek emits the identical DSML
   // dialect in `reasoning_content`, and it reached the client verbatim.
   let reasoningHold = "";
+  let lastNativeChunk = null;
   // A tool call's payload reaches us as one burst at the end of the generation
   // (Kiro: 119 fragments inside 12 ms, 14 s in), so a connection can sit silent
   // for minutes while the model is plainly still working. SSE comments keep it
@@ -165,6 +185,7 @@ export function createSSEStream(options = {}) {
   let keepaliveTimer = null;
   let lastActivityAt = Date.now();
   let streamClosed = false;
+  let streamErrorSeen = false;
 
   // Track Responses API event framing for same-format passthrough (codex)
   let currentOpenAIResponsesEvent = null;
@@ -236,8 +257,81 @@ export function createSSEStream(options = {}) {
     }
     finalizeStream();
   };
+  const releaseReasoningTail = (delta) => {
+    if (!reasoningHold || (!delta?.content && !delta?.tool_calls?.length)) return false;
+    const held = reasoningHold;
+    reasoningHold = "";
+    if (looksLikeMarkup(held)) return false;
+    delta.reasoning_content = (delta.reasoning_content || "") + held;
+    totalContentLength += held.length;
+    accumulatedThinking += held;
+    return true;
+  };
 
-  return new TransformStream({
+  const resolveNativeTail = (chunk) => {
+    const choice = chunk.choices?.[0];
+    if (!choice) return false;
+    const delta = choice.delta ||= {};
+    let changed = false;
+
+    if (nativeHold && !nativeToolCalls) {
+      const late = normalizeNativeToolCalls(model, { role: "assistant", content: nativeHold });
+      if (late) nativeToolCalls = late.message.tool_calls;
+    }
+    for (const field of ["content", "reasoning_content"]) {
+      const held = field === "content" ? nativeHold : reasoningHold;
+      if (field === "content") nativeHold = ""; else reasoningHold = "";
+      if (!held || looksLikeMarkup(held) || (field === "content" && nativeToolCalls)) continue;
+      delta[field] = (delta[field] || "") + held;
+      totalContentLength += held.length;
+      if (field === "content") accumulatedContent += held; else accumulatedThinking += held;
+      changed = true;
+    }
+    if (nativeToolCalls && !nativeToolCallsEmitted && !streamErrorSeen) {
+      delta.tool_calls = nativeToolCalls.map((call, index) => ({ ...call, index }));
+      choice.finish_reason = "tool_calls";
+      nativeToolCallsEmitted = true;
+      changed = true;
+    }
+    return changed;
+  };
+
+  const flushNativeTail = (controller) => {
+    if (!lastNativeChunk || (!nativeHold && !reasoningHold && (!nativeToolCalls || nativeToolCallsEmitted || streamErrorSeen))) return;
+    const chunk = {
+      id: lastNativeChunk.id,
+      object: "chat.completion.chunk",
+      created: lastNativeChunk.created,
+      model: lastNativeChunk.model || model,
+      choices: [{ index: 0, delta: {}, finish_reason: null }],
+    };
+    if (!resolveNativeTail(chunk)) return;
+    const translated = mode === STREAM_MODE.PASSTHROUGH
+      ? [chunk]
+      : translateResponse(targetFormat, sourceFormat, chunk, state);
+    for (const item of translated || []) {
+      if (item === null || item === undefined) continue;
+      const output = formatSSE(item, sourceFormat || FORMATS.OPENAI);
+      reqLogger?.appendConvertedChunk?.(output);
+      controller.enqueue(sharedEncoder.encode(output));
+      sseEmittedCount++;
+    }
+  };
+
+  const forwardStreamError = (chunk, controller) => {
+    streamErrorSeen = true;
+    flushNativeTail(controller);
+    const output = sourceFormat === FORMATS.OPENAI_RESPONSES
+      ? formatIncompleteOpenAIResponsesStreamFailure(chunk.error, state?.responseId)
+      : formatSSE(sourceFormat === FORMATS.CLAUDE ? { ...chunk, type: "error" } : chunk, sourceFormat || FORMATS.OPENAI);
+    reqLogger?.appendConvertedChunk?.(output);
+    controller.enqueue(sharedEncoder.encode(output));
+    sseEmittedCount++;
+    if (sourceFormat === FORMATS.OPENAI_RESPONSES) openAIResponsesTerminalSeen = true;
+    finalizeStream();
+  };
+
+  const transformer = {
     start(controller) {
       if (!KEEPALIVE_ENABLED) return;
       keepaliveTimer = setInterval(() => {
@@ -255,11 +349,15 @@ export function createSSEStream(options = {}) {
       keepaliveTimer?.unref?.();
     },
     transform(chunk, controller) {
-      lastActivityAt = Date.now();
-      if (!ttftAt) ttftAt = Date.now();
-      const text = decoder.decode(chunk, { stream: true });
-      buffer += text;
-      reqLogger?.appendProviderChunk?.(text);
+      if (chunk) {
+        lastActivityAt = Date.now();
+        if (!ttftAt) ttftAt = Date.now();
+        const text = decoder.decode(chunk, { stream: true });
+        buffer += text;
+        reqLogger?.appendProviderChunk?.(text);
+      } else {
+        buffer += "\n\n";
+      }
 
       const lines = buffer.split("\n");
       buffer = lines.pop() || "";
@@ -288,6 +386,10 @@ export function createSSEStream(options = {}) {
           if (trimmed.startsWith("data:") && trimmed.slice(5).trim() !== "[DONE]") {
             try {
               let parsed = JSON.parse(trimmed.slice(5).trim());
+              if (parsed.error) {
+                forwardStreamError(parsed, controller);
+                continue;
+              }
 
               const idFixed = fixInvalidId(parsed);
 
@@ -379,6 +481,7 @@ export function createSSEStream(options = {}) {
               if (!hasValuableContent(parsed, FORMATS.OPENAI)) {
                 continue;
               }
+              if (nativeToolCallsEnabled && parsed.choices?.[0]) lastNativeChunk = parsed;
 
               const delta = parsed.choices?.[0]?.delta;
               const reasoning = delta?.reasoning_content;
@@ -423,10 +526,10 @@ export function createSSEStream(options = {}) {
                   // A call is confirmed but the stream may still be inside the
                   // wrapper. Anything after this point belongs to the markup
                   // (the remaining arguments), never to the client.
-                  const openAt = findOpenMarkerStart(raw);
+                  const openAt = parsedNow.markupStart ?? findOpenMarkerStart(raw);
                   if (openAt !== -1) nativeHold = raw.slice(openAt);
                 } else {
-                  const split = takeEmittableContent(raw);
+                  const split = takeEmittableContent(raw, xmlOpeners);
                   nativeHold = split.hold;
                   emitted = split.emit;
                   if (emitted) {
@@ -445,11 +548,12 @@ export function createSSEStream(options = {}) {
                   delete parsed.choices[0].delta.content;
                 }
 
-                if (nativeHold || parsedNow) fieldsInjected = true;
+                if (emitted !== content) fieldsInjected = true;
               } else if (content && typeof content === "string") {
                 totalContentLength += content.length;
                 accumulatedContent += content;
               }
+              if (releaseReasoningTail(delta)) fieldsInjected = true;
 
               const extracted = extractUsage(parsed);
               if (extracted) {
@@ -459,49 +563,8 @@ export function createSSEStream(options = {}) {
               responsesTerminal = isOpenAIResponsesTerminalEvent(currentOpenAIResponsesEvent, parsed);
 
               const isFinishChunk = parsed.choices?.[0]?.finish_reason;
-              // The held tail is resolved once the stream ends. It is either
-              // (a) markup that completes into tool calls, or (b) ordinary text
-              // that merely looked like the start of one. Markup that never
-              // completes is DROPPED, never forwarded: a truncated marker such
-              // as `|DSML| calls>` is still markup, and emitting it is exactly
-              // the leak this holdback exists to prevent.
-              if (nativeHold && isFinishChunk) {
-                if (!nativeToolCalls && nativeToolCallsEnabled) {
-                  const late = normalizeNativeToolCalls(model, { role: "assistant", content: nativeHold });
-                  if (late) nativeToolCalls = late.message.tool_calls;
-                }
-                if (!nativeToolCalls && nativeHold && !looksLikeMarkup(nativeHold)) {
-                  const leftover = `data: ${JSON.stringify({ ...parsed, choices: [{ index: 0, delta: { content: nativeHold }, finish_reason: null }] })}\n`;
-                  reqLogger?.appendConvertedChunk?.(leftover);
-                  controller.enqueue(sharedEncoder.encode(leftover));
-                  totalContentLength += nativeHold.length;
-                  accumulatedContent += nativeHold;
-                }
-                nativeHold = "";
-              }
-              // Same resolution for the thinking channel: a held tail is markup
-              // (dropped) or plain text that merely looked like a marker start.
-              if (reasoningHold && isFinishChunk) {
-                const tail = reasoningHold;
-                reasoningHold = "";
-                if (tail && !looksLikeMarkup(tail)) {
-                  const leftover = `data: ${JSON.stringify({ ...parsed, choices: [{ index: 0, delta: { reasoning_content: tail }, finish_reason: null }] })}\n`;
-                  reqLogger?.appendConvertedChunk?.(leftover);
-                  controller.enqueue(sharedEncoder.encode(leftover));
-                  totalContentLength += tail.length;
-                  accumulatedThinking += tail;
-                }
-              }
-              // Native markup leaked and no structured tool_calls arrived: swap the
-              // upstream finish chunk for a synthetic tool_calls chunk so the client
-              // actually runs the tool instead of printing the raw markup.
-              if (nativeToolCalls && isFinishChunk && !nativeToolCallsEmitted) {
-                const chunk = buildOpenAIToolCallsChunk(nativeToolCalls, null, model);
-                if (hasValidUsage(usage)) chunk.usage = filterUsageForFormat(addBufferToUsage(usage), FORMATS.OPENAI);
-                output = `data: ${JSON.stringify(chunk)}\n`;
-                injectedUsage = true;
-                nativeToolCallsEmitted = true;
-              } else if (isFinishChunk && !hasValidUsage(parsed.usage)) {
+              if (isFinishChunk && resolveNativeTail(parsed)) fieldsInjected = true;
+              if (isFinishChunk && !hasValidUsage(parsed.usage)) {
                 const estimated = estimateUsage(body, totalContentLength, FORMATS.OPENAI);
                 parsed.usage = filterUsageForFormat(estimated, FORMATS.OPENAI);
                 output = `data: ${JSON.stringify(parsed)}\n`;
@@ -538,6 +601,10 @@ export function createSSEStream(options = {}) {
           // sentinel arrives (it rides the last chunk before it), so finalize
           // here instead of waiting for a flush that may never come.
           const isDoneSentinel = trimmed.startsWith("data:") && trimmed.slice(5).trim() === "[DONE]";
+          if (isDoneSentinel) {
+            flushNativeTail(controller);
+            streamDoneSent = true;
+          }
 
           reqLogger?.appendConvertedChunk?.(output);
           controller.enqueue(sharedEncoder.encode(output));
@@ -551,6 +618,10 @@ export function createSSEStream(options = {}) {
 
         const parsed = parseSSELine(trimmed, targetFormat);
         if (!parsed) continue;
+        if (parsed.error) {
+          forwardStreamError(parsed, controller);
+          continue;
+        }
 
         // Responses API same-format passthrough: preserve event framing + track terminal state
         const isOpenAIResponsesStream = targetFormat === FORMATS.OPENAI_RESPONSES;
@@ -566,10 +637,11 @@ export function createSSEStream(options = {}) {
         // For Ollama: done=true is the final chunk with finish_reason/usage, must translate
         // For other formats: done=true is the [DONE] sentinel, skip
         if (parsed && parsed.done && targetFormat !== FORMATS.OLLAMA) {
+          flushNativeTail(controller);
           // A direct Chat-to-Responses translation can defer response.completed
           // while waiting for a usage trailer. [DONE] ends that opportunity even
           // if the upstream keeps the HTTP connection open, so finish now.
-          if (targetFormat === FORMATS.OPENAI && sourceFormat === FORMATS.OPENAI_RESPONSES &&
+          if (!streamErrorSeen && targetFormat === FORMATS.OPENAI && sourceFormat === FORMATS.OPENAI_RESPONSES &&
               state.completionPending && !state.completedSent) {
             flushPendingCompletion(controller);
           }
@@ -583,7 +655,7 @@ export function createSSEStream(options = {}) {
             sseEmittedCount++;
           }
 
-          if (keepsOpenAIResponsesFormat && !streamDoneSent) {
+          if ((keepsOpenAIResponsesFormat || sourceFormat === FORMATS.OPENAI) && !streamDoneSent) {
             const doneOutput = "data: [DONE]\n\n";
             reqLogger?.appendConvertedChunk?.(doneOutput);
             controller.enqueue(sharedEncoder.encode(doneOutput));
@@ -595,6 +667,7 @@ export function createSSEStream(options = {}) {
           finalizeStream();
           continue;
         }
+        if (nativeToolCallsEnabled && parsed.choices?.[0]) lastNativeChunk = parsed;
 
         // Claude format - content
         if (parsed.delta?.text) {
@@ -620,10 +693,10 @@ export function createSSEStream(options = {}) {
           if (parsedNow) {
             // Prose before the markup is still the model's answer.
             emitted = parsedNow.message.content || "";
-            const openAt = findOpenMarkerStart(raw);
+            const openAt = parsedNow.markupStart ?? findOpenMarkerStart(raw);
             if (openAt !== -1) nativeHold = raw.slice(openAt);
           } else {
-            const split = takeEmittableContent(raw);
+            const split = takeEmittableContent(raw, xmlOpeners);
             nativeHold = split.hold;
             emitted = split.emit;
             if (emitted) {
@@ -663,6 +736,7 @@ export function createSSEStream(options = {}) {
           totalContentLength += parsed.choices[0].delta.reasoning_content.length;
           accumulatedThinking += parsed.choices[0].delta.reasoning_content;
         }
+        releaseReasoningTail(parsed.choices?.[0]?.delta);
         
         // Gemini format
         if (parsed.candidates?.[0]?.content?.parts) {
@@ -696,6 +770,7 @@ export function createSSEStream(options = {}) {
         }
 
         currentOpenAIResponsesEvent = null;
+        if (parsed.choices?.[0]?.finish_reason) resolveNativeTail(parsed);
 
         // Translate: targetFormat -> openai -> sourceFormat
         const translated = translateResponse(targetFormat, sourceFormat, parsed, state);
@@ -712,36 +787,7 @@ export function createSSEStream(options = {}) {
           for (const item of translated) {
             if (item === null || item === undefined) continue;
 
-            // Native markup leaked and no structured tool_calls arrived: swap the
-            // finish chunk for a synthetic tool_calls chunk so the client sees the
-            // correct finish_reason and actually runs the tool.
             const isFinishChunk = item.type === "message_delta" || item.choices?.[0]?.finish_reason;
-
-            // Resolve anything still held before the terminal chunk: markup that
-            // never completed is dropped, plain text that merely looked like a
-            // marker start is emitted.
-            if (isFinishChunk && (nativeHold || reasoningHold)) {
-              for (const field of ["content", "reasoning_content"]) {
-                const held = field === "content" ? nativeHold : reasoningHold;
-                if (field === "content") nativeHold = ""; else reasoningHold = "";
-                if (!held || looksLikeMarkup(held)) continue;
-                const tailOut = formatSSE(
-                  { ...item, choices: [{ index: 0, delta: { [field]: held }, finish_reason: null }] },
-                  sourceFormat,
-                );
-                reqLogger?.appendConvertedChunk?.(tailOut);
-                controller.enqueue(sharedEncoder.encode(tailOut));
-                sseEmittedCount++;
-              }
-            }
-            if (nativeToolCalls && isFinishChunk && sourceFormat === FORMATS.OPENAI) {
-              const emitted = emitNativeToolCallsChunk(controller, nativeToolCalls, state, model, sourceFormat, reqLogger);
-              if (emitted) {
-                sseEmittedCount++;
-                nativeToolCallsEmitted = true;
-              }
-              continue;
-            }
 
             // Filter empty chunks
             if (!hasValuableContent(item, sourceFormat)) {
@@ -790,17 +836,15 @@ export function createSSEStream(options = {}) {
       try {
         const remaining = decoder.decode();
         if (remaining) buffer += remaining;
+        if (buffer) transformer.transform(null, controller);
+        if (mode === STREAM_MODE.PASSTHROUGH) {
+          const separator = "\n";
+          reqLogger?.appendConvertedChunk?.(separator);
+          controller.enqueue(sharedEncoder.encode(separator));
+        }
+        flushNativeTail(controller);
 
         if (mode === STREAM_MODE.PASSTHROUGH) {
-          if (buffer) {
-            let output = buffer;
-            if (buffer.startsWith("data:") && !buffer.startsWith("data: ")) {
-              output = "data: " + buffer.slice(5);
-            }
-            reqLogger?.appendConvertedChunk?.(output);
-            controller.enqueue(sharedEncoder.encode(output));
-          }
-
           // IMPORTANT: In passthrough mode we still must terminate the SSE stream.
           // Some clients (e.g. OpenClaw) expect the OpenAI-style sentinel:
           //   data: [DONE]\n\n
@@ -817,43 +861,7 @@ export function createSSEStream(options = {}) {
           return;
         }
 
-        if (buffer.trim()) {
-          // Same parse as the transform loop: without targetFormat this only
-          // accepts "data: " lines, so an NDJSON provider (Ollama) lost whatever
-          // arrived without its closing newline.
-          const parsed = parseSSELine(buffer.trim(), targetFormat);
-          // parseSSELine turns the SSE sentinel "data: [DONE]" into { done: true },
-          // which must not be translated. An Ollama chunk also carries done:true,
-          // but it is the real final chunk — it holds finish_reason and the token
-          // counts — so it has to go through.
-          const isDoneSentinel = parsed?.done && targetFormat !== FORMATS.OLLAMA;
-          if (parsed && !isDoneSentinel) {
-            // Same accumulation the transform loop does, so finalizeStream() can
-            // log a tail chunk's tokens instead of falling back to null.
-            const extracted = extractUsage(parsed);
-            if (extracted) state.usage = mergeUsage(state.usage, extracted);
-
-            const translated = translateResponse(targetFormat, sourceFormat, parsed, state);
-
-            if (translated?._openaiIntermediate) {
-              for (const item of translated._openaiIntermediate) {
-                const openaiOutput = formatSSE(item, FORMATS.OPENAI);
-                reqLogger?.appendOpenAIChunk?.(openaiOutput);
-              }
-            }
-
-            if (translated?.length > 0) {
-              for (const item of translated) {
-                if (item === null || item === undefined) continue;
-                const output = formatSSE(item, sourceFormat);
-                reqLogger?.appendConvertedChunk?.(output);
-                controller.enqueue(sharedEncoder.encode(output));
-              }
-            }
-          }
-        }
-
-        const flushed = translateResponse(targetFormat, sourceFormat, null, state);
+        const flushed = streamErrorSeen ? null : translateResponse(targetFormat, sourceFormat, null, state);
 
         if (flushed?._openaiIntermediate) {
           for (const item of flushed._openaiIntermediate) {
@@ -871,22 +879,6 @@ export function createSSEStream(options = {}) {
           }
         }
 
-        // Fallback: if native tool-call markup leaked into the accumulated
-        // content but no finish chunk triggered emission, synthesize a final
-        // tool_calls chunk now. This covers fragmented markup and passthrough.
-        if (!nativeToolCallsEmitted && nativeToolCallsEnabled) {
-          const normalized = normalizeNativeToolCalls(model, {
-            role: "assistant",
-            content: accumulatedContent,
-          });
-          if (normalized) {
-            const emitted = emitNativeToolCallsChunk(controller, normalized.message.tool_calls, state, model, sourceFormat, reqLogger);
-            if (emitted) {
-              sseEmittedCount++;
-              nativeToolCallsEmitted = true;
-            }
-          }
-        }
 
         // Synthesize response.failed if a Responses passthrough stream never reached a terminal event
         const keepsOpenAIResponsesFormat = targetFormat === FORMATS.OPENAI_RESPONSES && sourceFormat === FORMATS.OPENAI_RESPONSES;
@@ -911,7 +903,8 @@ export function createSSEStream(options = {}) {
         finalizeStream();
       }
     }
-  });
+  };
+  return new TransformStream(transformer);
 }
 
 export function createSSETransformStreamWithLogger(targetFormat, sourceFormat, provider = null, reqLogger = null, toolNameMap = null, model = null, connectionId = null, body = null, onStreamComplete = null, apiKey = null, customToolNames = null, credentials = null) {

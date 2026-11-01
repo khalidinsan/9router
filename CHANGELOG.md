@@ -53,6 +53,19 @@
   API like 1.2.
 
 ## Fixes
+- **Kiro streaming**: preserve buffered prefixes when passthrough resumes, and
+  parse embedded thinking delimiters across event boundaries without dropping
+  the answer that follows. Apply EventStream size bounds per frame rather than
+  per network chunk. A stall after output is released now reports an incomplete
+  stream without appending a retried answer. Pending text and tool calls settle
+  before terminal framing, and upstream errors survive OpenAI, Claude and
+  Responses conversion instead of becoming a successful completion.
+- **Kiro / Claude**: share the XML opener grammar between parsing and streaming
+  buffering, including every lost prefix of `<invoke name="` such as `="read">`.
+  Keep the full XML sequence until the terminal event so consecutive calls
+  cannot overwrite one another. Each call has its own arguments, ID and OpenAI
+  stream index. Partial openers use declared tool names; confirmed markup uses
+  the payload buffer limit rather than the short partial-marker limit.
 - **Kiro**: keep the stream provably alive while a tool payload is being written.
   Kiro fragments a tool call but delivers every fragment at the end of the
   generation — instrumented executor: 119 `toolUseEvent` frames inside 12 ms, at

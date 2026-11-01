@@ -13,6 +13,7 @@ import { STREAM_FIRST_CHUNK_TIMEOUT_MS } from "../config/runtimeConfig.js";
 import { estimateInputTokens } from "../utils/usageTracking.js";
 import { AWS_EVENTSTREAM } from "../config/awsConstants.js";
 import { crc32, parseEventFrame } from "../utils/awsEventStream.js";
+import { splitThinkTaggedText, flushThinkTaggedState } from "../translator/concerns/thinkingTags.js";
 
 const KIRO_REPAIR_BUFFER_MAX_BYTES = 8 * 1024 * 1024;
 const KIRO_REPAIR_HEARTBEAT_MS = 10_000;
@@ -692,6 +693,17 @@ export class KiroExecutor extends BaseExecutor {
       }
     } catch (error) {
       await reader.cancel(error.message).catch(() => {});
+      if (released && error.name !== "AbortError") {
+        const detail = {
+          attempt,
+          terminal_provenance: "transport_read_error",
+          transport_state: "upstream_error",
+          stop_reason: null,
+          stop_disposition: "terminal_incomplete"
+        };
+        options.onRelease(encodeSSEError("kiro_missing_terminal", error.message, detail));
+        return { kind: "streamed", released: true, diagnostics: detail };
+      }
       throw error;
     }
 
@@ -757,6 +769,7 @@ export class KiroExecutor extends BaseExecutor {
     const created = Math.floor(Date.now() / 1000);
     const capabilityModel = resolveKiroModel(model).upstream;
     const contextWindow = getCapabilitiesForModel("kiro", capabilityModel).contextWindow || 200000;
+    const maxRawBytes = options.maxRawBytes || EVENTSTREAM_MAX_MESSAGE_BYTES;
     const eventCounts = {};
     const state = {
       buffer: new Uint8Array(0),
@@ -778,7 +791,8 @@ export class KiroExecutor extends BaseExecutor {
       hasContextUsage: false,
       hasMetering: false,
       usage: null,
-      inThinking: false,
+      thinkTag: {},
+      skipThinkingNewline: false,
       toolValidationError: null,
       validatedFrames: 0,
       finished: false
@@ -812,6 +826,20 @@ export class KiroExecutor extends BaseExecutor {
       if (state.chunkIndex === 0) delta = { role: "assistant", ...delta };
       state.chunkIndex++;
       controller.enqueue(sseChunk(delta));
+    };
+    const stripThinking = (text) => {
+      if (state.skipThinkingNewline && text) {
+        text = text.replace(/^\n/u, "");
+        state.skipThinkingNewline = false;
+      }
+      const source = (state.thinkTag.carry || "") + text;
+      if (source) state.skipThinkingNewline = /<\/(?:thinking|think)>$/iu.test(source);
+      const split = splitThinkTaggedText(
+        source.replace(/(<\/(?:thinking|think)>)\n/giu, "$1"),
+        { ...state.thinkTag, carry: "" }
+      );
+      state.thinkTag = split.state;
+      return split.parts.filter(part => part.kind === "content").map(part => part.text).join("");
     };
     const fail = (controller, provenance, code, message, extra = {}) => {
       state.finished = true;
@@ -932,26 +960,7 @@ export class KiroExecutor extends BaseExecutor {
       const eventCountKey = KIRO_EVENT_TYPES.has(eventType) ? eventType : "other";
       eventCounts[eventCountKey] = (eventCounts[eventCountKey] || 0) + 1;
       if (eventType === "assistantResponseEvent" && typeof event.payload?.content === "string") {
-        let content = event.payload.content;
-        if (state.inThinking) {
-          const end = content.indexOf("</thinking>");
-          if (end < 0) content = "";
-          else {
-            state.inThinking = false;
-            content = content.slice(end + 11).replace(/^\n/u, "");
-          }
-        } else {
-          const start = content.indexOf("<thinking>");
-          if (start >= 0) {
-            const end = content.indexOf("</thinking>", start + 10);
-            if (end < 0) {
-              state.inThinking = true;
-              content = content.slice(0, start);
-            } else {
-              content = content.slice(0, start) + content.slice(end + 11).replace(/^\n/u, "");
-            }
-          }
-        }
+        const content = stripThinking(event.payload.content);
         if (content || !state.hasReasoning) {
           state.hasText ||= content.length > 0;
           state.totalContentLength += content.length;
@@ -1050,7 +1059,7 @@ export class KiroExecutor extends BaseExecutor {
     };
     const processBytes = (chunk, controller) => {
       const combinedLength = state.buffer.byteLength + chunk.byteLength;
-      if (combinedLength > (options.maxRawBytes || EVENTSTREAM_MAX_MESSAGE_BYTES)) {
+      if (combinedLength > maxRawBytes) {
         fail(
           controller,
           "corrupt_eventstream_frame",
@@ -1076,6 +1085,10 @@ export class KiroExecutor extends BaseExecutor {
         }
         const totalLength = view.getUint32(0, false);
         const headersLength = view.getUint32(4, false);
+        if (totalLength > maxRawBytes) {
+          fail(controller, "corrupt_eventstream_frame", "kiro_missing_terminal", "Kiro EventStream buffered bytes exceed the protocol bound");
+          return false;
+        }
         if (totalLength < 16 || totalLength > EVENTSTREAM_MAX_MESSAGE_BYTES ||
             headersLength > EVENTSTREAM_MAX_HEADERS_BYTES || headersLength > totalLength - 16) {
           fail(controller, "corrupt_eventstream_frame", "kiro_missing_terminal", "Kiro EventStream frame bounds are invalid");
@@ -1132,6 +1145,14 @@ export class KiroExecutor extends BaseExecutor {
         return;
       }
       state.transportState = "clean_eof";
+      const pending = flushThinkTaggedState(state.thinkTag);
+      state.thinkTag = pending.state;
+      for (const part of pending.parts) {
+        if (part.kind !== "content") continue;
+        state.hasText = true;
+        state.totalContentLength += part.text.length;
+        emitDelta(controller, { content: part.text });
+      }
       const declaredDisposition = stopDisposition(state.stopReason, state.sawToolUse);
       // model_context_window_exceeded / max_tokens map to terminal_incomplete. When
       // they arrive after the model already streamed content, fail() threw away a
@@ -1292,7 +1313,12 @@ export class KiroExecutor extends BaseExecutor {
             if (done) break;
             const chunksBefore = state.chunkIndex;
             const framesBefore = state.validatedFrames;
-            if (!processBytes(value, controller)) {
+            for (let offset = 0; offset < value.byteLength && !state.finished;) {
+              const size = Math.min(value.byteLength - offset, Math.max(1, maxRawBytes - state.buffer.byteLength));
+              if (!processBytes(value.subarray(offset, offset + size), controller)) break;
+              offset += size;
+            }
+            if (state.finished) {
               await reader.cancel("invalid Kiro EventStream").catch(() => {});
               break;
             }
