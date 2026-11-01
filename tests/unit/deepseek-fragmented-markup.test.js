@@ -1,9 +1,25 @@
 import { describe, it, expect } from "vitest";
 import { createSSEStream } from "../../open-sse/utils/stream.js";
 
-const CONTENT = `Oke bang, aku mulai dari recon dulu (read-only, belum ada yang berubah).
+/**
+ * The markup arrives in pieces, so a delta routinely ends mid-token
+ * (`<|tool`, `▁call▁begin|>`). Recovery must survive the fragmentation, and a
+ * fragment that never completes must reach the client as the model wrote it —
+ * it is prose, not a call.
+ */
 
-<|tool▁calls▁begin|><|tool▁call▁begin|>bash<|tool▁sep|>{"command":"git remote -v && echo '---STATUS---' && git status -sb && echo '---HEAD---' && git log --oneline -1"}<|tool▁call▁end|><|tool▁calls▁end|>`;
+const CONTENT = `<|tool▁calls▁begin|><|tool▁call▁begin|>bash<|tool▁sep|>{"command":"git remote -v && echo '---STATUS---' && git status -sb && echo '---HEAD---' && git log --oneline -1"}<|tool▁call▁end|><|tool▁calls▁end|>`;
+
+const DSML = `<｜DSML｜ calls>
+<｜DSML｜ invoke name="read">
+<｜DSML｜ parameter name="path">a.js</｜DSML｜ parameter>
+</｜DSML｜ invoke>
+</｜DSML｜ calls>`;
+
+const DECLARED_TOOLS = ["read", "bash"].map((name) => ({
+  type: "function",
+  function: { name, parameters: { type: "object" } },
+}));
 
 function buildSSE(slices) {
   const chunk = (delta, finish = null) => `data: ${JSON.stringify({
@@ -21,7 +37,8 @@ function buildSSE(slices) {
 async function run(sse) {
   const stream = createSSEStream({
     mode: "passthrough", provider: "tokenharbor",
-    model: "deepseek-v4.1-flash:free", body: { messages: [] },
+    model: "deepseek-v4.1-flash:free",
+    body: { messages: [], tools: DECLARED_TOOLS },
   });
   const w = stream.writable.getWriter();
   const r = stream.readable.getReader();
@@ -36,29 +53,46 @@ async function run(sse) {
   return pump;
 }
 
+function parseChunks(text) {
+  return text
+    .split("\n")
+    .filter((l) => l.startsWith("data: ") && !l.includes("[DONE]"))
+    .map((l) => { try { return JSON.parse(l.slice(6)); } catch { return null; } })
+    .filter(Boolean);
+}
+
+function streamedText(chunks) {
+  return chunks.map((c) => c.choices?.[0]?.delta?.content || "").join("");
+}
+
 describe("fragmented native markup across SSE deltas", () => {
   it("whole content in one delta", async () => {
-    const out = await run(buildSSE([CONTENT]));
-    expect(out).toContain('"tool_calls"');
-    expect(out).not.toMatch(/tool\u2581/);
+    const chunks = parseChunks(await run(buildSSE([CONTENT])));
+    const calls = chunks.flatMap((c) => c.choices?.[0]?.delta?.tool_calls || []);
+    expect(calls).toHaveLength(1);
+    expect(calls[0].function.name).toBe("bash");
+    expect(streamedText(chunks)).toBe("");
   });
 
   it("content split across 2 deltas", async () => {
-    const out = await run(buildSSE([CONTENT.slice(0, 60), CONTENT.slice(60)]));
-    expect(out).toContain('"tool_calls"');
-    expect(out).not.toMatch(/tool\u2581/);
+    const chunks = parseChunks(await run(buildSSE([CONTENT.slice(0, 60), CONTENT.slice(60)])));
+    expect(chunks.flatMap((c) => c.choices?.[0]?.delta?.tool_calls || [])).toHaveLength(1);
+    expect(streamedText(chunks)).toBe("");
   });
 
   it("content split into many 25-char deltas", async () => {
     const slices = [];
     for (let i = 0; i < CONTENT.length; i += 25) slices.push(CONTENT.slice(i, i + 25));
-    const out = await run(buildSSE(slices));
-    expect(out).toContain('"tool_calls"');
-    expect(out).not.toMatch(/tool\u2581/);
+    const chunks = parseChunks(await run(buildSSE(slices)));
+    const calls = chunks.flatMap((c) => c.choices?.[0]?.delta?.tool_calls || []);
+    expect(calls).toHaveLength(1);
+    expect(JSON.parse(calls[0].function.arguments)).toEqual({
+      command: "git remote -v && echo '---STATUS---' && git status -sb && echo '---HEAD---' && git log --oneline -1",
+    });
+    expect(streamedText(chunks)).toBe("");
   });
 
   it("marker split mid-token at the worst boundary", async () => {
-    // Split inside `<|tool▁call▁begin|>` so the detector sees a partial marker.
     const idx = CONTENT.indexOf("<|tool\u2581call\u2581begin|>");
     const cuts = [
       [CONTENT.slice(0, idx + 6), CONTENT.slice(idx + 6)],
@@ -66,35 +100,42 @@ describe("fragmented native markup across SSE deltas", () => {
       [CONTENT.slice(0, idx + 20), CONTENT.slice(idx + 20)],
     ];
     for (const c of cuts) {
-      const out = await run(buildSSE(c));
-      expect(out).toContain('"tool_calls"');
-      expect(out).not.toMatch(/tool\u2581/);
+      const chunks = parseChunks(await run(buildSSE(c)));
+      expect(chunks.flatMap((x) => x.choices?.[0]?.delta?.tool_calls || [])).toHaveLength(1);
+      expect(streamedText(chunks)).toBe("");
     }
   });
 
-  it("DSML wrapper header is held, not leaked as prose", async () => {
-    // Production leak: the wrapper line reached the client while the invoke
-    // that followed was still streaming.
-    const dsml = `<｜DSML｜ calls>\n<｜DSML｜ invoke name="read">\n<｜DSML｜ parameter name="path">a.js</｜DSML｜ parameter>\n</｜DSML｜ invoke>\n</｜DSML｜ calls>`;
+  it("DSML split into small deltas still parses", async () => {
     const slices = [];
-    for (let i = 0; i < dsml.length; i += 9) slices.push(dsml.slice(i, i + 9));
-    const out = await run(buildSSE(slices));
-    expect(out).toContain('"tool_calls"');
-    expect(out).not.toMatch(/DSML/);
+    for (let i = 0; i < DSML.length; i += 9) slices.push(DSML.slice(i, i + 9));
+    const chunks = parseChunks(await run(buildSSE(slices)));
+    const calls = chunks.flatMap((c) => c.choices?.[0]?.delta?.tool_calls || []);
+    expect(calls).toHaveLength(1);
+    expect(calls[0].function.name).toBe("read");
+    expect(streamedText(chunks)).toBe("");
   });
 
-  it("fence with the leading angle bracket already consumed still parses", async () => {
-    // Production leak: upstream emitted `|DSML| calls>` with no `<`.
-    const bare = `｜DSML｜ calls>\n｜DSML｜ invoke name="read">\n｜DSML｜ parameter name="path">a.js</｜DSML｜ parameter>\n</｜DSML｜ invoke>\n</｜DSML｜ calls>`;
-    const out = await run(buildSSE([bare]));
-    expect(out).toContain('"tool_calls"');
-    expect(out).not.toMatch(/DSML/);
+  it("a fragment that never completes is forwarded verbatim", async () => {
+    // The stream died mid-marker. Nothing is invented, and nothing is silently
+    // dropped: the client sees exactly what the model emitted.
+    const truncated = DSML.slice(0, DSML.length - 30);
+    const chunks = parseChunks(await run(buildSSE([truncated.slice(0, 40), truncated.slice(40)])));
+    expect(chunks.flatMap((c) => c.choices?.[0]?.delta?.tool_calls || [])).toHaveLength(0);
+    expect(streamedText(chunks)).toBe(truncated);
   });
 
-  it("truncated markup is dropped, never forwarded as text", async () => {
-    // A stream that dies mid-marker: the held fragment is markup, so it must
-    // not reach the client as prose.
-    const out = await run(buildSSE([`｜DSML｜ calls>`]));
-    expect(out).not.toMatch(/DSML/);
+  it("a bare fence with the leading angle bracket consumed stays text", async () => {
+    const bare = DSML.replaceAll("<｜", "｜");
+    const chunks = parseChunks(await run(buildSSE([bare])));
+    expect(chunks.flatMap((c) => c.choices?.[0]?.delta?.tool_calls || [])).toHaveLength(0);
+    expect(streamedText(chunks)).toBe(bare);
+  });
+
+  it("markup after leading prose streams as text, in order", async () => {
+    const content = `Oke bang, aku mulai dari recon dulu.\n\n${CONTENT}`;
+    const chunks = parseChunks(await run(buildSSE([content.slice(0, 50), content.slice(50)])));
+    expect(chunks.flatMap((c) => c.choices?.[0]?.delta?.tool_calls || [])).toHaveLength(0);
+    expect(streamedText(chunks)).toBe(content);
   });
 });

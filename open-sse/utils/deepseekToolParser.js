@@ -6,35 +6,33 @@
  * populating the structured OpenAI `tool_calls` array. The client then renders
  * the raw markup as text and never runs the tool.
  *
- * Two distinct markups have been observed in production traffic, from the same
- * model family through different gateways:
+ * Two dialects ship from the same model family:
  *
- * 1. DSML — DeepSeek's documented XML-ish dialect, fenced with U+FF5C FULLWIDTH
- *    VERTICAL LINE (`｜`). The fence is emitted with ONE pipe per side by
- *    Token Harbor and with TWO by WorkBuddy, so both widths are accepted:
+ * 1. DSML — fenced with U+FF5C FULLWIDTH VERTICAL LINE (`｜`), one pipe per side
+ *    via Token Harbor and two via WorkBuddy:
  *
- *      <｜DSML｜ calls>                      <｜｜DSML｜｜ calls>
- *      <｜DSML｜ invoke name="read">          <｜｜DSML｜｜ invoke name="read">
- *      <｜DSML｜ parameter name="path" ...>   <｜｜DSML｜｜ parameter name="path" ...>
- *
- *    A malformed `calls_begin` spelling also appears, and the close tag is
- *    sometimes dropped entirely.
+ *      <｜DSML｜ calls>
+ *      <｜DSML｜ invoke name="read">
+ *      <｜DSML｜ parameter name="path" string="true">package.json:1-30</｜DSML｜ parameter>
+ *      </｜DSML｜ invoke>
+ *      </｜DSML｜ calls>
  *
  * 2. Token-bar — the raw special-token form, using U+2581 LOWER ONE EIGHTH
  *    BLOCK (`▁`) as the separator:
  *
- *      <|tool▁calls▁begin|><|tool▁call▁begin|>read<|tool▁sep|>{"path":"package.json"}|tool▁call▁end|>
+ *      <|tool▁calls▁begin|><|tool▁call▁begin|>read<|tool▁sep|>{"path":"a.js"}<|tool▁call▁end|><|tool▁calls▁end|>
  *
- *    The model sometimes continues into a hallucinated `<|tool▁output▁begin|>`
- *    block; everything from that marker onward is discarded.
+ * Only a *standalone, complete* payload is recovered: intact openers (the `<` is
+ * part of the markup, never guessed), every call and argument closed by its
+ * matching end tag, and nothing but whitespace around the payload. Anything
+ * else — prose around or between the tags, a fenced or inline sample, a
+ * truncated capture, a damaged opener — keeps the original content byte for
+ * byte. A model that talks about the dialect is explaining it, not calling a
+ * tool, and a half-received call must never become an action.
  *
  * Both shapes normalize to the same OpenAI tool_calls item:
  *
  *   { id: string, type: "function", function: { name: string, arguments: string } }
- *
- * The parser is intentionally conservative and total: it returns `hasTools:false`
- * and the untouched message when nothing matches, never throws on malformed
- * input, and caps extraction at MAX_CALLS.
  */
 
 import { generateToolCallId } from "../translator/concerns/toolCall.js";
@@ -46,25 +44,18 @@ const FW = "\uFF5C";
 // U+2581 LOWER ONE EIGHTH BLOCK, the raw special-token separator.
 const TB = "\u2581";
 
-// One or two fullwidth pipes (as emitted), or their ASCII stand-ins (as some
-// transports normalize them).
-const FENCE = `(?:${FW}{1,2}|\\|{1,2})`;
+// One or two pipes per side, in the fullwidth spelling DeepSeek emits and the
+// ASCII spelling some transports normalize it to. Longest first, so a double
+// pipe is never read as a single one.
+const FENCES = [`${FW}${FW}`, FW, "||", "|"];
 
-// Precompiled detectors — non-global so `.test()` carries no lastIndex state.
-// These run on every content delta, so they must not allocate.
-// The leading `<` is OPTIONAL: the model sometimes emits the fence with the `<`
-// already consumed (production capture: `|DSML| calls>`), so detection and every
-// open tag must tolerate its absence or the markup leaks as prose.
-const LT = "<?";
+// A tool name as the markup carries it: no whitespace, no tag characters.
+const TOOL_NAME = /^[A-Za-z_][A-Za-z0-9_.:-]*$/;
+const NAME_ATTRIBUTE = /name\s*=\s*(["'])([^"']*)\1/;
 
-const DSML_DETECT = new RegExp(`${LT}${FENCE}DSML${FENCE}`);
-const TOKENBAR_DETECT = new RegExp(`${LT}\\|tool[${TB}_]`);
-
-/** True when `content` carries either native DeepSeek tool-call markup. */
-export function hasDeepseekToolMarkup(content) {
-  if (typeof content !== "string" || content.length === 0) return false;
-  return DSML_DETECT.test(content) || TOKENBAR_DETECT.test(content);
-}
+// Token-bar markers, in the `▁` spelling DeepSeek emits and the `_` spelling
+// some transports normalize to.
+const TB_TOKEN = new RegExp(`<\\|tool[${TB}_](calls|call|sep|output)(?:[${TB}_](begin|end))?\\|>`, "g");
 
 /** Strip a tool name of the trailing namespace some gateways prepend. */
 function cleanToolName(name) {
@@ -87,115 +78,192 @@ function coerceParamValue(raw) {
   return text;
 }
 
-/**
- * Drop any residual tool-call fence left inside an argument payload. The end
- * tags are unreliable and the `<|` prefix is normalized inconsistently, so a
- * stray `|tool▁call▁end|>` can survive the terminator search and break
- * JSON.parse downstream.
- */
-function stripResidualFences(text) {
-  return String(text ?? "")
-    .replace(new RegExp(`<?\\|tool${TB}[a-z_]+(?:${TB}[a-z_]+)?\\|>?`, "g"), "")
-    .replace(new RegExp(`<?\\|tool_[a-z_]+(?:_[a-z_]+)?\\|>?`, "g"), "")
-    .trim();
+function skipSpace(text, at) {
+  let pos = at;
+  while (pos < text.length && /\s/.test(text[pos])) pos++;
+  return pos;
 }
 
 /**
- * Parse the DSML dialect (both fence widths).
+ * Match a complete DSML tag at `at` — `<fence DSML fence keyword attrs>`.
  *
- * @param {string} content
- * @returns {Array<{id:string,type:"function",function:{name:string,arguments:string}}>}
+ * The `<` is part of the markup and is never guessed, and the tag must close on
+ * the same line of markup: an opener that runs into another `<` was truncated,
+ * so what follows is prose rather than attributes.
+ *
+ * @returns {{fence: string, raw: string, end: number}|null} `raw` is the
+ *   attribute text, `end` is just past the closing `>`.
  */
-function parseDsml(content) {
-  const calls = [];
-  const openRe = new RegExp(`${LT}${FENCE}DSML${FENCE}\\s*invoke\\s+name=["']([^"']+)["'][^>]*>`, "g");
-  const paramRe = new RegExp(
-    `${LT}${FENCE}DSML${FENCE}\\s*parameter\\s+name=["']([^"']+)["'][^>]*>([\\s\\S]*?)<\\/${FENCE}DSML${FENCE}\\s*parameter>`,
-    "g"
-  );
-  const closeRe = new RegExp(`<\\/${FENCE}DSML${FENCE}\\s*invoke>`);
-
-  let open;
-  while ((open = openRe.exec(content)) !== null && calls.length < MAX_CALLS) {
-    const name = cleanToolName(open[1]);
-    if (!name) continue;
-
-    const bodyStart = openRe.lastIndex;
-    const closeIdx = content.slice(bodyStart).search(closeRe);
-    const body = closeIdx === -1 ? content.slice(bodyStart) : content.slice(bodyStart, bodyStart + closeIdx);
-
-    const args = {};
-    let p;
-    paramRe.lastIndex = 0;
-    while ((p = paramRe.exec(body)) !== null) {
-      args[p[1]] = coerceParamValue(stripResidualFences(p[2]));
-    }
-
-    calls.push({
-      id: generateToolCallId(0, calls.length, name),
-      type: "function",
-      function: { name, arguments: JSON.stringify(args) },
-    });
+function openTag(text, at, keyword) {
+  if (text[at] !== "<") return null;
+  for (const fence of FENCES) {
+    const head = `<${fence}DSML${fence}`;
+    if (!text.startsWith(head, at)) continue;
+    const keywordAt = skipSpace(text, at + head.length);
+    if (!text.startsWith(keyword, keywordAt)) return null;
+    const after = keywordAt + keyword.length;
+    // The keyword must be the whole word: `calls_begin` is not `calls`.
+    if (/[A-Za-z0-9_]/.test(text[after] ?? "")) return null;
+    const close = text.indexOf(">", after);
+    if (close === -1) return null;
+    const raw = text.slice(after, close);
+    if (raw.includes("<")) return null;
+    return { fence, raw, end: close + 1 };
   }
+  return null;
+}
+
+/**
+ * Find the next `</fence DSML fence keyword>` at or after `from`.
+ *
+ * The close must repeat the opener's fence width: a call opened with two pipes
+ * and closed with one is damaged markup, not a boundary.
+ *
+ * @returns {{index: number, end: number}|null}
+ */
+function findClose(text, from, fence, keyword) {
+  const head = `</${fence}DSML${fence}`;
+  for (let at = text.indexOf(head, from); at !== -1; at = text.indexOf(head, at + 1)) {
+    const keywordAt = skipSpace(text, at + head.length);
+    if (!text.startsWith(keyword, keywordAt)) continue;
+    const end = skipSpace(text, keywordAt + keyword.length);
+    if (text[end] === ">") return { index: at, end: end + 1 };
+  }
+  return null;
+}
+
+/**
+ * Parse one complete `<fence DSML fence invoke name="…">…</… invoke>` at `at`.
+ *
+ * Complete means the invoke is closed and carries at least one closed
+ * parameter. Missing tags are never synthesized.
+ *
+ * @returns {{name: string, args: object, next: number}|null}
+ */
+function parseDsmlInvoke(text, at) {
+  const tag = openTag(text, at, "invoke");
+  if (!tag) return null;
+  const name = cleanToolName(NAME_ATTRIBUTE.exec(tag.raw)?.[2]);
+  if (!TOOL_NAME.test(name)) return null;
+
+  // The invoke's own close bounds every parameter. A parameter that would close
+  // after it means the tags interleave, so the payload is not well formed.
+  const invokeClose = findClose(text, tag.end, tag.fence, "invoke");
+  if (!invokeClose) return null;
+
+  const args = {};
+  let pos = tag.end;
+  for (;;) {
+    const parameter = openTag(text, skipSpace(text, pos), "parameter");
+    if (!parameter) break;
+    const key = NAME_ATTRIBUTE.exec(parameter.raw)?.[2].trim();
+    if (!key) return null;
+    const valueClose = findClose(text, parameter.end, parameter.fence, "parameter");
+    if (!valueClose || invokeClose.index < valueClose.index) return null;
+    args[key] = coerceParamValue(text.slice(parameter.end, valueClose.index));
+    pos = valueClose.end;
+  }
+  if (Object.keys(args).length === 0 || skipSpace(text, pos) !== invokeClose.index) return null;
+  return { name, args, next: invokeClose.end };
+}
+
+/**
+ * Parse a standalone DSML payload: one or more complete invokes, optionally
+ * wrapped in a complete `calls` pair. Only whitespace may separate the tags and
+ * nothing may follow the payload.
+ *
+ * @returns {Array<{name: string, args: object}>|null}
+ */
+function parseDsml(text) {
+  const wrapper = openTag(text, 0, "calls");
+  // The wrapper carries no attributes.
+  if (wrapper?.raw.trim()) return null;
+  let pos = wrapper ? wrapper.end : 0;
+
+  const calls = [];
+  while (calls.length < MAX_CALLS) {
+    const invoke = parseDsmlInvoke(text, skipSpace(text, pos));
+    if (!invoke) break;
+    calls.push({ name: invoke.name, args: invoke.args });
+    pos = invoke.next;
+  }
+  if (calls.length === 0) return null;
+
+  if (wrapper) {
+    const at = skipSpace(text, pos);
+    const close = findClose(text, at, wrapper.fence, "calls");
+    if (!close || close.index !== at) return null;
+    pos = close.end;
+  }
+  // Standalone: a call is the message's action, so nothing but whitespace may
+  // follow it. Trailing explanation means the model was showing the syntax.
+  if (text.slice(pos).trim()) return null;
   return calls;
 }
 
 /**
- * Parse the raw token-bar dialect.
+ * The next token-bar marker at or after `from`. Scanning for a marker rather
+ * than for `<` keeps a `<` inside a JSON argument from ending the payload early.
  *
- * The end tags are not reliable: the model sometimes omits `<|tool▁call▁end|>`,
- * and captures show a call running straight into the next
- * `<|tool▁call▁begin|>` or into a hallucinated `<|tool▁output▁begin|>`. Each body
- * therefore terminates at whichever comes first: an end tag, the next call's
- * begin tag, the output marker, or end of string.
- *
- * @param {string} content
- * @returns {Array<{id:string,type:"function",function:{name:string,arguments:string}}>}
+ * @returns {{kind: string, index: number, end: number}|null}
  */
-function parseTokenBar(content) {
+function nextToken(text, from) {
+  TB_TOKEN.lastIndex = from;
+  const match = TB_TOKEN.exec(text);
+  if (!match) return null;
+  return {
+    kind: match[2] ? `${match[1]}_${match[2]}` : match[1],
+    index: match.index,
+    end: match.index + match[0].length,
+  };
+}
+
+/** The marker starting exactly at `at`, if any. */
+function tokenAt(text, at) {
+  const token = nextToken(text, at);
+  return token?.index === at ? token : null;
+}
+
+/**
+ * Parse a standalone token-bar payload: complete `call_begin`/`sep`/`call_end`
+ * groups, optionally wrapped in a complete `calls_begin`/`calls_end` pair, with
+ * each argument body a complete JSON object.
+ *
+ * @returns {Array<{name: string, args: object}>|null}
+ */
+function parseTokenBar(text) {
+  const head = tokenAt(text, 0);
+  const wrapped = head?.kind === "calls_begin";
+  let pos = wrapped ? head.end : 0;
+
   const calls = [];
-  const beginRe = new RegExp(`${LT}\\|tool${TB}call${TB}begin\\|>`, "g");
-  const sepRe = new RegExp(`<\\|tool${TB}sep\\|>`);
-  const nextBeginRe = new RegExp(`${LT}\\|tool${TB}call${TB}begin\\|>`);
-  const terminators = [
-    new RegExp(`<\\|tool${TB}call${TB}end\\|>`),
-    new RegExp(`<\\|tool${TB}calls${TB}end\\|>`),
-    new RegExp(`<\\|tool${TB}output${TB}begin\\|>`),
-  ];
-
-  let begin;
-  while ((begin = beginRe.exec(content)) !== null && calls.length < MAX_CALLS) {
-    const rest = content.slice(beginRe.lastIndex);
-
-    let end = rest.length;
-    const nextBegin = rest.search(nextBeginRe);
-    if (nextBegin !== -1) end = Math.min(end, nextBegin);
-    for (const t of terminators) {
-      const idx = rest.search(t);
-      if (idx !== -1) end = Math.min(end, idx);
-    }
-
-    const body = rest.slice(0, end);
-    const sepIdx = body.search(sepRe);
-    if (sepIdx === -1) continue;
-
-    const name = cleanToolName(body.slice(0, sepIdx));
-    const argsRaw = stripResidualFences(body.slice(sepIdx).replace(sepRe, ""));
-    if (!name) continue;
-
-    let args = argsRaw;
+  while (calls.length < MAX_CALLS) {
+    const begin = tokenAt(text, pos);
+    if (begin?.kind !== "call_begin") break;
+    const separator = nextToken(text, begin.end);
+    if (separator?.kind !== "sep") return null;
+    const name = cleanToolName(text.slice(begin.end, separator.index));
+    if (!TOOL_NAME.test(name)) return null;
+    const end = nextToken(text, separator.end);
+    if (end?.kind !== "call_end") return null;
+    let args;
     try {
-      args = JSON.stringify(JSON.parse(argsRaw));
+      args = JSON.parse(text.slice(separator.end, end.index).trim());
     } catch {
-      /* keep raw text; the client will surface the parse error */
+      return null;
     }
-
-    calls.push({
-      id: generateToolCallId(0, calls.length, name),
-      type: "function",
-      function: { name, arguments: args },
-    });
+    if (!args || typeof args !== "object" || Array.isArray(args)) return null;
+    calls.push({ name, args });
+    pos = end.end;
   }
+  if (calls.length === 0) return null;
+
+  if (wrapped) {
+    const close = tokenAt(text, pos);
+    if (close?.kind !== "calls_end") return null;
+    pos = close.end;
+  }
+  if (text.slice(pos).trim()) return null;
   return calls;
 }
 
@@ -203,32 +271,33 @@ function parseTokenBar(content) {
  * Extract native DeepSeek tool calls from an assistant message whose `content`
  * leaked the raw markup.
  *
- * @param {{content?: string}} message
- * @returns {{message: object, hasTools: boolean}} `message` keeps any leading
- *   prose as `content` (or drops `content` entirely when the markup was the
- *   whole reply) and gains a normalized `tool_calls` array when markup matched.
+ * Recovery requires a standalone, complete payload. Every other message — no
+ * markup, prose around it, a fenced or quoted sample, a truncated capture — is
+ * returned untouched with `hasTools:false`, so its text reaches the client
+ * exactly as the model wrote it.
+ *
+ * @param {{content?: string, tool_calls?: Array}} message
+ * @returns {{message: object, hasTools: boolean}} on success `message` loses
+ *   `content` (the payload was the whole reply) and gains `tool_calls`.
  */
 export function normalizeDeepseekToolCalls(message) {
   if (!message || typeof message !== "object") return { message, hasTools: false };
   const content = message.content;
-  if (!hasDeepseekToolMarkup(content)) return { message, hasTools: false };
+  if (typeof content !== "string" || !content.trim()) return { message, hasTools: false };
+  // Structured calls already present are authoritative: never replace or
+  // duplicate them with a recovered copy.
+  if (Array.isArray(message.tool_calls) && message.tool_calls.length > 0) return { message, hasTools: false };
 
-  let calls = parseDsml(content);
-  if (calls.length === 0) calls = parseTokenBar(content);
-  if (calls.length === 0) return { message, hasTools: false };
+  const text = content.trim();
+  const parsed = parseDsml(text) ?? parseTokenBar(text);
+  if (!parsed) return { message, hasTools: false };
 
-  // Leading prose stays as content; the markup itself must not reach the user.
-  const cutPoints = [
-    content.search(new RegExp(`<${FENCE}DSML${FENCE}`)),
-    content.search(new RegExp(`<\\|tool${TB}calls?${TB}begin\\|>`)),
-  ].filter((i) => i >= 0);
-  const cut = cutPoints.length ? Math.min(...cutPoints) : 0;
-  const prose = content.slice(0, cut).trim();
-
-  const normalized = { ...message };
-  if (prose) normalized.content = prose;
-  else delete normalized.content;
-  normalized.tool_calls = calls;
-
+  const calls = parsed.map((call, index) => ({
+    id: generateToolCallId(0, index, call.name),
+    type: "function",
+    function: { name: call.name, arguments: JSON.stringify(call.args) },
+  }));
+  const normalized = { ...message, tool_calls: calls };
+  delete normalized.content;
   return { message: normalized, hasTools: true };
 }

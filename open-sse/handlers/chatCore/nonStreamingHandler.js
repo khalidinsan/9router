@@ -242,7 +242,7 @@ export async function handleNonStreamingResponse({ providerResponse, provider, m
 
   if (contentType.includes("text/event-stream")) {
     const sseText = await providerResponse.text();
-    const parsed = parseSSEToOpenAIResponse(sseText, model);
+    const parsed = parseSSEToOpenAIResponse(sseText, model, body);
     if (!parsed) {
       appendLog({ status: `FAILED ${HTTP_STATUS.BAD_GATEWAY}` });
       return createErrorResult(HTTP_STATUS.BAD_GATEWAY, "Invalid SSE response for non-streaming request");
@@ -306,14 +306,13 @@ export async function handleNonStreamingResponse({ providerResponse, provider, m
   // `choices`; skip the Chat-Completions-specific post-processing below for it.
   const isResponsesResponse = sourceFormat === FORMATS.OPENAI_RESPONSES && translatedResponse?.object === "response";
 
-  // Native tool-call markup sometimes leaks into `content` instead of being
-  // returned as a structured `tool_calls` array (Kimi `functions.NAME{...}`,
-  // DeepSeek DSML / token-bar). Convert it before the finish_reason fixup.
+  // Textual tool payloads become tool_calls only for requests that declared
+  // native tools; see utils/nativeToolCalls.js.
   if (Array.isArray(translatedResponse?.choices)) {
     for (const choice of translatedResponse.choices) {
       const msg = choice?.message;
       if (!msg || msg.role !== "assistant") continue;
-      const normalized = normalizeNativeToolCalls(model, msg);
+      const normalized = normalizeNativeToolCalls(model, msg, body);
       if (normalized) {
         choice.message = normalized.message;
       }

@@ -9,7 +9,7 @@ import { restoreToolNames } from "./opencodeFingerprint.js";
 import { getOpenAIResponsesEventName, isOpenAIResponsesTerminalEvent, formatIncompleteOpenAIResponsesStreamFailure } from "./responsesStreamHelpers.js";
 import { dbg, isDebugEnabled } from "./debugLog.js";
 import { extractToolNames, fuzzyMatchToolName } from "../translator/concerns/toolCall.js";
-import { normalizeNativeToolCalls, nativeToolCallParsersFor, takeEmittableContent, findOpenMarkerStart, looksLikeMarkup } from "./nativeToolCalls.js";
+import { normalizeNativeToolCalls, nativeToolCallParsersFor, takeEmittableContent } from "./nativeToolCalls.js";
 
 import { SSE_DONE, SSE_HEADERS, SSE_HEADERS_NO_BUFFER } from "./sseConstants.js";
 
@@ -109,25 +109,6 @@ export function createSSEStream(options = {}) {
   // names that weak models (e.g. Kimi served via kimchi) emit in the response
   // (e.g. "functionsread" instead of "read"). Computed once per stream.
   const validToolNames = body?.tools ? extractToolNames(body.tools) : null;
-  // A damaged XML opener can start at any character of `<invoke name="`.
-  // Only declared tool names are candidates, so ordinary prose is not withheld wholesale.
-  const xmlOpeners = /claude|opus|sonnet|haiku/i.test(model || "") && validToolNames?.length
-    ? { prefixes: new Set(), maxLength: 0 }
-    : null;
-  if (xmlOpeners) {
-    for (const name of validToolNames) {
-      for (const quote of ['"', "'"]) {
-        const header = `<invoke name=${quote}`;
-        for (let offset = 0; offset <= header.length; offset++) {
-          const opener = `${header.slice(offset)}${name}${quote}>`;
-          xmlOpeners.maxLength = Math.max(xmlOpeners.maxLength, opener.length);
-          for (let length = 1; length <= opener.length; length++) {
-            xmlOpeners.prefixes.add(opener.slice(0, length));
-          }
-        }
-      }
-    }
-  }
 
   // Tool-call ids already sent to the client, keyed by the tool-call index.
   // A late fragment that opens a NEW index without an id must not reach the
@@ -156,20 +137,10 @@ export function createSSEStream(options = {}) {
   let sseEmittedCount = 0;
   const eventTypeCounts = {};
 
-  // Track native tool-call markup that leaks into streaming content (Kimi
-  // `functions.NAME{...}`, DeepSeek DSML / token-bar). When detected, a synthetic
-  // tool_calls chunk is emitted before [DONE]. Applies in both stream modes:
-  // DeepSeek leaks were observed through Token Harbor's openai→openai
-  // passthrough as well as WorkBuddy's translate path.
-  const nativeToolCallsEnabled = nativeToolCallParsersFor(model).length > 0;
-  let nativeToolCalls = nativeToolCallsEnabled ? null : undefined;
-  let nativeToolCallsEmitted = false;
-  // Tail of the content stream held back because it may still become a native
-  // marker (markup is routinely split across deltas).
+  const nativeToolCallsEnabled = nativeToolCallParsersFor(model, body).length > 0;
+  let nativeRecoveryPossible = nativeToolCallsEnabled;
+  let nativeToolCallsSeen = false;
   let nativeHold = "";
-  // Same holdback for the thinking channel. DeepSeek emits the identical DSML
-  // dialect in `reasoning_content`, and it reached the client verbatim.
-  let reasoningHold = "";
   let lastNativeChunk = null;
   // A tool call's payload reaches us as one burst at the end of the generation
   // (Kiro: 119 fragments inside 12 ms, 14 s in), so a connection can sit silent
@@ -225,17 +196,6 @@ export function createSSEStream(options = {}) {
       appendRequestLog({ model, provider, connectionId, tokens: null, status: "200 OK" }).catch(() => { });
     }
 
-    // Diagnostic: markup that survived to the client means a tool call failed to
-    // parse. Capturing the real text is the only way to fix the dialect variant
-    // instead of guessing — the stored request preview is 200 chars.
-    if (/<parameter\s+name=|<invoke\s+name=|<\/invoke>/.test(accumulatedContent)) {
-      const head = accumulatedContent.slice(0, 400).replace(/\n/g, "\\n");
-      const tail = accumulatedContent.slice(-300).replace(/\n/g, "\\n");
-      console.error(
-        `[MARKUP-LEAK] provider=${provider} model=${model} len=${accumulatedContent.length} calls=${nativeToolCalls?.length ?? 0}\n  HEAD: ${head}\n  TAIL: ${tail}`
-      );
-    }
-
     if (onStreamComplete) {
       onStreamComplete({
         content: accumulatedContent,
@@ -257,47 +217,54 @@ export function createSSEStream(options = {}) {
     }
     finalizeStream();
   };
-  const releaseReasoningTail = (delta) => {
-    if (!reasoningHold || (!delta?.content && !delta?.tool_calls?.length)) return false;
-    const held = reasoningHold;
-    reasoningHold = "";
-    if (looksLikeMarkup(held)) return false;
-    delta.reasoning_content = (delta.reasoning_content || "") + held;
-    totalContentLength += held.length;
-    accumulatedThinking += held;
-    return true;
+  const recoverContentDelta = (chunk) => {
+    const delta = chunk.choices?.[0]?.delta;
+    if (!nativeToolCallsEnabled || !delta) return false;
+    const original = delta.content;
+    if (delta.tool_calls?.length) {
+      nativeToolCallsSeen = true;
+      nativeRecoveryPossible = false;
+      if (nativeHold) {
+        delta.content = nativeHold + (original || "");
+        nativeHold = "";
+      }
+    } else if (nativeRecoveryPossible && typeof original === "string") {
+      const split = takeEmittableContent(nativeHold + original);
+      nativeHold = split.hold;
+      if (split.emit) {
+        delta.content = split.emit;
+        nativeRecoveryPossible = false;
+      } else {
+        delete delta.content;
+      }
+    }
+    return delta.content !== original;
   };
 
   const resolveNativeTail = (chunk) => {
     const choice = chunk.choices?.[0];
-    if (!choice) return false;
+    if (!choice || !nativeHold) return false;
     const delta = choice.delta ||= {};
-    let changed = false;
-
-    if (nativeHold && !nativeToolCalls) {
-      const late = normalizeNativeToolCalls(model, { role: "assistant", content: nativeHold });
-      if (late) nativeToolCalls = late.message.tool_calls;
-    }
-    for (const field of ["content", "reasoning_content"]) {
-      const held = field === "content" ? nativeHold : reasoningHold;
-      if (field === "content") nativeHold = ""; else reasoningHold = "";
-      if (!held || looksLikeMarkup(held) || (field === "content" && nativeToolCalls)) continue;
-      delta[field] = (delta[field] || "") + held;
-      totalContentLength += held.length;
-      if (field === "content") accumulatedContent += held; else accumulatedThinking += held;
-      changed = true;
-    }
-    if (nativeToolCalls && !nativeToolCallsEmitted && !streamErrorSeen) {
-      delta.tool_calls = nativeToolCalls.map((call, index) => ({ ...call, index }));
+    const held = nativeHold;
+    nativeHold = "";
+    nativeRecoveryPossible = false;
+    const normalized = !streamErrorSeen && !nativeToolCallsSeen &&
+      (!choice.finish_reason || choice.finish_reason === "stop" || choice.finish_reason === "tool_calls")
+      ? normalizeNativeToolCalls(model, { role: "assistant", content: held }, body)
+      : null;
+    if (normalized) {
+      delta.tool_calls = normalized.message.tool_calls.map((call, index) => ({ ...call, index }));
       choice.finish_reason = "tool_calls";
-      nativeToolCallsEmitted = true;
-      changed = true;
+    } else {
+      delta.content = held + (delta.content || "");
+      totalContentLength += held.length;
+      accumulatedContent += held;
     }
-    return changed;
+    return true;
   };
 
   const flushNativeTail = (controller) => {
-    if (!lastNativeChunk || (!nativeHold && !reasoningHold && (!nativeToolCalls || nativeToolCallsEmitted || streamErrorSeen))) return;
+    if (!lastNativeChunk || !nativeHold) return;
     const chunk = {
       id: lastNativeChunk.id,
       object: "chat.completion.chunk",
@@ -482,78 +449,21 @@ export function createSSEStream(options = {}) {
                 continue;
               }
               if (nativeToolCallsEnabled && parsed.choices?.[0]) lastNativeChunk = parsed;
+              if (recoverContentDelta(parsed)) fieldsInjected = true;
 
               const delta = parsed.choices?.[0]?.delta;
               const reasoning = delta?.reasoning_content;
 
               const content = delta?.content;
-              if (nativeToolCalls !== undefined && reasoning && typeof reasoning === "string") {
-                // The thinking channel leaks the same DSML dialect. Hold its tail
-                // with the identical rule; markup that never completes is dropped
-                // at the finish chunk rather than printed.
-                const rawReasoning = reasoningHold + reasoning;
-                reasoningHold = "";
-                const split = takeEmittableContent(rawReasoning);
-                reasoningHold = split.hold;
-                if (split.emit) {
-                  delta.reasoning_content = split.emit;
-                  totalContentLength += split.emit.length;
-                  accumulatedThinking += split.emit;
-                  fieldsInjected = true;
-                } else {
-                  delete delta.reasoning_content;
-                  fieldsInjected = true;
-                }
-              } else if (reasoning && typeof reasoning === "string") {
+              if (reasoning && typeof reasoning === "string") {
                 totalContentLength += reasoning.length;
                 accumulatedThinking += reasoning;
               }
 
-              // Native markup leaks as ordinary content and is routinely split
-              // across deltas, so a delta can end mid-marker (`<|tool`). Hold back
-              // any tail that could still become a marker, parse the rest, and
-              // re-parse the carry-over when the next delta completes it. Only the
-              // text actually forwarded is counted, so usage estimates stay honest.
-              if (nativeToolCalls !== undefined && content && typeof content === "string") {
-                const raw = nativeHold + content;
-                nativeHold = "";
-                let parsedNow = normalizeNativeToolCalls(model, { role: "assistant", content: raw });
-                let emitted;
-
-                if (parsedNow) {
-                  // Prose before the markup is still the model's answer.
-                  emitted = parsedNow.message.content || "";
-                  // A call is confirmed but the stream may still be inside the
-                  // wrapper. Anything after this point belongs to the markup
-                  // (the remaining arguments), never to the client.
-                  const openAt = parsedNow.markupStart ?? findOpenMarkerStart(raw);
-                  if (openAt !== -1) nativeHold = raw.slice(openAt);
-                } else {
-                  const split = takeEmittableContent(raw, xmlOpeners);
-                  nativeHold = split.hold;
-                  emitted = split.emit;
-                  if (emitted) {
-                    parsedNow = normalizeNativeToolCalls(model, { role: "assistant", content: emitted });
-                    if (parsedNow) emitted = parsedNow.message.content || "";
-                  }
-                }
-
-                if (parsedNow) nativeToolCalls = parsedNow.message.tool_calls;
-
-                if (emitted) {
-                  parsed.choices[0].delta.content = emitted;
-                  totalContentLength += emitted.length;
-                  accumulatedContent += emitted;
-                } else {
-                  delete parsed.choices[0].delta.content;
-                }
-
-                if (emitted !== content) fieldsInjected = true;
-              } else if (content && typeof content === "string") {
+              if (content && typeof content === "string") {
                 totalContentLength += content.length;
                 accumulatedContent += content;
               }
-              if (releaseReasoningTail(delta)) fieldsInjected = true;
 
               const extracted = extractUsage(parsed);
               if (extracted) {
@@ -668,6 +578,7 @@ export function createSSEStream(options = {}) {
           continue;
         }
         if (nativeToolCallsEnabled && parsed.choices?.[0]) lastNativeChunk = parsed;
+        recoverContentDelta(parsed);
 
         // Claude format - content
         if (parsed.delta?.text) {
@@ -680,63 +591,14 @@ export function createSSEStream(options = {}) {
           accumulatedThinking += parsed.delta.thinking;
         }
         
-        // Native markup leaks through this lane too (commandcode → openai): a
-        // marker split across deltas reached the client as prose (`</|DSML| in`
-        // in production). Same holdback the passthrough lane uses — parse the
-        // carry-over together with the new delta and forward only what settled.
-        if (nativeToolCalls !== undefined && typeof parsed.choices?.[0]?.delta?.content === "string") {
-          const d = parsed.choices[0].delta;
-          const raw = nativeHold + d.content;
-          nativeHold = "";
-          let parsedNow = normalizeNativeToolCalls(model, { role: "assistant", content: raw });
-          let emitted;
-          if (parsedNow) {
-            // Prose before the markup is still the model's answer.
-            emitted = parsedNow.message.content || "";
-            const openAt = parsedNow.markupStart ?? findOpenMarkerStart(raw);
-            if (openAt !== -1) nativeHold = raw.slice(openAt);
-          } else {
-            const split = takeEmittableContent(raw, xmlOpeners);
-            nativeHold = split.hold;
-            emitted = split.emit;
-            if (emitted) {
-              parsedNow = normalizeNativeToolCalls(model, { role: "assistant", content: emitted });
-              if (parsedNow) emitted = parsedNow.message.content || "";
-            }
-          }
-          if (parsedNow) nativeToolCalls = parsedNow.message.tool_calls;
-          if (emitted) {
-            d.content = emitted;
-            totalContentLength += emitted.length;
-            accumulatedContent += emitted;
-          } else {
-            delete d.content;
-          }
-        } else if (parsed.choices?.[0]?.delta?.content) {
+        if (parsed.choices?.[0]?.delta?.content) {
           totalContentLength += parsed.choices[0].delta.content.length;
           accumulatedContent += parsed.choices[0].delta.content;
         }
-
-        // OpenAI format - reasoning, held the same way: the thinking channel
-        // carries the identical DSML dialect.
-        if (nativeToolCalls !== undefined && typeof parsed.choices?.[0]?.delta?.reasoning_content === "string") {
-          const d = parsed.choices[0].delta;
-          const raw = reasoningHold + d.reasoning_content;
-          reasoningHold = "";
-          const split = takeEmittableContent(raw);
-          reasoningHold = split.hold;
-          if (split.emit) {
-            d.reasoning_content = split.emit;
-            totalContentLength += split.emit.length;
-            accumulatedThinking += split.emit;
-          } else {
-            delete d.reasoning_content;
-          }
-        } else if (parsed.choices?.[0]?.delta?.reasoning_content) {
+        if (parsed.choices?.[0]?.delta?.reasoning_content) {
           totalContentLength += parsed.choices[0].delta.reasoning_content.length;
           accumulatedThinking += parsed.choices[0].delta.reasoning_content;
         }
-        releaseReasoningTail(parsed.choices?.[0]?.delta);
         
         // Gemini format
         if (parsed.candidates?.[0]?.content?.parts) {

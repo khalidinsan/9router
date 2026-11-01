@@ -114,7 +114,7 @@ function chatCompletionToResponses(responseBody, customToolNames = null) {
  * Parse OpenAI-style SSE text into a single chat completion JSON.
  * Used when provider forces streaming but client wants non-streaming.
  */
-export function parseSSEToOpenAIResponse(rawSSE, fallbackModel) {
+export function parseSSEToOpenAIResponse(rawSSE, fallbackModel, body) {
   const chunks = [];
   let streamError = null;
 
@@ -173,12 +173,10 @@ export function parseSSEToOpenAIResponse(rawSSE, fallbackModel) {
     message.tool_calls = [...toolCallMap.entries()].sort((a, b) => a[0] - b[0]).map(([, tc]) => tc);
   }
 
-  // A forced-stream provider whose model leaked its native tool-call markup as
-  // content (DeepSeek DSML / token-bar, Kimi) produced no structured tool_calls,
-  // so recover them here. Without this a non-stream client sees the raw markup
-  // as the answer. Runs after assembly so it also covers fragmented markup.
+  // Recovered only when the request declared native tools and the whole
+  // content is one standalone tool payload; anything else stays text.
   if (toolCallMap.size === 0 && message.content) {
-    const normalized = normalizeNativeToolCalls(fallbackModel, message);
+    const normalized = normalizeNativeToolCalls(fallbackModel, message, body);
     if (normalized) {
       message.tool_calls = normalized.message.tool_calls;
       if (normalized.message.content === undefined) message.content = null;
@@ -342,7 +340,7 @@ export async function handleForcedSSEToJson({ providerResponse, sourceFormat, ta
       sseText = translatedChunks.join("\n\n");
     }
 
-    const parsed = parseSSEToOpenAIResponse(sseText, model);
+    const parsed = parseSSEToOpenAIResponse(sseText, model, body);
     if (!parsed) return createErrorResult(HTTP_STATUS.BAD_GATEWAY, "Invalid SSE response for non-streaming request");
     if (parsed.error) {
       // Structured error chunks may carry the real upstream status (e.g. the

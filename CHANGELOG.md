@@ -53,6 +53,15 @@
   API like 1.2.
 
 ## Fixes
+- **Tool-call markup recovery**: recover XML/DSML/token-bar tool calls from
+  text only when the request declared native tools (and `tool_choice` is not
+  `none`), the whole content is one complete payload, and every name matches a
+  declared tool. In-band clients (OMP with `supportsTools: false`), prose that
+  quotes or explains markup, and truncated or damaged payloads now pass through
+  as text instead of being guessed into calls. Removed the damaged-opener
+  suffix matching, missing-`<`/missing-close tolerance and reasoning-channel
+  markup stripping. Captured Kiro, TokenHarbor and WorkBuddy responses to
+  native-tool requests carried structured `tool_calls` with no markup.
 - **Kiro streaming**: preserve buffered prefixes when passthrough resumes, and
   parse embedded thinking delimiters across event boundaries without dropping
   the answer that follows. Apply EventStream size bounds per frame rather than

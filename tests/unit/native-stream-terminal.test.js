@@ -51,8 +51,8 @@ for (const mode of ["translate", "passthrough"]) {
         if (ending === "finish" || ending === "done" || mode === "passthrough") expect(result.doneCount).toBe(1);
       });
       it(`${ending}: emits every recovered tool argument before terminal framing`, async () => {
-        const result = await replay([{ content: `Baca.\n\n${xml}` }], { mode, ending, transportSize: 7 });
-        expect(fieldText(result.chunks, "content")).toBe("Baca.");
+        const result = await replay([{ content: xml }], { mode, ending, transportSize: 7 });
+        expect(fieldText(result.chunks, "content")).toBe("");
         const calls = result.chunks.flatMap(chunk => chunk.choices?.[0]?.delta?.tool_calls || []);
         expect(calls).toHaveLength(1);
         expect(calls[0].index).toBe(0);
@@ -67,7 +67,7 @@ for (const mode of ["translate", "passthrough"]) {
 for (const sourceFormat of ["claude", "openai-responses"]) {
   for (const ending of ["finish", "done", "eof", "tail"]) {
     it(`kiro to ${sourceFormat}, ${ending}: translates recovered tools before closing the protocol`, async () => {
-      const result = await replay([{ content: `Baca.\n\n${xml}` }], { targetFormat: "kiro", sourceFormat, ending });
+      const result = await replay([{ content: xml }], { targetFormat: "kiro", sourceFormat, ending });
       expect(result.chunks.every(chunk => chunk.choices === undefined)).toBe(true);
       if (sourceFormat === "claude") {
         const tool = result.chunks.find(chunk => chunk.type === "content_block_start" && chunk.content_block?.type === "tool_use");
