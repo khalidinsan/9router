@@ -80,7 +80,23 @@ export default {
       503: { attempts: 3, delayMs: 1000 },
     },
   },
+  transports: [
+    {
+      format: "openai-responses",
+      baseUrl: "https://agentrouter.org/v1/responses",
+      auth: { combined: true, header: "Authorization", scheme: "bearer" },
+      headers: {
+        "Anthropic-Version": "2023-06-01",
+        "Anthropic-Beta": "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14",
+        "User-Agent": CLAUDE_CLI_USER_AGENT,
+        "X-App": "cli",
+      },
+      thinkingFormat: "openai-responses",
+    },
+  ],
   models: [
+    { id: "gpt-6.1-sol", name: "GPT 6.1 Sol", targetFormat: "openai-responses", supportedFormats: ["openai-responses"] },
+    { id: "gpt-6-astra", name: "GPT 6 Astra", targetFormat: "openai-responses", supportedFormats: ["openai-responses"] },
     { id: "claude-opus-4-6", name: "Claude 4.6 Opus" },
     { id: "claude-opus-4-7", name: "Claude 4.7 Opus" },
     { id: "claude-opus-4-8", name: "Claude 4.8 Opus" },

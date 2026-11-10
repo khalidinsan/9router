@@ -186,7 +186,7 @@ tail -5 ~/Library/Logs/9router.log
 curl -s http://127.0.0.1:20127/v1/chat/completions \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer <test-api-key>" \
-  -d '{"model":"ag/gemini-3.7-flash-high","messages":[{"role":"user","content":"Reply with exactly: OK"}],"stream":false,"max_tokens":30}'
+  -d '{"model":"ag/gemini-3.8-flash-high","messages":[{"role":"user","content":"Reply with exactly: OK"}],"stream":false,"max_tokens":30}'
 # expect 200 + content "OK"
 ```
 

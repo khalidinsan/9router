@@ -53,6 +53,8 @@
   API like 1.2.
 
 ## Fixes
+- **AgentRouter**: route GPT 6.1 Sol and GPT 6 Astra through the Responses API
+  so streaming completion and native tool calls use their supported endpoint.
 - **Tool-call markup recovery**: recover XML/DSML/token-bar tool calls from
   text only when the request declared native tools (and `tool_choice` is not
   `none`), the whole content is one complete payload, and every name matches a
