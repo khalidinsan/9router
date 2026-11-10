@@ -61,17 +61,15 @@ const USAGE_EXTRACTORS = {
   commandcode(raw) {
     const input = n(raw.inputTokens), output = n(raw.outputTokens);
     const total = typeof raw.totalTokens === "number" ? raw.totalTokens : input + output;
-    // /alpha/generate reports cache on three equivalent fields (top-level
-    // cachedInputTokens, inputTokenDetails.cacheReadTokens, raw.prompt_cache_*).
-    // Without this the ~7k CLI-harness prompt tokens are stored as uncached.
     const cached = n(raw.cachedInputTokens)
       || n(raw.inputTokenDetails?.cacheReadTokens)
       || n(raw.raw?.prompt_cache_hit_tokens)
       || n(raw.raw?.prompt_tokens_details?.cached_tokens);
+    const cacheCreate = n(raw.inputTokenDetails?.cacheWriteTokens);
     const reasoning = n(raw.reasoningTokens)
       || n(raw.outputTokenDetails?.reasoningTokens)
       || n(raw.raw?.completion_tokens_details?.reasoning_tokens);
-    return { promptTokens: input, completionTokens: output, totalTokens: total, cachedTokens: cached, reasoningTokens: reasoning };
+    return { promptTokens: input, completionTokens: output, totalTokens: total, cachedTokens: cached, cacheCreationTokens: cacheCreate, reasoningTokens: reasoning };
   },
 };
 

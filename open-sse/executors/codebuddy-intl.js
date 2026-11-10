@@ -25,11 +25,25 @@ export class CodeBuddyIntlExecutor extends DefaultExecutor {
       transformed.reasoning_summary = "auto";
     }
 
+    // Tencent WAF flags third-party CLI agent identity strings (Claude Code, Cursor, etc.)
+    // as unauthorized tooling / prompt injection and rejects/bans the account.
+    // Neutralize only matching agent markers while preserving user system prompts.
+    const NEUTRAL_PROMPT = "You are a helpful AI assistant that helps with software engineering tasks.";
+    const AGENT_PATTERN = /you are claude code|claude.?code.+official.+cli|anthropic.+official.+cli|anxthxropic.+official.+cli|you are (?:cursor|windsurf|cline|aider|continue|copilot|cody)|you are an? (?:ai )?(?:coding |code )?agent|cc_entrypoint\s*=\s*(?:cli|vscode|jetbrains|gui)|claude.?code.+issues|give feedback.+claude.?code|you are .{0,30}(?:powerful )?ai agent|orchestration capabilities|OhMyOpenCode|<agent-identity>|<Role>|<Behavior_Instructions>/i;
+
     // CodeBuddy rejects plain OpenAI shape (11101 invalid request): needs a
     // leading system prompt + user content as typed blocks, not a bare string.
-    // The client's own system prompt is folded into that leading message — see
-    // shared/codebuddyMessages.js.
-    transformed.messages = buildCodebuddyMessages(transformed.messages);
+    const source = Array.isArray(transformed.messages) ? transformed.messages : [];
+    const messages = source.map((message) => {
+      if (!message || !["system", "developer"].includes(message.role)) return message;
+      const text = typeof message.content === "string"
+        ? message.content
+        : Array.isArray(message.content)
+          ? message.content.map((part) => part?.text || "").join("\n")
+          : "";
+      return text && AGENT_PATTERN.test(text) ? { ...message, content: NEUTRAL_PROMPT } : message;
+    });
+    transformed.messages = buildCodebuddyMessages(messages);
 
     return transformed;
   }

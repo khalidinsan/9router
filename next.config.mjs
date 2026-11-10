@@ -25,11 +25,16 @@ const nextConfig = {
   // plugins by dynamic require, neither of which survives bundling.
   // wreq-js resolves its rust native binding by relative require paths from its own
   // package dir — bundling breaks those paths ("Failed to load native module").
-  serverExternalPackages: ["better-sqlite3", "sql.js", "node:sqlite", "bun:sqlite", "open", "impit", "camoufox-js", "@aws-sdk/credential-providers", "wreq-js"],
+  serverExternalPackages: ["better-sqlite3", "sql.js", "node:sqlite", "bun:sqlite", "open", "impit", "camoufox-js", "@aws-sdk/credential-providers", "wreq-js", "undici"],
   turbopack: {
     root: tracingRoot
   },
   outputFileTracingRoot: tracingRoot,
+  outputFileTracingIncludes: {
+    // serverExternalPackages keeps undici external; dynamic import("undici")
+    // alone doesn't pull it into the trace, so force-ship the real package.
+    "*": ["./node_modules/undici/**/*"]
+  },
   outputFileTracingExcludes: {
     "*": ["./gitbook/**/*"]
   },

@@ -113,6 +113,46 @@ describe("commandcode-to-openai — finish", () => {
     const last = chunks[chunks.length - 1];
     expect(last.usage).toEqual({ prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 });
   });
+
+  it("extracts cache details when inputTokenDetails is provided", () => {
+    const { chunks } = feed([
+      { type: "text-delta", text: "hi cached" },
+      {
+        type: "finish",
+        totalUsage: {
+          inputTokens: 100,
+          outputTokens: 20,
+          inputTokenDetails: { cacheReadTokens: 80, cacheWriteTokens: 10 },
+        },
+      },
+    ]);
+    const last = chunks[chunks.length - 1];
+    expect(last.usage.prompt_tokens).toBe(100);
+    expect(last.usage.completion_tokens).toBe(20);
+    expect(last.usage.prompt_tokens_details).toEqual({
+      cached_tokens: 80,
+      cache_creation_tokens: 10,
+    });
+  });
+
+  it("retains cache and reasoning details together across CommandCode usage formats", () => {
+    const { chunks } = feed([
+      { type: "text-delta", text: "done" },
+      {
+        type: "finish",
+        totalUsage: {
+          inputTokens: 100,
+          outputTokens: 20,
+          cachedInputTokens: 75,
+          inputTokenDetails: { cacheWriteTokens: 10 },
+          outputTokenDetails: { reasoningTokens: 7 },
+        },
+      },
+    ]);
+    const usage = chunks[chunks.length - 1].usage;
+    expect(usage.prompt_tokens_details).toEqual({ cached_tokens: 75, cache_creation_tokens: 10 });
+    expect(usage.completion_tokens_details).toEqual({ reasoning_tokens: 7 });
+  });
 });
 
 describe("commandcode-to-openai — error event", () => {
