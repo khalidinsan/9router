@@ -22,6 +22,11 @@ const KIRO_SERVICE_REGIONS = {
   runtime: new Set(["us-east-1", "eu-central-1"]),
   codewhisperer: new Set(["us-east-1"]),
 };
+// Social sign-ins (Google/GitHub) and imported CLI tokens use the Kiro V2 data
+// plane: kiro-cli posts GenerateAssistantResponse to the runtime root with an
+// X-Amz-Target header. The Amazon Q / CodeWhisperer surfaces answer that token
+// family with a version 400, so these methods must not fall back to them.
+const KIRO_SOCIAL_AUTH_METHODS = new Set(["google", "github", "imported"]);
 const KIRO_REPAIR_HEARTBEAT_MS = 10_000;
 const KIRO_SHORT_FINAL_MAX_CHARS = 800;
 const EVENTSTREAM_MAX_MESSAGE_BYTES = AWS_EVENTSTREAM.maxMessageBytes;
@@ -291,7 +296,10 @@ export class KiroExecutor extends BaseExecutor {
       "Amz-Sdk-Request": "attempt=1; max=3",
       "Amz-Sdk-Invocation-Id": uuidv4()
     };
-    if (url.includes("://codewhisperer.")) {
+    // AWS JSON surfaces select the operation with X-Amz-Target; the runtime root
+    // and the CodeWhisperer path both take GenerateAssistantResponse, while the
+    // Amazon Q surface does not.
+    if (url.includes("://codewhisperer.") || url.includes("://runtime.")) {
       headers["X-Amz-Target"] = KIRO_CODEWHISPERER_TARGET;
     } else {
       delete headers["X-Amz-Target"];
@@ -323,15 +331,12 @@ export class KiroExecutor extends BaseExecutor {
     //   - `x-amzn-codewhisperer-machine-id: kiro-desktop` is GONE. It is an
     //     IDE identity string, and the whole point of this change is that an
     //     account presents the CLI, not the desktop app.
-    //   - `x-amz-sso-bearer` STAYS. It carries no client identity (it is the
-    //     same token as Authorization) and it was added together with
-    //     `x-amzn-kiro-agent-mode` to stop the legacy path gateway answering
-    //     REQUEST_BODY_INVALID for modern payloads. Removing it would trade a
-    //     verified fix for an unverifiable one.
+    //   - `x-amz-sso-bearer` STAYS for compatibility with existing requests;
+    //     it carries the same token as Authorization.
     //
     // `x-amzn-kiro-agent-mode` is also kept: kiro-cli knows this header (it is
     // in the CLI binary's field table) and normally carries agent mode in the
-    // body instead, but the legacy surface needs the header.
+    // body instead.
     if (credentials?.accessToken) {
       headers["x-amz-sso-bearer"] = credentials.accessToken;
     }
@@ -349,33 +354,33 @@ export class KiroExecutor extends BaseExecutor {
   /**
    * Auth-aware endpoint ordering.
    *
+   * kiro-cli's V2 data plane is the runtime root: POST
+   * https://runtime.us-east-1.kiro.dev/ with
+   * `X-Amz-Target: AmazonCodeWhispererStreamingService.GenerateAssistantResponse`.
+   * Social (Google/GitHub) and imported CLI tokens use that surface. Amazon Q
+   * rejects the captured CLI identity with a 400 unsupported-version, so these
+   * auth methods use the runtime root only: a runtime 429 must surface as a
+   * 429 instead of being masked by a later 400.
+   *
    * API-key Kiro connections use the Amazon Q surface. The legacy
    * codewhisperer.* GenerateAssistantResponse endpoint can authenticate the key
    * but rejects the same valid payload with REQUEST_BODY_INVALID. Since a 400
-   * is terminal in BaseExecutor, putting CodeWhisperer first prevents the working
-   * q.* endpoint from ever being tried. Keep q.* first only for api_key accounts.
+   * is terminal in BaseExecutor, q.* must come before CodeWhisperer for api_key.
    *
-   * The Kiro IDE gateway (runtime.*.kiro.dev) expects Kiro OIDC/social tokens
-   * and rejects TokenType=API_KEY. External IdP enterprise tokens instead
-   * use the CodeWhisperer surface, with the `TokenType: EXTERNAL_IDP` header.
-   * Other OAuth methods keep the default order (kiro.dev first) since their
-   * tokens are what that gateway accepts.
+   * IAM Identity Center (idc) tokens are AWS SSO access tokens — the same
+   * family as external_idp/api_key. The runtime gateway rejects them with
+   * 403 "bearer token invalid", so they hit the CodeWhisperer
+   * *.amazonaws.com surface, in the region the token was minted in.
+   * External IdP enterprise tokens also use the CodeWhisperer surface, with
+   * the `TokenType: EXTERNAL_IDP` header. Builder ID keeps the Amazon-first
+   * order because there is no verified runtime-root evidence for it.
+   *
+   * Amazon surfaces reject foreign tokens with 401/403, which DO fall through,
+   * so q/codewhisperer-first is safe for the non-social methods.
    */
   getOrderedBaseUrls(credentials) {
     const baseUrls = this.getBaseUrls();
     const authMethod = credentials?.providerSpecificData?.authMethod;
-    // IAM Identity Center (idc) tokens are AWS SSO access tokens — the same
-    // family as external_idp/api_key. The kiro.dev gateway rejects them with
-    // 403 "bearer token invalid", so they must hit the CodeWhisperer
-    // *.amazonaws.com surface, and in the region the token was minted in
-    // (the baseUrls are hardcoded us-east-1).
-    // Kiro deprecated the legacy path-style GenerateAssistantResponse on
-    // runtime.*.kiro.dev (IDE 1.0.228+ moved to POST / + x-amz-target). The
-    // path gateway now answers valid modern payloads with 400
-    // REQUEST_BODY_INVALID, and 400 is terminal in BaseExecutor, so kiro.dev
-    // must never be the first surface for any auth method. Amazon surfaces
-    // reject foreign tokens with 401/403, which DO fall through, so trying
-    // q/codewhisperer first is safe for every auth method (CLIRO parity).
 
     // Only a covered region reaches the hostname that receives the bearer token.
     const requestedRegion = (credentials?.providerSpecificData?.region || "us-east-1").trim();
@@ -388,12 +393,31 @@ export class KiroExecutor extends BaseExecutor {
     };
 
     const amazon = baseUrls.filter((u) => u.includes("amazonaws.com")).map(regionalize);
-    const others = baseUrls.filter((u) => !u.includes("amazonaws.com"));
+    const runtime = baseUrls.filter((u) => !u.includes("amazonaws.com"));
+    if (KIRO_SOCIAL_AUTH_METHODS.has(authMethod)) {
+      return runtime.length > 0 ? runtime : [baseUrls[0]];
+    }
+
     const q = amazon.filter((u) => u.includes("://q."));
     const remaining = amazon.filter((u) => !u.includes("://q."));
     return q.length > 0
-      ? [...q, ...remaining, ...others]
-      : [...amazon, ...others];
+      ? [...q, ...remaining, ...runtime]
+      : [...amazon, ...runtime];
+  }
+
+  /**
+   * BaseExecutor captures getFallbackCount() once and calls
+   * shouldRetry(status, urlIndex) without credentials, so an auth-aware chain
+   * shorter than config.baseUrls has to travel with the request. Executors are
+   * shared singletons, so apply it to a per-request prototype view instead of
+   * mutable instance state.
+   */
+  requestExecutor(credentials) {
+    const orderedLength = this.getOrderedBaseUrls(credentials).length;
+    if (orderedLength === this.getFallbackCount()) return this;
+    const scope = Object.create(this);
+    scope.getFallbackCount = () => orderedLength;
+    return scope;
   }
 
   buildUrl(model, stream, urlIndex = 0, credentials = null) {
@@ -418,11 +442,11 @@ export class KiroExecutor extends BaseExecutor {
    * Kiro execute — delegate to BaseExecutor for endpoint fallback + retry, then
    * transform the binary AWS EventStream into OpenAI-shaped SSE on success.
    *
-   * BaseExecutor.execute() walks config.baseUrls (runtime.us-east-1.kiro.dev →
-   * codewhisperer → q) advancing to the next host on 429 (shouldRetry) and on
-   * network/5xx errors, while tryRetry handles in-place retries per `retry: {429: 2}`.
-   * Note: api-key connections reorder these so the *.amazonaws.com hosts come
-   * first — see getOrderedBaseUrls/buildUrl above.
+   * Endpoint order comes from getOrderedBaseUrls/buildUrl: social and imported
+   * tokens use the runtime root only, while api_key/idc/external_idp start at
+   * q.* and builder-id keeps the Amazon-first order. BaseExecutor advances to
+   * the next host on 429 (shouldRetry) and on network/5xx errors, while tryRetry
+   * handles in-place retries per `retry: {429: 0}`.
    * Note: the baseUrls are alternate surfaces of one regional service, so rotation
    * is edge-level failover — it does not grant fresh 429 quota. Per-account 429
    * spreading is handled upstream by account rotation in sse/handlers/chat.js.
@@ -431,7 +455,7 @@ export class KiroExecutor extends BaseExecutor {
    * classify the status, and trigger account fallback/cooldown.
    */
   async execute(args) {
-    const result = await super.execute(args);
+    const result = await BaseExecutor.prototype.execute.call(this.requestExecutor(args.credentials), args);
     if (result?.response?.ok) {
       // KIRO_INTEGRITY_GATE=off streams through, forfeiting the tool-call repair retry.
       if (process.env.KIRO_INTEGRITY_GATE === "off") {
@@ -558,7 +582,7 @@ export class KiroExecutor extends BaseExecutor {
       ? appendRepairInstruction(args.body, repairKind === "invalid_tool" ? "tool" : repairKind)
       : structuredClone(args.body || {});
 
-    const retry = await BaseExecutor.prototype.execute.call(this, {
+    const retry = await BaseExecutor.prototype.execute.call(this.requestExecutor(args.credentials), {
       ...args,
       body: repairBody,
       signal: options.signal

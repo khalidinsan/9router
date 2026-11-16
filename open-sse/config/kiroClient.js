@@ -5,17 +5,17 @@
  * validation) presents the same client identity here so an account always
  * looks like the official CLI rather than the desktop IDE.
  *
- * The strings below are captured from a live `kiro-cli` 2.24.1 install, not
- * invented. The AWS SDK for Rust assembles its UA from components, so each
- * value has a distinct source:
+ * The chat values below are captured from a live macOS `kiro-cli` 3.3.0
+ * request, not invented. The AWS SDK for Rust assembles its UA from
+ * components, so each value has a distinct source:
  *
  *   User-Agent:
- *     aws-sdk-rust/1.3.15          sdk-metadata   aws-types 1.3.9 → core pkg version
+ *     aws-sdk-rust/1.6.0           sdk-metadata   the Rust SDK's own version
  *     ua/2.1                       ua-metadata    aws-runtime USER_AGENT_VERSION
  *     api/<service>/<version>      api-metadata   the generated service client's PKG_VERSION
  *     os/macos                     os-metadata    build host OS family
- *     lang/rust/1.92.0             language       rustc used for the release build
- *     md/appVersion-2.24.1         additional     kiro-cli's UserAgentOverrideInterceptor
+ *     lang/rust/1.94.1             language       rustc used for the release build
+ *     md/appVersion-3.3.0          additional     kiro-cli's UserAgentOverrideInterceptor
  *     app/AmazonQ-For-CLI          app-name       the SDK AppName kiro-cli configures
  *
  *   X-Amz-User-Agent: the same string minus `md/`/`appVersion`, plus the
@@ -25,32 +25,40 @@
  * generated client — that is not a fingerprint inconsistency, it is what the
  * real CLI sends.
  *
- * Refresh is the one exception: kiro-cli refreshes social tokens through a
- * plain HTTP client, not the SDK, so it sends `kiro-cli/2.24.1`.
+ * Captured vs. inferred: only the chat surface was captured on 3.3.0. The
+ * management (control-plane / usage) and refresh values keep their 2.24.1
+ * shape re-stamped with the 3.3.0 SDK, Rust, and CLI versions; they were not
+ * re-observed on 3.3.0. Likewise, the runtime generated-client version is
+ * inferred from streaming (both ship in one SDK release), not captured.
  *
- * Override with KIRO_CLIENT_VERSION / KIRO_CLIENT_OS / KIRO_CLIENT_ARCH when a
- * future CLI release moves these values ahead of the constant here.
+ * Refresh is the one exception: kiro-cli refreshes social tokens through a
+ * plain HTTP client, not the SDK, so it sends a bare `kiro-cli/<version>`.
+ *
+ * Override with KIRO_CLIENT_VERSION / KIRO_CLIENT_OS when a future CLI release
+ * moves these values ahead of the constant here.
  */
 
-// kiro-cli release whose fingerprint this mirrors.
-export const KIRO_CLI_VERSION = "2.24.1";
+// kiro-cli release whose fingerprint this mirrors (captured: macOS 3.3.0).
+export const KIRO_CLI_VERSION = "3.3.0";
 
-// aws-sdk-rust core (aws-types) version.
-export const KIRO_CLI_SDK_VERSION = "1.3.15";
+// Rust SDK version, from `aws-sdk-rust/<version>` in the captured UA.
+export const KIRO_CLI_SDK_VERSION = "1.6.0";
 
 // aws-runtime USER_AGENT_VERSION — a protocol constant, not a crate version.
 export const KIRO_CLI_UA_VERSION = "2.1";
 
-// rustc used to build the release; the SDK reads it at compile time.
-export const KIRO_CLI_RUST_VERSION = "1.92.0";
+// rustc used to build the release; the SDK reads it at compile time (captured).
+export const KIRO_CLI_RUST_VERSION = "1.94.1";
 
-// Generated service-client versions, one per surface.
-export const KIRO_CLI_API_STREAMING = "0.1.17975";   // codewhispererstreaming
-export const KIRO_CLI_API_RUNTIME = "0.1.17975";     // codewhispererruntime
-export const KIRO_CLI_API_CONTROL_PLANE = "0.1.0";   // kirocontrolplanebearer
-export const KIRO_CLI_API_TELEMETRY = "1.0.0";       // toolkittelemetry
+// Generated service-client versions, one per surface. Only the streaming value
+// is captured; the others are carried over from the 2.24.1 capture and were
+// not re-observed on 3.3.0.
+export const KIRO_CLI_API_STREAMING = "0.1.19636";   // codewhispererstreaming (captured)
+export const KIRO_CLI_API_RUNTIME = "0.1.19636";     // codewhispererruntime (inferred, same SDK release)
+export const KIRO_CLI_API_CONTROL_PLANE = "0.1.0";   // kirocontrolplanebearer (not re-captured)
+export const KIRO_CLI_API_TELEMETRY = "1.0.0";       // toolkittelemetry (not re-captured)
 
-// SDK AppName — kiro-cli still reports its Amazon Q lineage here.
+// SDK AppName — kiro-cli still reports its Amazon Q lineage here (captured).
 export const KIRO_CLI_APP_NAME = "AmazonQ-For-CLI";
 
 /**
@@ -62,9 +70,9 @@ export const KIRO_CLI_ORIGIN = "KIRO_CLI";
 
 /**
  * Control-plane host kiro-cli uses for usage limits and the model catalog.
- * The IDE reaches the same operations through the `q.*.amazonaws.com`
- * surfaces; the CLI goes through `management.*.kiro.dev` with an
- * `x-amz-target` header.
+ * Inferred from the 2.24.1 capture: the CLI reaches these operations through
+ * `management.*.kiro.dev` with an `x-amz-target` header, while the IDE uses
+ * the `q.*.amazonaws.com` surfaces. Not re-observed on 3.3.0.
  */
 export function kiroCliManagementHost(region = "us-east-1") {
   return `https://management.${region}.kiro.dev`;
@@ -149,14 +157,18 @@ export function kiroCliControlPlaneUserAgent() {
 
 /**
  * UA for token refresh. kiro-cli's social refresh goes through a plain HTTP
- * client, so it does not carry the SDK component string.
+ * client, so it does not carry the SDK component string — just
+ * `kiro-cli/<version>`, which follows KIRO_CLIENT_VERSION. Not re-captured on
+ * 3.3.0; the shape is carried over from the 2.24.1 capture.
  */
 export function kiroCliRefreshUserAgent() {
   return `kiro-cli/${kiroCliVersion()}`;
 }
 
 /**
- * Chat headers, matching a captured kiro-cli streaming request.
+ * Chat headers, matching the captured kiro-cli 3.3.0 streaming request
+ * (`GenerateAssistantResponse`): `User-Agent` carries `md/appVersion-3.3.0`,
+ * `X-Amz-User-Agent` carries `m/F`.
  *
  * Deliberately absent vs. the IDE fingerprint we used before:
  *   - `x-amzn-codewhisperer-machine-id: kiro-desktop` — an IDE-only marker.
@@ -180,7 +192,9 @@ export function buildKiroCliChatHeaders() {
 /**
  * Headers for the control plane (`management.*.kiro.dev`): usage limits and
  * the model catalog. The UA declares `api/kirocontrolplanebearer`, which is
- * what kiro-cli sends for these operations.
+ * what kiro-cli sends for these operations. Not re-captured on 3.3.0: the
+ * generated-client version and `m/F,C` metrics token are carried over from
+ * the 2.24.1 capture, with the SDK/Rust/CLI versions updated.
  */
 export function buildKiroCliControlPlaneHeaders() {
   return {
@@ -201,6 +215,8 @@ export function buildKiroCliControlPlaneHeaders() {
  * Headers for the CodeWhisperer usage surface (`GetUsageLimits`). kiro-cli
  * reaches this through the control-plane host too, but the UA declares
  * `api/codewhispererruntime` — the generated client that owns the operation.
+ * Not re-captured on 3.3.0; `api/codewhispererruntime/0.1.19636` is inferred
+ * from the streaming capture's SDK release.
  */
 export function buildKiroCliUsageHeaders() {
   return {

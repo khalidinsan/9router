@@ -18,9 +18,13 @@ export default {
   },
   category: "free",
   transport: {
-    baseUrl: "https://runtime.us-east-1.kiro.dev/generateAssistantResponse",
+    // kiro-cli's V2 data plane: POST to the runtime root with
+    // `X-Amz-Target: AmazonCodeWhispererStreamingService.GenerateAssistantResponse`.
+    // The path-style /generateAssistantResponse gateway is legacy and answers
+    // the same CLI version with a 400 unsupported-version.
+    baseUrl: "https://runtime.us-east-1.kiro.dev/",
     baseUrls: [
-      "https://runtime.us-east-1.kiro.dev/generateAssistantResponse",
+      "https://runtime.us-east-1.kiro.dev/",
       "https://codewhisperer.us-east-1.amazonaws.com/generateAssistantResponse",
       "https://q.us-east-1.amazonaws.com/generateAssistantResponse",
     ],
@@ -28,10 +32,10 @@ export default {
     retry: {
       "429": 0,
     },
-    // kiro-cli identity, captured from a live kiro-cli 2.24.1 request — see
-    // config/kiroClient.js. Both the chat and control-plane UA strings are the
-    // real CLI's own values, so an account never presents the desktop-IDE
-    // fingerprint.
+    // kiro-cli identity — see config/kiroClient.js. Both the chat and
+    // control-plane UA strings are the real CLI's own values, so an account
+    // never presents the desktop-IDE fingerprint. The V2 inference request was
+    // captured from a live kiro-cli 3.3.0.
     headers: {
       "Content-Type": "application/x-amz-json-1.0",
       Accept: "*/*",

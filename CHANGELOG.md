@@ -53,6 +53,8 @@
   API like 1.2.
 
 ## Fixes
+- **Kiro**: update the CLI fingerprint and use the current runtime endpoint for
+  social OAuth, avoiding the obsolete-client version gate on Amazon Q.
 - **AgentRouter**: route GPT 6.1 Sol and GPT 6 Astra through the Responses API
   so streaming completion and native tool calls use their supported endpoint.
 - **Tool-call markup recovery**: recover XML/DSML/token-bar tool calls from
