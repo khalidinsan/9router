@@ -152,10 +152,6 @@ const server = Bun.serve({
 console.log("[bun-relay] listening on :" + port);
 `;
 
-function sleep(ms) {
-  return new Promise((r) => setTimeout(r, ms));
-}
-
 async function resolveBunBinary() {
   const candidates = [
     process.env.BUN_PATH,
