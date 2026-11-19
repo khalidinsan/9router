@@ -53,6 +53,9 @@
   API like 1.2.
 
 ## Fixes
+- **Command Code Provider**: preserve real streaming usage and cache counts when
+  they arrive after the finish event, including when clients stop at finish.
+  Tool-only fallback estimates count tool arguments and are labelled in logs.
 - **Kiro**: update the CLI fingerprint and use the current runtime endpoint for
   social OAuth, avoiding the obsolete-client version gate on Amazon Q.
 - **AgentRouter**: route GPT 6.1 Sol and GPT 6 Astra through the Responses API

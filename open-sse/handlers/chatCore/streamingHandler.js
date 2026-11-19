@@ -10,6 +10,7 @@ import { buildRequestDetail, extractRequestConfig, saveUsageStats, formatDoneLin
 import { saveRequestDetail } from "@/lib/usageDb.js";
 import { SSE_HEADERS_CORS as SSE_HEADERS } from "../../utils/sseConstants.js";
 import { finalizeOpenAITerminalSse, needsOpenAITerminalNormalization } from "../../providers/openai-terminal-normalizer.js";
+import { coalesceCommandCodeUsage } from "../../providers/commandcode-stream.js";
 import { upstreamResponseHeaders } from "../../utils/upstreamHeaders.js";
 
 // Codex returns Responses API SSE → which client format to translate INTO, by request sourceFormat.
@@ -87,7 +88,11 @@ export async function handleStreamingResponse({ providerResponse, provider, mode
     };
   }
 
-  const transformStream = buildTransformStream({ provider, sourceFormat, targetFormat, userAgent, reqLogger, toolNameMap, customToolNames, model, connectionId, body, onStreamComplete, apiKey, credentials });
+  let transformStream = buildTransformStream({ provider, sourceFormat, targetFormat, userAgent, reqLogger, toolNameMap, customToolNames, model, connectionId, body, onStreamComplete, apiKey, credentials });
+  if (provider === "commandcode-provider" && sourceFormat === FORMATS.OPENAI && targetFormat === FORMATS.OPENAI) {
+    const coalescer = coalesceCommandCodeUsage();
+    transformStream = { writable: coalescer.writable, readable: coalescer.readable.pipeThrough(transformStream) };
+  }
 
   // Terminal bytes when the stream aborts after HTTP 200 was already sent, so the
   // client sees a real error instead of a silently truncated stream.

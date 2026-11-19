@@ -58,6 +58,13 @@ export function emitNativeToolCallsChunk(controller, toolCalls, state, modelName
 // sharedEncoder is stateless — safe to share across streams
 const sharedEncoder = new TextEncoder();
 
+function toolCallTextLength(delta) {
+  if (!Array.isArray(delta?.tool_calls)) return 0;
+  return delta.tool_calls.reduce((length, call) =>
+    length + (typeof call?.function?.name === "string" ? call.function.name.length : 0) +
+    (typeof call?.function?.arguments === "string" ? call.function.arguments.length : 0), 0);
+}
+
 /**
  * Stream modes
  */
@@ -349,6 +356,7 @@ export function createSSEStream(options = {}) {
           let output;
           let injectedUsage = false;
           let responsesTerminal = false;
+          let commandCodeTerminal = false;
 
           if (trimmed.startsWith("data:") && trimmed.slice(5).trim() !== "[DONE]") {
             try {
@@ -452,6 +460,7 @@ export function createSSEStream(options = {}) {
               if (recoverContentDelta(parsed)) fieldsInjected = true;
 
               const delta = parsed.choices?.[0]?.delta;
+              totalContentLength += toolCallTextLength(delta);
               const reasoning = delta?.reasoning_content;
 
               const content = delta?.content;
@@ -473,6 +482,7 @@ export function createSSEStream(options = {}) {
               responsesTerminal = isOpenAIResponsesTerminalEvent(currentOpenAIResponsesEvent, parsed);
 
               const isFinishChunk = parsed.choices?.[0]?.finish_reason;
+              commandCodeTerminal = provider === "commandcode-provider" && Boolean(isFinishChunk);
               if (isFinishChunk && resolveNativeTail(parsed)) fieldsInjected = true;
               if (isFinishChunk && !hasValidUsage(parsed.usage)) {
                 const estimated = estimateUsage(body, totalContentLength, FORMATS.OPENAI);
@@ -516,6 +526,7 @@ export function createSSEStream(options = {}) {
             streamDoneSent = true;
           }
 
+          if (commandCodeTerminal && !streamErrorSeen) finalizeStream();
           reqLogger?.appendConvertedChunk?.(output);
           controller.enqueue(sharedEncoder.encode(output));
           // Responses clients (codex CLI) close on response.completed instead of [DONE]
@@ -580,6 +591,7 @@ export function createSSEStream(options = {}) {
         if (nativeToolCallsEnabled && parsed.choices?.[0]) lastNativeChunk = parsed;
         recoverContentDelta(parsed);
 
+        totalContentLength += toolCallTextLength(parsed.choices?.[0]?.delta);
         // Claude format - content
         if (parsed.delta?.text) {
           totalContentLength += parsed.delta.text.length;
