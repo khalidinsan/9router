@@ -30,7 +30,14 @@ const STRIP_RULES = [
   // multi-turn combo. Providers that *require* the field (DeepSeek, Kimi) are
   // handled by reasoningContentInjector and are not listed here.
   { provider: "groq", dropMessageFields: ["reasoning_content", "reasoning", "reasoning_details"] },
-  { provider: "mistral", dropMessageFields: ["reasoning_content", "reasoning", "reasoning_details"] },
+  // Mistral also runs a strict top-level validator: `store` (OpenAI) and a bare
+  // `thinking` object answer 422 extra_forbidden, which kills every client that
+  // sends them (measured 2026-11-19 against api.mistral.ai with the studio key).
+  {
+    provider: "mistral",
+    drop: ["store", "thinking"],
+    dropMessageFields: ["reasoning_content", "reasoning", "reasoning_details"],
+  },
   { provider: "cerebras", dropMessageFields: ["reasoning_content", "reasoning", "reasoning_details"] },
   // NVIDIA NIM treats `reasoning` and `reasoning_content` as aliases for one
   // field; sending both makes its deserializer report a duplicate field. Keep

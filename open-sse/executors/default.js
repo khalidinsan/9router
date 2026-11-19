@@ -113,7 +113,15 @@ export class DefaultExecutor extends BaseExecutor {
       stripUnsupportedParams(this.provider, model, transformed);
     }
 
-    return injectReasoningContent({ provider: this.provider, model, body: transformed });
+    const injected = injectReasoningContent({ provider: this.provider, model, body: transformed });
+    // Strip rules win even over injection: the injector re-adds reasoning_content
+    // for DeepSeek-class model ids, and strict upstreams (Mistral, Groq, Cerebras)
+    // answer 422/400 extra_forbidden on that field. A DeepSeek model served by
+    // another provider is not a DeepSeek endpoint.
+    if (injected && typeof injected === "object") {
+      stripUnsupportedParams(this.provider, model, injected);
+    }
+    return injected;
   }
 
   applyNousAttribution(model, body, stream, credentials) {

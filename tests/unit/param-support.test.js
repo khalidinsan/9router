@@ -87,6 +87,30 @@ describe("stripUnsupportedParams", () => {
     }
   });
 
+  it("drops top-level store/thinking and injected reasoning for Mistral", () => {
+    const executor = new DefaultExecutor("mistral");
+    const body = {
+      store: false,
+      thinking: { type: "enabled" },
+      messages: [
+        { role: "user", content: "hi" },
+        {
+          role: "assistant",
+          content: "",
+          tool_calls: [{ id: "c1", type: "function", function: { name: "f", arguments: "{}" } }],
+        },
+      ],
+    };
+
+    const out = executor.transformRequest("deepseek-v4-1-flash-1017", body, false, null);
+
+    expect(out.store).toBeUndefined();
+    expect(out.thinking).toBeUndefined();
+    // The DeepSeek-model-rule injector would add reasoning_content; a DeepSeek
+    // model served by Mistral answers 422 extra_forbidden on that field.
+    expect(out.messages[1].reasoning_content).toBeUndefined();
+  });
+
   it("leaves reasoning fields alone for providers that accept or require them", () => {
     const body = {
       messages: [{ role: "assistant", content: "hello", reasoning_content: "thinking..." }],
