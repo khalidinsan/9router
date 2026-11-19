@@ -10,6 +10,7 @@
  *   credentials.providerSpecificData.cloudflareCookies
  *   credentials.providerSpecificData.cf_clearance
  */
+import { ACCEPT_ENCODING } from "./zstdCompat.js";
 
 const CF_COOKIE_NAMES = new Set([
   "cf_clearance",
@@ -155,7 +156,7 @@ export function buildGrokWebHeaders({ cookie, userAgent, statsigId, requestId, t
     || "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36";
   const headers = {
     Accept: "*/*",
-    "Accept-Encoding": "gzip, deflate, br, zstd",
+    "Accept-Encoding": ACCEPT_ENCODING,
     "Accept-Language": "en-US,en;q=0.9,zh-CN;q=0.8",
     "Cache-Control": "no-cache",
     "Content-Type": "application/json",

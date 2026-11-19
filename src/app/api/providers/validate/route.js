@@ -270,6 +270,21 @@ export async function POST(request) {
       }
 
       switch (provider) {
+        case "fal-ai": {
+          // Match saved-connection tests: check auth without queueing a paid image.
+          const res = await fetch("https://api.fal.ai/v1/models?limit=1", {
+            headers: { Authorization: `Key ${apiKey}` },
+            signal: AbortSignal.timeout(8000),
+          });
+          isValid = res.ok;
+          if (!isValid) {
+            error = res.status === 401 || res.status === 403
+              ? "Invalid API key"
+              : `Unable to verify API key (Fal returned ${res.status})`;
+          }
+          break;
+        }
+
         case "openai":
           const openaiRes = await fetch("https://api.openai.com/v1/models", {
             headers: { "Authorization": `Bearer ${apiKey}` },
@@ -400,6 +415,7 @@ export async function POST(request) {
         case "nanobanana":
         case "chutes":
         case "runcrate":
+        case "synthetic":
         case "xiaomi-mimo":
         case "xiaomi-tokenplan":
         case "nvidia": {

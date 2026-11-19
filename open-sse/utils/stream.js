@@ -358,7 +358,10 @@ export function createSSEStream(options = {}) {
           let responsesTerminal = false;
           let commandCodeTerminal = false;
 
-          if (trimmed.startsWith("data:") && trimmed.slice(5).trim() !== "[DONE]") {
+          const isDoneSentinel = trimmed.startsWith("data:") && trimmed.slice(5).trim() === "[DONE]";
+          if (isDoneSentinel && streamDoneSent) continue;
+
+          if (trimmed.startsWith("data:") && !isDoneSentinel) {
             try {
               let parsed = JSON.parse(trimmed.slice(5).trim());
               if (parsed.error) {
@@ -520,7 +523,6 @@ export function createSSEStream(options = {}) {
           // the usage below is lost. Usage is already complete by the time the
           // sentinel arrives (it rides the last chunk before it), so finalize
           // here instead of waiting for a flush that may never come.
-          const isDoneSentinel = trimmed.startsWith("data:") && trimmed.slice(5).trim() === "[DONE]";
           if (isDoneSentinel) {
             flushNativeTail(controller);
             streamDoneSent = true;

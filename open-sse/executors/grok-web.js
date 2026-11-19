@@ -4,6 +4,7 @@ import { SSE_DONE, SSE_HEADERS_NO_BUFFER } from "../utils/sseConstants.js";
 import { sseChunk } from "../utils/sse.js";
 import { GROK_TLS_USER_AGENT, GrokTlsUnavailableError, grokTlsFetch, isCloudflareChallenge } from "../services/grokTlsClient.js";
 import { buildToolRegistry, buildGrokMessage, mapNativeToolCard, parseClientToolCallMarkup, hasOpenToolCallMarkup } from "./grok-web-tools.js";
+import { buildGrokWebHeaders } from "../utils/grokWebAuth.js";
 import { buildGrokCookieHeader } from "../utils/webCookieAuth.js";
 
 const GROK_CHAT_API = PROVIDERS["grok-web"].baseUrl;
@@ -399,7 +400,7 @@ export class GrokWebExecutor extends BaseExecutor {
     const spanId = randomHex(8);
     const headers = buildGrokWebHeaders({
       cookie,
-      userAgent: GROK_USER_AGENT,
+      userAgent: GROK_TLS_USER_AGENT,
       statsigId: generateStatsigId(),
       requestId: crypto.randomUUID(),
       traceId,

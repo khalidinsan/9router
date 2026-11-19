@@ -144,13 +144,12 @@ import p146 from "./chatgpt-web.js";
 import p147 from "./veoaifree-web.js";
 import p151 from "./uc-web.js";
 import p152 from "./runcrate.js";
-// Fork-only providers, renumbered above upstream's highest slot (p152).
 import p153 from "./genspark.js";
 import p154 from "./commandcode-provider.js";
 import p155 from "./perch.js";
-// Upstream's v0.5.112 addition takes the next free slot so the fork's three
-// above keep their existing numbers.
 import p159 from "./nace.js";
+import p160 from "./sensenova-intl.js";
+import p161 from "./synthetic.js";
 export default [
   agentrouter,
   p0,
@@ -302,4 +301,6 @@ export default [
   p154,
   p155,
   p159,
+  p160,
+  p161,
 ];
