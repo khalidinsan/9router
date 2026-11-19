@@ -53,6 +53,9 @@
   API like 1.2.
 
 ## Fixes
+- **Security**: require Next.js 16.4.6 or later within the 16.x line so new
+  installs cannot select the versions affected by GHSA-mfr8-8qww-v76h and
+  GHSA-vc7v-qv4w-wrv8. Align `eslint-config-next` with the patched release.
 - **Command Code Provider**: preserve real streaming usage and cache counts when
   they arrive after the finish event, including when clients stop at finish.
   Tool-only fallback estimates count tool arguments and are labelled in logs.
