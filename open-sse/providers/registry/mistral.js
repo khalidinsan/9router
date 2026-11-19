@@ -24,6 +24,15 @@ export default {
     { id: "mistral-large-latest", name: "Mistral Large 3" },
     { id: "codestral-latest", name: "Codestral" },
     { id: "mistral-medium-latest", name: "Mistral Medium 3" },
+    // Third-party model served on the Mistral platform (see
+    // https://docs.mistral.ai/models/deepseek-v4-flash-1017); 1M context,
+    // vision, tools and reasoning all come from the platform catalog.
+    {
+      id: "deepseek-v4-1-flash-1017",
+      name: "DeepSeek V4.1 Flash 1017",
+      contextLength: 1048576,
+      capabilities: { tools: true, reasoning: true, vision: true },
+    },
     { id: "mistral-embed", name: "Mistral Embed", kind: "embedding" },
   ],
   serviceKinds: ["llm","imageToText","embedding"],
