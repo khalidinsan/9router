@@ -48,6 +48,11 @@ describe("passthrough [DONE] sentinel", () => {
     expect(out.endsWith("data: [DONE]\n\n")).toBe(true);
   });
 
+  it("does not forward a second upstream sentinel", async () => {
+    const out = await run(`data: ${chunk}\n\ndata: [DONE]\n\ndata: [DONE]`);
+    expect(out).toBe(`data: ${chunk}\n\ndata: [DONE]\n\n`);
+  });
+
   it("still appends a sentinel when upstream sent none", async () => {
     const out = await run(`data: ${chunk}\n\n`);
     expect(count(out)).toBe(1);

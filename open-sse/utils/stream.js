@@ -353,15 +353,23 @@ export function createSSEStream(options = {}) {
 
         // Passthrough mode: normalize and forward
         if (mode === STREAM_MODE.PASSTHROUGH) {
+          if (streamDoneSent) continue;
           let output;
           let injectedUsage = false;
           let responsesTerminal = false;
           let commandCodeTerminal = false;
 
-          const isDoneSentinel = trimmed.startsWith("data:") && trimmed.slice(5).trim() === "[DONE]";
-          if (isDoneSentinel && streamDoneSent) continue;
+          if (trimmed.startsWith("data:") && trimmed.slice(5).trim() === "[DONE]") {
+            // Finalize before the client can close on the terminal event.
+            flushNativeTail(controller);
+            streamDoneSent = true;
+            finalizeStream();
+            reqLogger?.appendConvertedChunk?.(SSE_DONE);
+            controller.enqueue(sharedEncoder.encode(SSE_DONE));
+            continue;
+          }
 
-          if (trimmed.startsWith("data:") && !isDoneSentinel) {
+          if (trimmed.startsWith("data:")) {
             try {
               let parsed = JSON.parse(trimmed.slice(5).trim());
               if (parsed.error) {
@@ -518,21 +526,11 @@ export function createSSEStream(options = {}) {
             }
           }
 
-          // The client may hang up the instant it sees the sentinel — OMP does
-          // exactly that — which cancels this stream so flush() never runs and
-          // the usage below is lost. Usage is already complete by the time the
-          // sentinel arrives (it rides the last chunk before it), so finalize
-          // here instead of waiting for a flush that may never come.
-          if (isDoneSentinel) {
-            flushNativeTail(controller);
-            streamDoneSent = true;
-          }
-
           if (commandCodeTerminal && !streamErrorSeen) finalizeStream();
           reqLogger?.appendConvertedChunk?.(output);
           controller.enqueue(sharedEncoder.encode(output));
           // Responses clients (codex CLI) close on response.completed instead of [DONE]
-          if (responsesTerminal || isDoneSentinel) finalizeStream();
+          if (responsesTerminal) finalizeStream();
           continue;
         }
 
@@ -713,7 +711,7 @@ export function createSSEStream(options = {}) {
         const remaining = decoder.decode();
         if (remaining) buffer += remaining;
         if (buffer) transformer.transform(null, controller);
-        if (mode === STREAM_MODE.PASSTHROUGH) {
+        if (mode === STREAM_MODE.PASSTHROUGH && !streamDoneSent) {
           const separator = "\n";
           reqLogger?.appendConvertedChunk?.(separator);
           controller.enqueue(sharedEncoder.encode(separator));
@@ -728,9 +726,8 @@ export function createSSEStream(options = {}) {
           // Gemini-family clients (Antigravity, Vertex, Gemini) reject this sentinel with 400 syntax errors.
           const isGeminiFamily = provider === "antigravity" || provider === "gemini" || provider === "vertex";
           if (!streamDoneSent && !isGeminiFamily) {
-            const doneOutput = "data: [DONE]\n\n";
-            reqLogger?.appendConvertedChunk?.(doneOutput);
-            controller.enqueue(sharedEncoder.encode(doneOutput));
+            reqLogger?.appendConvertedChunk?.(SSE_DONE);
+            controller.enqueue(sharedEncoder.encode(SSE_DONE));
           }
 
           finalizeStream();

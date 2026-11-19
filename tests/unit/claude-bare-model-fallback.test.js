@@ -6,6 +6,7 @@ vi.mock("@/lib/localDb", () => ({
   getModelAliases: async () => ({}),
   getComboByName: async () => null,
   getProviderNodes: async () => [],
+  resolveModelRoute: async () => null,
   getProviderConnections: async ({ provider }) => connections[provider] ?? [],
 }));
 
