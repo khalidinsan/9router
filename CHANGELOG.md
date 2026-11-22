@@ -1,6 +1,10 @@
 # Unreleased
 
 ## Features
+- **Mistral**: browser sign-in that runs the Vibe CLI flow and stores the
+  minted key as an API-key connection. A Vibe key bills the plan's Vibe Code
+  allowance, while a Studio key bills the Studio API allowance — same endpoint,
+  different quota bucket.
 - **Routing**: edit an existing route or alias. The cards only offered
   enable/disable, copy and delete, so changing a target meant deleting the row
   and recreating it, which momentarily dropped the mapping. Both modals now open
