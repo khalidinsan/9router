@@ -8,8 +8,10 @@
 - **Public index**: `/` is now a read-only usage board — KPI totals, tokens per
   bucket with the dashboard's Today/24h/7D/30D/60D periods, top models, top API
   key names, top providers with brand marks, live sessions and recent requests.
-  The header follows the session (Login vs Dashboard) and the board uses the
-  landing page's dark theme; `/dashboard` still requires login.
+  The header follows the session (Login vs Dashboard) and the board sits on an
+  opaque surface with a tabbed leaderboard (models / API keys / providers), a
+  Key column in recent requests (also on the dashboard usage page) and a token
+  usage by API key table; `/dashboard` still requires login.
 - **Whitelabel**: product name, short name, tagline, accent colour, logo and
   favicon are settings (Settings → Branding) instead of build-time constants.
   The accent derives a full brand ramp at runtime, the logo replaces the sidebar
