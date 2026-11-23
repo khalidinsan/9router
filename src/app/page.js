@@ -484,7 +484,7 @@ export default async function IndexPage({ searchParams }) {
                 rel="noopener noreferrer"
                 className="text-gray-400 underline decoration-dotted underline-offset-2 hover:text-white"
               >
-                khalid insan
+                Khalid Insan
               </a>
             </span>
           </span>
