@@ -157,6 +157,13 @@ export default function LoginClient() {
       <div className="landing-grid absolute inset-0 pointer-events-none" aria-hidden="true" />
       <div className="relative z-10 w-full max-w-md">
         <div className="text-center mb-8">
+          {branding.logoUrl && (
+            <img
+              src={branding.logoUrl}
+              alt={branding.name}
+              className="mx-auto mb-4 h-14 w-auto object-contain"
+            />
+          )}
           <h1 className="text-3xl font-bold text-primary mb-2">{branding.name}</h1>
           <p className="text-text-muted">
             {samlAvailable

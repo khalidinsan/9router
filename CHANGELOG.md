@@ -5,6 +5,10 @@
   minted key as an API-key connection. A Vibe key bills the plan's Vibe Code
   allowance, while a Studio key bills the Studio API allowance — same endpoint,
   different quota bucket.
+- **Whitelabel**: product name, short name, tagline, accent colour, logo and
+  favicon are settings (Settings → Branding) instead of build-time constants.
+  The accent derives a full brand ramp at runtime, the logo replaces the sidebar
+  and login mark, and the favicon drives the tab icon, manifest and PWA colour.
 - **Routing**: edit an existing route or alias. The cards only offered
   enable/disable, copy and delete, so changing a target meant deleting the row
   and recreating it, which momentarily dropped the mapping. Both modals now open

@@ -84,7 +84,10 @@ export default function ProfilePage() {
 
   const [isRemoteHost, setIsRemoteHost] = useState(false);
   const branding = useBranding();
-  const [brandForm, setBrandForm] = useState({ name: "", shortName: "", tagline: "" });
+  const [brandForm, setBrandForm] = useState({ name: "", shortName: "", tagline: "", accent: "" });
+  const [brandAssets, setBrandAssets] = useState({ logo: "", favicon: "" });
+  const [brandAssetBusy, setBrandAssetBusy] = useState("");
+  const [brandAssetError, setBrandAssetError] = useState("");
   const [brandSaving, setBrandSaving] = useState(false);
   const [brandSaved, setBrandSaved] = useState(false);
   useEffect(() => {
@@ -101,7 +104,9 @@ export default function ProfilePage() {
           name: data?.branding?.name || "",
           shortName: data?.branding?.shortName || "",
           tagline: data?.branding?.tagline || "",
+          accent: data?.branding?.accent || "",
         });
+        setBrandAssets({ logo: branding.logoUrl || "", favicon: branding.faviconUrl || "" });
         setOidcForm({
           authMode: data?.authMode || "password",
           oidcIssuerUrl: data?.oidcIssuerUrl || "",
@@ -338,6 +343,52 @@ export default function ProfilePage() {
     }
   };
 
+  const uploadBrandAsset = async (type, file) => {
+    if (!file) return;
+    setBrandAssetBusy(type);
+    setBrandAssetError("");
+    try {
+      const dataUrl = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result || ""));
+        reader.onerror = () => reject(new Error("Could not read the file"));
+        reader.readAsDataURL(file);
+      });
+      const res = await fetch("/api/settings/branding-asset", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ type, dataUrl }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setBrandAssetError(data.error || "Upload failed");
+        return;
+      }
+      invalidateBrandingCache();
+      setBrandAssets((prev) => ({ ...prev, [type]: data.url || "" }));
+    } catch (err) {
+      setBrandAssetError(err?.message || "Upload failed");
+    } finally {
+      setBrandAssetBusy("");
+    }
+  };
+
+  const removeBrandAsset = async (type) => {
+    setBrandAssetBusy(type);
+    setBrandAssetError("");
+    try {
+      const res = await fetch(`/api/settings/branding-asset?type=${type}`, { method: "DELETE" });
+      if (res.ok) {
+        invalidateBrandingCache();
+        setBrandAssets((prev) => ({ ...prev, [type]: "" }));
+      }
+    } catch (err) {
+      setBrandAssetError(err?.message || "Could not remove the asset");
+    } finally {
+      setBrandAssetBusy("");
+    }
+  };
+
   const saveBranding = async (event) => {
     event?.preventDefault?.();
     setBrandSaving(true);
@@ -347,6 +398,7 @@ export default function ProfilePage() {
         name: brandForm.name.trim(),
         shortName: brandForm.shortName.trim(),
         tagline: brandForm.tagline.trim(),
+        accent: brandForm.accent.trim(),
       };
       const res = await fetch("/api/settings", {
         method: "PATCH",
@@ -943,6 +995,73 @@ export default function ProfilePage() {
                 <p className="text-xs text-text-muted">Shown after the name in the browser tab title.</p>
               </div>
             </div>
+            <div className="flex flex-col gap-2">
+              <label className="text-sm font-medium">Accent colour</label>
+              <div className="flex items-center gap-2">
+                <input
+                  type="color"
+                  aria-label="Accent colour"
+                  value={/^#[0-9a-f]{6}$/i.test(brandForm.accent) ? brandForm.accent : branding.accent}
+                  onChange={(e) => setBrandForm((prev) => ({ ...prev, accent: e.target.value }))}
+                  className="h-9 w-12 shrink-0 rounded border border-border bg-bg cursor-pointer"
+                />
+                <Input
+                  value={brandForm.accent}
+                  onChange={(e) => setBrandForm((prev) => ({ ...prev, accent: e.target.value }))}
+                  placeholder={branding.accent}
+                  maxLength={7}
+                />
+              </div>
+              <p className="text-xs text-text-muted">
+                Recolours every brand utility, the browser theme colour and the PWA splash.
+              </p>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              {[
+                { type: "logo", label: "Logo", hint: "PNG / SVG / WebP / JPG, max 512KB", accept: "image/png,image/svg+xml,image/webp,image/jpeg" },
+                { type: "favicon", label: "Favicon", hint: "PNG / SVG / ICO, max 256KB", accept: "image/png,image/svg+xml,image/x-icon" },
+              ].map(({ type, label, hint, accept }) => (
+                <div key={type} className="flex flex-col gap-2">
+                  <label className="text-sm font-medium">{label}</label>
+                  <div className="flex items-center gap-3">
+                    <div className="size-10 rounded-lg border border-border bg-bg flex items-center justify-center overflow-hidden shrink-0">
+                      {brandAssets[type] ? (
+                        <img src={brandAssets[type]} alt={label} className="size-full object-contain" />
+                      ) : (
+                        <span className="material-symbols-outlined text-text-muted text-[18px]">image</span>
+                      )}
+                    </div>
+                    <label className="cursor-pointer text-xs font-medium text-primary hover:underline">
+                      {brandAssetBusy === type ? "Uploading…" : brandAssets[type] ? "Replace" : "Upload"}
+                      <input
+                        type="file"
+                        accept={accept}
+                        className="hidden"
+                        disabled={!!brandAssetBusy}
+                        onChange={(e) => {
+                          const file = e.target.files && e.target.files[0];
+                          e.target.value = "";
+                          uploadBrandAsset(type, file);
+                        }}
+                      />
+                    </label>
+                    {brandAssets[type] && (
+                      <button
+                        type="button"
+                        onClick={() => removeBrandAsset(type)}
+                        className="text-xs text-text-muted hover:text-red-500"
+                      >
+                        Remove
+                      </button>
+                    )}
+                  </div>
+                  <p className="text-xs text-text-muted">{hint}</p>
+                </div>
+              ))}
+            </div>
+            {brandAssetError && <p className="text-xs text-red-500 break-words">{brandAssetError}</p>}
+
             <div className="flex items-center gap-3">
               <Button type="submit" loading={brandSaving} disabled={brandSaving}>
                 Save branding
@@ -952,7 +1071,7 @@ export default function ProfilePage() {
               )}
             </div>
             <p className="text-xs text-text-muted">
-              Leave a field empty to keep the default. Text only — logos and favicons are not renamed.
+              Leave a field empty to keep the default. Assets apply immediately; the name and tagline on save.
             </p>
           </form>
         </Card>

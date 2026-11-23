@@ -23,19 +23,34 @@ export async function generateMetadata() {
     title: `${branding.name} - ${branding.tagline}`,
     description: "One endpoint for all your AI providers. Manage keys, monitor usage, and scale effortlessly.",
     icons: {
-      icon: "/favicon.svg",
+      icon: branding.faviconUrl || "/favicon.svg",
     },
   };
 }
 
-export const viewport = {
-  themeColor: "#0a0a0a",
-};
+export async function generateViewport() {
+  const branding = await getBranding();
+  return { themeColor: branding.accent };
+}
 
-export default function RootLayout({ children }) {
+// Only the accent that differs from the shipped stylesheet needs overriding;
+// `:root:root` outranks the globals.css declarations regardless of order.
+function accentCss(palette, accent) {
+  const vars = Object.entries(palette)
+    .map(([step, hex]) => `--color-brand-${step}:${hex};`)
+    .join("");
+  return `:root:root{${vars}--color-primary:${accent};--color-primary-hover:${palette[600]};}`;
+}
+
+export default async function RootLayout({ children }) {
+  const branding = await getBranding();
   return (
     <html lang="en" suppressHydrationWarning>
       <head>
+        <style
+          id="brand-accent"
+          dangerouslySetInnerHTML={{ __html: accentCss(branding.palette, branding.accent) }}
+        />
         {/* Apply persisted theme before first paint so a reload does not flash the
             default (light) theme before the client store hydrates. Mirrors the
             zustand-persist "theme" key and the `dark` class applyTheme() sets. */}
