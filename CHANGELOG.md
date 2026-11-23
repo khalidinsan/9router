@@ -7,8 +7,9 @@
   different quota bucket.
 - **Public index**: `/` is now a read-only usage board — KPI totals, tokens per
   bucket with the dashboard's Today/24h/7D/30D/60D periods, top models, top API
-  key names, top providers, live sessions and recent requests. `/dashboard`
-  still requires login.
+  key names, top providers with brand marks, live sessions and recent requests.
+  The header follows the session (Login vs Dashboard) and the board uses the
+  landing page's dark theme; `/dashboard` still requires login.
 - **Whitelabel**: product name, short name, tagline, accent colour, logo and
   favicon are settings (Settings → Branding) instead of build-time constants.
   The accent derives a full brand ramp at runtime, the logo replaces the sidebar
