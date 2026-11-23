@@ -41,7 +41,6 @@ function RecentRequests({ requests = [] }) {
               <tr className="border-b border-border">
                 <th className="py-1.5 text-left font-semibold text-text-muted w-2"></th>
                 <th className="py-1.5 text-left font-semibold text-text-muted">Model</th>
-                <th className="py-1.5 text-left font-semibold text-text-muted">Key</th>
                 <th className="py-1.5 text-right font-semibold text-text-muted whitespace-nowrap">In / Out</th>
                 <th className="py-1.5 text-right font-semibold text-text-muted">When</th>
               </tr>
@@ -54,9 +53,13 @@ function RecentRequests({ requests = [] }) {
                     <td className="py-1.5">
                       <span className={`block w-1.5 h-1.5 rounded-full ${ok ? "bg-success" : "bg-error"}`} />
                     </td>
-                    <td className="py-1.5 font-mono truncate max-w-[120px]" title={r.model}>{r.model}</td>
-                    <td className="py-1.5 truncate max-w-[110px] text-text-muted" title={r.apiKeyName || ""}>
-                      {r.apiKeyName || "—"}
+                    <td className="py-1.5 font-mono truncate max-w-[140px]" title={`${r.model} · ${r.apiKeyName || ""}`}>
+                      <span className="block truncate">{r.model}</span>
+                      {r.apiKeyName && (
+                        <span className="block truncate font-sans text-[10px] font-normal text-text-muted">
+                          {r.apiKeyName}
+                        </span>
+                      )}
                     </td>
                     <td className="py-1.5 text-right whitespace-nowrap">
                       <span className="text-primary">{fmt(r.promptTokens)}↑</span>

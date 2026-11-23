@@ -274,7 +274,7 @@ export default async function IndexPage({ searchParams }) {
             </span>
           </Link>
           <nav className="flex items-center gap-4 text-xs font-medium text-gray-400">
-            <a href="https://github.com/decolua/9router#readme" target="_blank" rel="noopener noreferrer" className="hidden hover:text-white sm:inline">
+            <a href="https://github.com/khalidinsan/9router#readme" target="_blank" rel="noopener noreferrer" className="hidden hover:text-white sm:inline">
               Docs
             </a>
             <Link
@@ -374,7 +374,6 @@ export default async function IndexPage({ searchParams }) {
                     <tr className="border-b border-[#232b36] text-gray-500">
                       <th className="py-2 pl-5 text-left font-bold">Status</th>
                       <th className="py-2 text-left font-bold">Model</th>
-                      <th className="py-2 text-left font-bold">Key</th>
                       <th className="py-2 text-right font-bold">In / Out</th>
                       <th className="py-2 pr-5 text-right font-bold">When</th>
                     </tr>
@@ -387,11 +386,13 @@ export default async function IndexPage({ searchParams }) {
                           <td className="py-2 pl-5">
                             <span className={`block size-1.5 rounded-full ${ok ? "bg-emerald-400" : "bg-red-400"}`} />
                           </td>
-                          <td className="max-w-[130px] truncate py-2 font-mono text-gray-300" title={row.model}>
-                            {row.model}
-                          </td>
-                          <td className="max-w-[110px] truncate py-2 text-gray-400" title={row.apiKeyName || ""}>
-                            {row.apiKeyName || "—"}
+                          <td className="max-w-[150px] truncate py-2 font-mono text-gray-300" title={`${row.model} · ${row.apiKeyName || ""}`}>
+                            <span className="block truncate">{row.model}</span>
+                            {row.apiKeyName && (
+                              <span className="block truncate font-sans text-[10px] text-gray-500">
+                                {row.apiKeyName}
+                              </span>
+                            )}
                           </td>
                           <td className="whitespace-nowrap py-2 text-right tabular-nums text-gray-400">
                             {TOKEN(row.promptTokens)}↑ {TOKEN(row.completionTokens)}↓
@@ -460,9 +461,33 @@ export default async function IndexPage({ searchParams }) {
           )}
         </Panel>
 
-        <footer className="flex items-center justify-between gap-3 text-[11px] text-gray-600">
+        <footer className="flex flex-col gap-2 border-t border-[#232b36] pt-4 text-[11px] text-gray-600 sm:flex-row sm:items-center sm:justify-between">
           <span>{branding.name} · read-only</span>
-          <span>{branding.tagline}</span>
+          <span className="flex flex-wrap items-center gap-x-1.5 gap-y-1">
+            <span>
+              Built on{" "}
+              <a
+                href="https://github.com/decolua/9router"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-gray-400 underline decoration-dotted underline-offset-2 hover:text-white"
+              >
+                9Router by decolua
+              </a>
+            </span>
+            <span className="text-gray-700">·</span>
+            <span>
+              Developed by{" "}
+              <a
+                href="https://khalid.id"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-gray-400 underline decoration-dotted underline-offset-2 hover:text-white"
+              >
+                khalid insan
+              </a>
+            </span>
+          </span>
         </footer>
       </div>
     </div>
