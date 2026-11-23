@@ -7,6 +7,7 @@ import LanguageSwitcher from "@/shared/components/LanguageSwitcher";
 import { useTheme } from "@/shared/hooks/useTheme";
 import { cn } from "@/shared/utils/cn";
 import { APP_CONFIG } from "@/shared/constants/config";
+import { useBranding, invalidateBrandingCache } from "@/shared/hooks/useBranding";
 import { LOCALE_COOKIE, normalizeLocale } from "@/i18n/config";
 import { LOCALE_FLAGS } from "@/shared/constants/locales";
 
@@ -82,6 +83,10 @@ export default function ProfilePage() {
   const [proxyTestLoading, setProxyTestLoading] = useState(false);
 
   const [isRemoteHost, setIsRemoteHost] = useState(false);
+  const branding = useBranding();
+  const [brandForm, setBrandForm] = useState({ name: "", shortName: "", tagline: "" });
+  const [brandSaving, setBrandSaving] = useState(false);
+  const [brandSaved, setBrandSaved] = useState(false);
   useEffect(() => {
     if (typeof window !== "undefined")
       setIsRemoteHost(!["localhost", "127.0.0.1", "::1"].includes(window.location.hostname));
@@ -92,6 +97,11 @@ export default function ProfilePage() {
       .then((res) => res.json())
       .then((data) => {
         setSettings(data);
+        setBrandForm({
+          name: data?.branding?.name || "",
+          shortName: data?.branding?.shortName || "",
+          tagline: data?.branding?.tagline || "",
+        });
         setOidcForm({
           authMode: data?.authMode || "password",
           oidcIssuerUrl: data?.oidcIssuerUrl || "",
@@ -325,6 +335,35 @@ export default function ProfilePage() {
       }
     } catch (err) {
       console.error("Failed to update combo sticky limit:", err);
+    }
+  };
+
+  const saveBranding = async (event) => {
+    event?.preventDefault?.();
+    setBrandSaving(true);
+    setBrandSaved(false);
+    try {
+      const brandingPatch = {
+        name: brandForm.name.trim(),
+        shortName: brandForm.shortName.trim(),
+        tagline: brandForm.tagline.trim(),
+      };
+      const res = await fetch("/api/settings", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ branding: brandingPatch }),
+      });
+      if (res.ok) {
+        // Drop the caches so the sidebar/login label repaint without a reload.
+        invalidateBrandingCache();
+        setSettings(prev => ({ ...prev, branding: brandingPatch }));
+        setBrandSaved(true);
+        setTimeout(() => setBrandSaved(false), 2500);
+      }
+    } catch (err) {
+      console.error("Failed to save branding:", err);
+    } finally {
+      setBrandSaving(false);
     }
   };
 
@@ -857,6 +896,65 @@ export default function ProfilePage() {
             <span className="text-sm text-text-muted">Display language</span>
             <span className="text-2xl">{LOCALE_FLAGS[locale] || "🌐"}</span>
           </button>
+        </Card>
+
+        {/* Branding (whitelabel) */}
+        <Card>
+          <div className="flex items-center gap-3 mb-4">
+            <div className="p-2 rounded-lg bg-primary/10 text-primary shrink-0">
+              <span className="material-symbols-outlined text-[20px]">palette</span>
+            </div>
+            <div className="min-w-0">
+              <h3 className="text-base sm:text-lg font-semibold">Branding</h3>
+              <p className="text-xs text-text-muted">
+                Replaces the product label on the login page, sidebar, tab title and installed app.
+              </p>
+            </div>
+          </div>
+          <form onSubmit={saveBranding} className="flex flex-col gap-4">
+            <div className="flex flex-col gap-2">
+              <label className="text-sm font-medium">Product name</label>
+              <Input
+                value={brandForm.name}
+                onChange={(e) => setBrandForm((prev) => ({ ...prev, name: e.target.value }))}
+                placeholder={branding.name}
+                maxLength={60}
+              />
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div className="flex flex-col gap-2">
+                <label className="text-sm font-medium">Short name</label>
+                <Input
+                  value={brandForm.shortName}
+                  onChange={(e) => setBrandForm((prev) => ({ ...prev, shortName: e.target.value }))}
+                  placeholder={branding.shortName}
+                  maxLength={60}
+                />
+                <p className="text-xs text-text-muted">Installed app / PWA icon label.</p>
+              </div>
+              <div className="flex flex-col gap-2">
+                <label className="text-sm font-medium">Tagline</label>
+                <Input
+                  value={brandForm.tagline}
+                  onChange={(e) => setBrandForm((prev) => ({ ...prev, tagline: e.target.value }))}
+                  placeholder={branding.tagline}
+                  maxLength={60}
+                />
+                <p className="text-xs text-text-muted">Shown after the name in the browser tab title.</p>
+              </div>
+            </div>
+            <div className="flex items-center gap-3">
+              <Button type="submit" loading={brandSaving} disabled={brandSaving}>
+                Save branding
+              </Button>
+              {brandSaved && (
+                <span className="text-xs text-green-600 dark:text-green-400">Saved</span>
+              )}
+            </div>
+            <p className="text-xs text-text-muted">
+              Leave a field empty to keep the default. Text only — logos and favicons are not renamed.
+            </p>
+          </form>
         </Card>
 
         {/* Security */}
@@ -1644,7 +1742,7 @@ export default function ProfilePage() {
 
         {/* App Info */}
         <div className="text-center text-xs sm:text-sm text-text-muted py-4">
-          <p>{APP_CONFIG.name} v{APP_CONFIG.version}</p>
+          <p>{branding.name} v{APP_CONFIG.version}</p>
           <p className="mt-1">{isRemoteHost ? "Remote Mode" : "Local Mode - All data stored on your machine"}</p>
         </div>
       </div>

@@ -8,6 +8,7 @@ import { cn } from "@/shared/utils/cn";
 import { APP_CONFIG, UPDATER_CONFIG } from "@/shared/constants/config";
 import { MEDIA_PROVIDER_KINDS } from "@/shared/constants/providers";
 import { useCopyToClipboard } from "@/shared/hooks/useCopyToClipboard";
+import { useBranding } from "@/shared/hooks/useBranding";
 import useSettingsStore from "@/store/settingsStore";
 import Button from "./Button";
 import { ConfirmModal } from "./Modal";
@@ -42,6 +43,7 @@ const systemItems = [
 ];
 
 export default function Sidebar({ onClose }) {
+  const branding = useBranding();
   const pathname = usePathname();
   const [mediaOpen, setMediaOpen] = useState(false);
   const [isDisconnected, setIsDisconnected] = useState(false);
@@ -128,7 +130,7 @@ export default function Sidebar({ onClose }) {
             </div>
             <div className="flex flex-col">
               <h1 className="text-lg font-semibold tracking-tight text-text-main">
-                {APP_CONFIG.name}
+                {branding.name}
               </h1>
               <span className="text-xs text-text-muted">v{APP_CONFIG.version}</span>
             </div>

@@ -1,7 +1,12 @@
-export default function manifest() {
+import { getBranding } from "@/lib/branding";
+
+export const dynamic = "force-dynamic";
+
+export default async function manifest() {
+  const branding = await getBranding();
   return {
-    name: '9Router - AI Infrastructure Management',
-    short_name: '9Router',
+    name: `${branding.name} - ${branding.tagline}`,
+    short_name: branding.shortName,
     description: 'One endpoint for all your AI providers. Manage keys, monitor usage, and scale effortlessly.',
     start_url: '/',
     display: 'standalone',
