@@ -582,20 +582,7 @@ export default async function IndexPage({ searchParams }) {
         <Panel title="Token usage by API key" hint={`${apiKeys.length} key(s) · ${periodLabel}`} flush>
           {apiKeys.length ? (
             <div className="overflow-x-auto">
-              <table className="w-full table-fixed border-collapse text-xs">
-                {/* Fixed layout + colgroup so each key's nested per-model table
-                    reuses the exact same column widths. */}
-                <colgroup>
-                  <col style={{ width: "24%" }} />
-                  <col style={{ width: "9%" }} />
-                  <col style={{ width: "10%" }} />
-                  <col style={{ width: "10%" }} />
-                  <col style={{ width: "9%" }} />
-                  <col style={{ width: "10%" }} />
-                  <col style={{ width: "9%" }} />
-                  <col style={{ width: "10%" }} />
-                  <col style={{ width: "9%" }} />
-                </colgroup>
+              <table className="w-full border-collapse text-xs">
                 <thead className="bg-[#12171e]">
                   <tr className="border-b border-[#232b36] text-gray-500">
                     <SortTh field="keyName" label="API key" align="left" period={period} group={group} refresh={refresh} sortBy={keySort} sortOrder={keyOrder} />
@@ -649,9 +636,9 @@ export default async function IndexPage({ searchParams }) {
                         {expandable ? (
                           <tr className="key-detail bg-[#0f1216]">
                             <td colSpan={9} className="px-0 py-0">
-                              {/* Same columns as the parent table; fixed layout
-                                  above keeps them aligned. Share is relative to
-                                  this key's total. */}
+                              {/* Nested table keeps its own fixed layout so
+                                  model rows stay aligned; the parent uses auto
+                                  layout again (fixed squeezed the Share bar). */}
                               <table className="w-full table-fixed border-collapse">
                                 <colgroup>
                                   <col style={{ width: "24%" }} />
