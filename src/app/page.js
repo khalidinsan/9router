@@ -442,6 +442,7 @@ export default async function IndexPage({ searchParams }) {
         <div className="flex flex-wrap items-center gap-1.5">
           {PERIODS.map((p) => (
             <Link
+              prefetch={false}
               key={p.value}
               href={pageHref({ period: p.value, group, refresh })}
               scroll={false}
