@@ -328,7 +328,7 @@ export default async function IndexPage({ searchParams }) {
       ...row,
       name: row.keyName,
       totalTokens: tokensOf(row),
-      models: [...row.modelTotals.entries()].sort((a, b) => b[1] - a[1]).map(([m]) => m),
+      models: [...row.modelTotals.entries()].sort((a, b) => b[1] - a[1]),
     })),
     keySort,
     keyOrder
@@ -534,12 +534,28 @@ export default async function IndexPage({ searchParams }) {
                     const share = totalTokens > 0 ? row.totalTokens / totalTokens : 0;
                     return (
                       <tr key={row.keyName} className="hover:bg-white/[0.02]">
-                        <td className="max-w-[220px] py-2 pl-5 font-medium text-gray-100">
+                        <td className="max-w-[260px] py-2 pl-5 font-medium text-gray-100">
                           <span className="block truncate" title={row.keyName}>{row.keyName}</span>
-                          {row.models?.length ? (
-                            <span className="block truncate font-mono text-[10px] font-normal text-gray-500" title={row.models.join(", ")}>
-                              {row.models.slice(0, 3).join(" · ")}{row.models.length > 3 ? ` +${row.models.length - 3}` : ""}
-                            </span>
+                          {row.models?.length === 1 ? (
+                            <span className="block truncate font-mono text-[10px] font-normal text-gray-500">{row.models[0][0]}</span>
+                          ) : row.models?.length > 1 ? (
+                            <details className="group/details mt-0.5 font-normal">
+                              <summary className="flex cursor-pointer list-none items-center gap-1 text-[10px] text-gray-500 transition-colors hover:text-gray-300 [&::-webkit-details-marker]:hidden">
+                                <span className="material-symbols-outlined text-[12px] transition-transform group-open/details:rotate-90">chevron_right</span>
+                                {row.models.length} models
+                              </summary>
+                              <ul className="mt-1 flex max-h-28 flex-wrap gap-1 overflow-y-auto">
+                                {row.models.map(([m, t]) => (
+                                  <li
+                                    key={m}
+                                    className="rounded border border-[#232b36] bg-[#12171e] px-1.5 py-0.5 font-mono text-[10px] text-gray-400"
+                                    title={`${m} · ${NUM(t)} tokens`}
+                                  >
+                                    {m} <span className="text-gray-600">{TOKEN(t)}</span>
+                                  </li>
+                                ))}
+                              </ul>
+                            </details>
                           ) : null}
                         </td>
                         <td className="py-2 text-right tabular-nums text-gray-400">{NUM(row.requests)}</td>
