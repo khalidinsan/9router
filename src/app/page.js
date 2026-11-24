@@ -27,7 +27,22 @@ const PERIODS = [
   { value: "7d", label: "7D" },
   { value: "30d", label: "30D" },
   { value: "60d", label: "60D" },
+  { value: "all", label: "All" },
 ];
+
+// ?refresh=<sec> enables a <meta> refresh; 0/invalid means manual reload only.
+const REFRESH_OPTIONS = [0, 30, 60];
+
+// Every nav link must carry period+group+refresh so toggles don't reset state.
+function pageHref({ period, group, refresh, keySort, keyOrder }) {
+  const q = new URLSearchParams({ period, group });
+  if (refresh) q.set("refresh", String(refresh));
+  if (keySort) {
+    q.set("keySort", keySort);
+    q.set("keyOrder", keyOrder);
+  }
+  return `/?${q.toString()}`;
+}
 
 const GROUPS = [
   { value: "models", label: "Models" },
@@ -82,11 +97,11 @@ function sortApiKeys(rows, sortBy, sortOrder) {
   return [...rows].sort((a, b) => spec.cmp(a, b) * dir);
 }
 
-function SortTh({ field, label, align = "right", period, group, sortBy, sortOrder }) {
+function SortTh({ field, label, align = "right", period, group, refresh, sortBy, sortOrder }) {
   const spec = API_KEY_SORTS[field];
   const active = sortBy === field;
   const nextOrder = active ? (sortOrder === "desc" ? "asc" : "desc") : spec.defaultOrder;
-  const href = `/?period=${period}&group=${group}&keySort=${field}&keyOrder=${nextOrder}`;
+  const href = pageHref({ period, group, refresh, keySort: field, keyOrder: nextOrder });
   return (
     <th className={`py-2 font-bold ${align === "left" ? "pl-5 text-left" : "text-right"}`}>
       <a
@@ -97,6 +112,26 @@ function SortTh({ field, label, align = "right", period, group, sortBy, sortOrde
         {active && <span className="text-[9px] text-[var(--color-primary)]">{sortOrder === "asc" ? "▲" : "▼"}</span>}
       </a>
     </th>
+  );
+}
+
+// Requests-per-minute over the trailing 10 minutes — the "live" pulse the
+// stats pipeline already computes but the board never rendered.
+function ActivitySparkline({ buckets = [] }) {
+  const width = 96;
+  const height = 20;
+  const max = Math.max(1, ...buckets.map((b) => b.requests || 0));
+  const barWidth = Math.max(2, Math.floor(width / Math.max(1, buckets.length)) - 1);
+  const total = buckets.reduce((s, b) => s + (b.requests || 0), 0);
+  return (
+    <span className="inline-flex items-center" title={`${total} requests in the last 10 minutes`}>
+      <svg width={width} height={height} viewBox={`0 0 ${width} ${height}`} role="img" aria-label="Requests per minute, last 10 minutes">
+        {buckets.map((b, i) => {
+          const h = Math.max(b.requests > 0 ? 2 : 0, ((b.requests || 0) / max) * (height - 2));
+          return <rect key={i} x={i * (barWidth + 1)} y={height - h} width={barWidth} height={h} rx="1" fill="var(--color-primary)" opacity="0.85" />;
+        })}
+      </svg>
+    </span>
   );
 }
 
@@ -262,6 +297,7 @@ export default async function IndexPage({ searchParams }) {
   const group = GROUPS.some((g) => g.value === params?.group) ? params.group : "models";
   const keySort = API_KEY_SORTS[params?.keySort] ? params.keySort : "totalTokens";
   const keyOrder = params?.keyOrder === "asc" ? "asc" : "desc";
+  const refresh = REFRESH_OPTIONS.includes(Number(params?.refresh)) ? Number(params.refresh) : 0;
 
   const cookieStore = await cookies();
   const authed = await verifyDashboardAuthToken(cookieStore.get("auth_token")?.value);
@@ -277,17 +313,23 @@ export default async function IndexPage({ searchParams }) {
   const keyTotals = new Map();
   for (const row of Object.values(stats.byApiKey || {})) {
     const name = row.keyName || "Unknown key";
-    const prev = keyTotals.get(name) || { keyName: name, requests: 0, promptTokens: 0, completionTokens: 0, cachedTokens: 0, cost: 0, lastUsed: null };
+    const prev = keyTotals.get(name) || { keyName: name, requests: 0, promptTokens: 0, completionTokens: 0, cachedTokens: 0, cost: 0, lastUsed: null, modelTotals: new Map() };
     prev.requests += row.requests || 0;
     prev.promptTokens += row.promptTokens || 0;
     prev.completionTokens += row.completionTokens || 0;
     prev.cachedTokens += row.cachedTokens || 0;
     prev.cost += row.cost || 0;
     if (row.lastUsed && (!prev.lastUsed || new Date(row.lastUsed) > new Date(prev.lastUsed))) prev.lastUsed = row.lastUsed;
+    if (row.rawModel) prev.modelTotals.set(row.rawModel, (prev.modelTotals.get(row.rawModel) || 0) + tokensOf(row));
     keyTotals.set(name, prev);
   }
   const apiKeys = sortApiKeys(
-    [...keyTotals.values()].map((row) => ({ ...row, name: row.keyName, totalTokens: tokensOf(row) })),
+    [...keyTotals.values()].map((row) => ({
+      ...row,
+      name: row.keyName,
+      totalTokens: tokensOf(row),
+      models: [...row.modelTotals.entries()].sort((a, b) => b[1] - a[1]).map(([m]) => m),
+    })),
     keySort,
     keyOrder
   );
@@ -303,6 +345,7 @@ export default async function IndexPage({ searchParams }) {
 
   return (
     <div className="min-h-screen bg-[#0f1216] font-sans text-gray-100 antialiased selection:bg-[var(--color-primary)] selection:text-white">
+      {refresh > 0 ? <meta httpEquiv="refresh" content={String(refresh)} /> : null}
       <div className="mx-auto flex max-w-6xl flex-col gap-6 px-5 py-8 sm:px-6">
         <header className="flex flex-wrap items-center justify-between gap-3">
           <Link href="/" className="flex min-w-0 items-center gap-3">
@@ -336,7 +379,7 @@ export default async function IndexPage({ searchParams }) {
           {PERIODS.map((p) => (
             <a
               key={p.value}
-              href={`/?period=${p.value}&group=${group}`}
+              href={pageHref({ period: p.value, group, refresh })}
               className={`rounded-md px-2.5 py-1 text-[11px] font-bold transition-colors ${
                 p.value === period
                   ? "text-[#0f1216]"
@@ -347,15 +390,27 @@ export default async function IndexPage({ searchParams }) {
               {p.label}
             </a>
           ))}
+          <ActivitySparkline buckets={stats.last10Minutes} />
           <span className="ml-auto inline-flex items-center gap-1.5 text-[11px] text-gray-500">
             <span className={`size-1.5 rounded-full ${activeCount > 0 ? "bg-emerald-400" : "bg-gray-600"}`} />
             {activeCount > 0 ? `${activeCount} in flight` : "idle"}
+            <span className="text-gray-700">·</span>
+            {REFRESH_OPTIONS.map((r) => (
+              <a
+                key={r}
+                href={pageHref({ period, group, refresh: r })}
+                className={`transition-colors ${r === refresh ? "font-bold text-gray-200" : "hover:text-white"}`}
+                title={r ? `Auto-refresh every ${r}s` : "Auto-refresh off"}
+              >
+                {r ? `${r}s` : "off"}
+              </a>
+            ))}
           </span>
         </div>
 
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
           <Kpi label={`Requests · ${periodLabel}`} value={NUM(stats.totalRequests)} sub="all providers" />
-          <Kpi label="Input tokens" value={TOKEN(stats.totalPromptTokens)} sub={`${TOKEN(stats.totalCachedTokens)} cached`} />
+          <Kpi label="Input tokens" value={TOKEN(stats.totalPromptTokens)} sub={`${TOKEN(stats.totalCachedTokens)} cached · ${PCT(stats.totalCachedTokens, stats.totalPromptTokens)}`} />
           <Kpi label="Output tokens" value={TOKEN(stats.totalCompletionTokens)} sub={`${TOKEN(totalTokens)} total`} />
           <Kpi label="Cost" value={MONEY(stats.totalCost)} sub="estimated" />
           <Kpi label="Active sessions" value={NUM(activeCount)} sub={`${activeKeys.length} key(s) live`} />
@@ -374,7 +429,7 @@ export default async function IndexPage({ searchParams }) {
             {GROUPS.map((g) => (
               <a
                 key={g.value}
-                href={`/?period=${period}&group=${g.value}`}
+                href={pageHref({ period, group: g.value, refresh })}
                 className={`rounded-t-md px-3 py-1.5 text-xs font-bold transition-colors ${
                   g.value === group
                     ? "border-b-2 border-[var(--color-primary)] text-white"
@@ -463,14 +518,14 @@ export default async function IndexPage({ searchParams }) {
               <table className="w-full border-collapse text-xs">
                 <thead className="bg-[#12171e]">
                   <tr className="border-b border-[#232b36] text-gray-500">
-                    <SortTh field="keyName" label="API key" align="left" period={period} group={group} sortBy={keySort} sortOrder={keyOrder} />
-                    <SortTh field="requests" label="Requests" period={period} group={group} sortBy={keySort} sortOrder={keyOrder} />
-                    <SortTh field="promptTokens" label="Input" period={period} group={group} sortBy={keySort} sortOrder={keyOrder} />
-                    <SortTh field="completionTokens" label="Output" period={period} group={group} sortBy={keySort} sortOrder={keyOrder} />
-                    <SortTh field="cachedTokens" label="Cached" period={period} group={group} sortBy={keySort} sortOrder={keyOrder} />
-                    <SortTh field="totalTokens" label="Total" period={period} group={group} sortBy={keySort} sortOrder={keyOrder} />
-                    <SortTh field="cost" label="Cost" period={period} group={group} sortBy={keySort} sortOrder={keyOrder} />
-                    <SortTh field="lastUsed" label="Last used" period={period} group={group} sortBy={keySort} sortOrder={keyOrder} />
+                    <SortTh field="keyName" label="API key" align="left" period={period} group={group} refresh={refresh} sortBy={keySort} sortOrder={keyOrder} />
+                    <SortTh field="requests" label="Requests" period={period} group={group} refresh={refresh} sortBy={keySort} sortOrder={keyOrder} />
+                    <SortTh field="promptTokens" label="Input" period={period} group={group} refresh={refresh} sortBy={keySort} sortOrder={keyOrder} />
+                    <SortTh field="completionTokens" label="Output" period={period} group={group} refresh={refresh} sortBy={keySort} sortOrder={keyOrder} />
+                    <SortTh field="cachedTokens" label="Cached" period={period} group={group} refresh={refresh} sortBy={keySort} sortOrder={keyOrder} />
+                    <SortTh field="totalTokens" label="Total" period={period} group={group} refresh={refresh} sortBy={keySort} sortOrder={keyOrder} />
+                    <SortTh field="cost" label="Cost" period={period} group={group} refresh={refresh} sortBy={keySort} sortOrder={keyOrder} />
+                    <SortTh field="lastUsed" label="Last used" period={period} group={group} refresh={refresh} sortBy={keySort} sortOrder={keyOrder} />
                     <th className="py-2 pr-5 text-right font-bold">Share</th>
                   </tr>
                 </thead>
@@ -479,8 +534,13 @@ export default async function IndexPage({ searchParams }) {
                     const share = totalTokens > 0 ? row.totalTokens / totalTokens : 0;
                     return (
                       <tr key={row.keyName} className="hover:bg-white/[0.02]">
-                        <td className="max-w-[180px] truncate py-2 pl-5 font-medium text-gray-100" title={row.keyName}>
-                          {row.keyName}
+                        <td className="max-w-[220px] py-2 pl-5 font-medium text-gray-100">
+                          <span className="block truncate" title={row.keyName}>{row.keyName}</span>
+                          {row.models?.length ? (
+                            <span className="block truncate font-mono text-[10px] font-normal text-gray-500" title={row.models.join(", ")}>
+                              {row.models.slice(0, 3).join(" · ")}{row.models.length > 3 ? ` +${row.models.length - 3}` : ""}
+                            </span>
+                          ) : null}
                         </td>
                         <td className="py-2 text-right tabular-nums text-gray-400">{NUM(row.requests)}</td>
                         <td className="py-2 text-right tabular-nums text-gray-400">{TOKEN(row.promptTokens)}</td>
