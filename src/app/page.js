@@ -313,14 +313,26 @@ export default async function IndexPage({ searchParams }) {
   const keyTotals = new Map();
   for (const row of Object.values(stats.byApiKey || {})) {
     const name = row.keyName || "Unknown key";
-    const prev = keyTotals.get(name) || { keyName: name, requests: 0, promptTokens: 0, completionTokens: 0, cachedTokens: 0, cost: 0, lastUsed: null, modelTotals: new Map() };
+    const prev = keyTotals.get(name) || { keyName: name, requests: 0, promptTokens: 0, completionTokens: 0, cachedTokens: 0, cost: 0, lastUsed: null, models: new Map() };
     prev.requests += row.requests || 0;
     prev.promptTokens += row.promptTokens || 0;
     prev.completionTokens += row.completionTokens || 0;
     prev.cachedTokens += row.cachedTokens || 0;
     prev.cost += row.cost || 0;
     if (row.lastUsed && (!prev.lastUsed || new Date(row.lastUsed) > new Date(prev.lastUsed))) prev.lastUsed = row.lastUsed;
-    if (row.rawModel) prev.modelTotals.set(row.rawModel, (prev.modelTotals.get(row.rawModel) || 0) + tokensOf(row));
+    // Per-model stats for the expandable detail row: label matches the
+    // leaderboard ("model (provider)"), values sorted by tokens below.
+    {
+      const mKey = row.rawModel ? (row.provider ? `${row.rawModel} (${row.provider})` : row.rawModel) : (row.provider || "Unknown");
+      const m = prev.models.get(mKey) || { requests: 0, promptTokens: 0, completionTokens: 0, cachedTokens: 0, cost: 0, lastUsed: null };
+      m.requests += row.requests || 0;
+      m.promptTokens += row.promptTokens || 0;
+      m.completionTokens += row.completionTokens || 0;
+      m.cachedTokens += row.cachedTokens || 0;
+      m.cost += row.cost || 0;
+      if (row.lastUsed && (!m.lastUsed || new Date(row.lastUsed) > new Date(m.lastUsed))) m.lastUsed = row.lastUsed;
+      prev.models.set(mKey, m);
+    }
     keyTotals.set(name, prev);
   }
   const apiKeys = sortApiKeys(
@@ -328,7 +340,9 @@ export default async function IndexPage({ searchParams }) {
       ...row,
       name: row.keyName,
       totalTokens: tokensOf(row),
-      models: [...row.modelTotals.entries()].sort((a, b) => b[1] - a[1]),
+      models: [...row.models.entries()]
+        .map(([model, m]) => ({ model, ...m, totalTokens: tokensOf(m) }))
+        .sort((a, b) => b.totalTokens - a.totalTokens),
     })),
     keySort,
     keyOrder
@@ -515,7 +529,20 @@ export default async function IndexPage({ searchParams }) {
         <Panel title="Token usage by API key" hint={`${apiKeys.length} key(s) · ${periodLabel}`} flush>
           {apiKeys.length ? (
             <div className="overflow-x-auto">
-              <table className="w-full border-collapse text-xs">
+              <table className="w-full table-fixed border-collapse text-xs">
+                {/* Fixed layout + colgroup so each key's nested per-model table
+                    reuses the exact same column widths. */}
+                <colgroup>
+                  <col style={{ width: "24%" }} />
+                  <col style={{ width: "9%" }} />
+                  <col style={{ width: "10%" }} />
+                  <col style={{ width: "10%" }} />
+                  <col style={{ width: "9%" }} />
+                  <col style={{ width: "10%" }} />
+                  <col style={{ width: "9%" }} />
+                  <col style={{ width: "10%" }} />
+                  <col style={{ width: "9%" }} />
+                </colgroup>
                 <thead className="bg-[#12171e]">
                   <tr className="border-b border-[#232b36] text-gray-500">
                     <SortTh field="keyName" label="API key" align="left" period={period} group={group} refresh={refresh} sortBy={keySort} sortOrder={keyOrder} />
@@ -529,34 +556,26 @@ export default async function IndexPage({ searchParams }) {
                     <th className="py-2 pr-5 text-right font-bold">Share</th>
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-[#232b36]/60">
-                  {apiKeys.map((row) => {
-                    const share = totalTokens > 0 ? row.totalTokens / totalTokens : 0;
-                    return (
-                      <tr key={row.keyName} className="hover:bg-white/[0.02]">
-                        <td className="max-w-[260px] py-2 pl-5 font-medium text-gray-100">
-                          <span className="block truncate" title={row.keyName}>{row.keyName}</span>
-                          {row.models?.length === 1 ? (
-                            <span className="block truncate font-mono text-[10px] font-normal text-gray-500">{row.models[0][0]}</span>
-                          ) : row.models?.length > 1 ? (
-                            <details className="group/details mt-0.5 font-normal">
-                              <summary className="flex cursor-pointer list-none items-center gap-1 text-[10px] text-gray-500 transition-colors hover:text-gray-300 [&::-webkit-details-marker]:hidden">
-                                <span className="material-symbols-outlined text-[12px] transition-transform group-open/details:rotate-90">chevron_right</span>
-                                {row.models.length} models
-                              </summary>
-                              <ul className="mt-1 flex max-h-28 flex-wrap gap-1 overflow-y-auto">
-                                {row.models.map(([m, t]) => (
-                                  <li
-                                    key={m}
-                                    className="rounded border border-[#232b36] bg-[#12171e] px-1.5 py-0.5 font-mono text-[10px] text-gray-400"
-                                    title={`${m} · ${NUM(t)} tokens`}
-                                  >
-                                    {m} <span className="text-gray-600">{TOKEN(t)}</span>
-                                  </li>
-                                ))}
-                              </ul>
-                            </details>
-                          ) : null}
+                {apiKeys.map((row, rowIdx) => {
+                  const share = totalTokens > 0 ? row.totalTokens / totalTokens : 0;
+                  const expandable = row.models.length > 1;
+                  const toggleId = `keyrow-${rowIdx}`;
+                  return (
+                    <tbody key={row.keyName} className="border-b border-[#232b36]/60">
+                      <tr className="relative hover:bg-white/[0.02]">
+                        <td className="py-2 pl-5 font-medium text-gray-100">
+                          {/* Checkbox hack: hidden input + stretched label makes
+                              the whole row toggle the detail row — no client JS.
+                              <details> can't do this: display:contents breaks
+                              open/closed toggling in Safari and Chrome. */}
+                          {expandable ? <input type="checkbox" id={toggleId} className="key-toggle" aria-label={`Toggle model breakdown for ${row.keyName}`} /> : null}
+                          <span className="flex items-center gap-1.5">
+                            <span className={`key-chevron material-symbols-outlined inline-block text-[14px] text-gray-600 transition-transform ${expandable ? "" : "invisible"}`}>
+                              chevron_right
+                            </span>
+                            <span className="truncate" title={row.keyName}>{row.keyName}</span>
+                          </span>
+                          {expandable ? <label htmlFor={toggleId} className="absolute inset-0 cursor-pointer" aria-hidden="true" /> : null}
                         </td>
                         <td className="py-2 text-right tabular-nums text-gray-400">{NUM(row.requests)}</td>
                         <td className="py-2 text-right tabular-nums text-gray-400">{TOKEN(row.promptTokens)}</td>
@@ -573,11 +592,71 @@ export default async function IndexPage({ searchParams }) {
                             <span className="w-11 tabular-nums text-right text-gray-400">{PCT(row.totalTokens, totalTokens)}</span>
                           </div>
                         </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
+                        </tr>
+                        {expandable ? (
+                          <tr className="key-detail bg-[#0f1216]">
+                            <td colSpan={9} className="px-0 py-0">
+                              {/* Same columns as the parent table; fixed layout
+                                  above keeps them aligned. Share is relative to
+                                  this key's total. */}
+                              <table className="w-full table-fixed border-collapse">
+                                <colgroup>
+                                  <col style={{ width: "24%" }} />
+                                  <col style={{ width: "9%" }} />
+                                  <col style={{ width: "10%" }} />
+                                  <col style={{ width: "10%" }} />
+                                  <col style={{ width: "9%" }} />
+                                  <col style={{ width: "10%" }} />
+                                  <col style={{ width: "9%" }} />
+                                  <col style={{ width: "10%" }} />
+                                  <col style={{ width: "9%" }} />
+                                </colgroup>
+                                <tbody className="divide-y divide-[#232b36]/40">
+                                  {row.models.map((m) => (
+                                    <tr key={m.model}>
+                                      <td className="py-1.5 pl-10 font-mono text-[11px] text-gray-300">
+                                        <span className="block truncate" title={m.model}>{m.model}</span>
+                                      </td>
+                                      <td className="py-1.5 text-right tabular-nums text-gray-500">{NUM(m.requests)}</td>
+                                      <td className="py-1.5 text-right tabular-nums text-gray-500">{TOKEN(m.promptTokens)}</td>
+                                      <td className="py-1.5 text-right tabular-nums text-gray-500">{TOKEN(m.completionTokens)}</td>
+                                      <td className="py-1.5 text-right tabular-nums text-gray-600">{TOKEN(m.cachedTokens)}</td>
+                                      <td className="py-1.5 text-right font-semibold tabular-nums text-gray-300">{TOKEN(m.totalTokens)}</td>
+                                      <td className="py-1.5 text-right tabular-nums text-gray-500">{MONEY(m.cost)}</td>
+                                      <td className="whitespace-nowrap py-1.5 text-right text-gray-600">{m.lastUsed ? ago(m.lastUsed) : "-"}</td>
+                                      <td className="py-1.5 pr-5 text-right tabular-nums text-gray-500">{PCT(m.totalTokens, row.totalTokens)}</td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            </td>
+                          </tr>
+                        ) : null}
+                      </tbody>
+                  );
+                })}
               </table>
+              {/* Row-accordion wiring: checkbox + stretched label toggles the
+                  detail row. Plain CSS — Tailwind doesn't emit :checked/:has
+                  variants for these selectors. */}
+              <style>{`
+                .key-toggle {
+                  position: absolute;
+                  width: 1px;
+                  height: 1px;
+                  opacity: 0;
+                  overflow: hidden;
+                }
+                .key-detail {
+                  display: none;
+                }
+                tbody:has(.key-toggle:checked) .key-detail {
+                  display: table-row;
+                }
+                tbody:has(.key-toggle:checked) .key-chevron {
+                  transform: rotate(90deg);
+                }
+              `}</style>
             </div>
           ) : (
             <p className="p-5 text-sm text-gray-500">No API-key traffic in this period.</p>
