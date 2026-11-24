@@ -60,6 +60,46 @@ const ago = (timestamp) => {
   return `${Math.floor(diff / 86400)}d ago`;
 };
 
+// Sortable "Token usage by API key" columns. The page has no client JS, so
+// sorting is just re-rendering with ?keySort=…&keyOrder=… like the period tabs.
+const API_KEY_SORTS = {
+  keyName: { defaultOrder: "asc", cmp: (a, b) => a.keyName.localeCompare(b.keyName) },
+  requests: { defaultOrder: "desc", cmp: (a, b) => a.requests - b.requests },
+  promptTokens: { defaultOrder: "desc", cmp: (a, b) => a.promptTokens - b.promptTokens },
+  completionTokens: { defaultOrder: "desc", cmp: (a, b) => a.completionTokens - b.completionTokens },
+  cachedTokens: { defaultOrder: "desc", cmp: (a, b) => a.cachedTokens - b.cachedTokens },
+  totalTokens: { defaultOrder: "desc", cmp: (a, b) => a.totalTokens - b.totalTokens },
+  cost: { defaultOrder: "desc", cmp: (a, b) => a.cost - b.cost },
+  lastUsed: {
+    defaultOrder: "desc",
+    cmp: (a, b) => (a.lastUsed ? new Date(a.lastUsed).getTime() : -1) - (b.lastUsed ? new Date(b.lastUsed).getTime() : -1),
+  },
+};
+
+function sortApiKeys(rows, sortBy, sortOrder) {
+  const spec = API_KEY_SORTS[sortBy] || API_KEY_SORTS.totalTokens;
+  const dir = sortOrder === "asc" ? 1 : -1;
+  return [...rows].sort((a, b) => spec.cmp(a, b) * dir);
+}
+
+function SortTh({ field, label, align = "right", period, group, sortBy, sortOrder }) {
+  const spec = API_KEY_SORTS[field];
+  const active = sortBy === field;
+  const nextOrder = active ? (sortOrder === "desc" ? "asc" : "desc") : spec.defaultOrder;
+  const href = `/?period=${period}&group=${group}&keySort=${field}&keyOrder=${nextOrder}`;
+  return (
+    <th className={`py-2 font-bold ${align === "left" ? "pl-5 text-left" : "text-right"}`}>
+      <a
+        href={href}
+        className={`inline-flex items-center gap-1 whitespace-nowrap transition-colors hover:text-white ${active ? "text-white" : ""} ${align === "left" ? "" : "justify-end"}`}
+      >
+        {label}
+        {active && <span className="text-[9px] text-[var(--color-primary)]">{sortOrder === "asc" ? "▲" : "▼"}</span>}
+      </a>
+    </th>
+  );
+}
+
 function rankRows(map, limit = 8) {
   return Object.entries(map || {})
     // The map key is the only identity for provider buckets, so keep it.
@@ -220,6 +260,8 @@ export default async function IndexPage({ searchParams }) {
   const params = await searchParams;
   const period = PERIODS.some((p) => p.value === params?.period) ? params.period : "today";
   const group = GROUPS.some((g) => g.value === params?.group) ? params.group : "models";
+  const keySort = API_KEY_SORTS[params?.keySort] ? params.keySort : "totalTokens";
+  const keyOrder = params?.keyOrder === "asc" ? "asc" : "desc";
 
   const cookieStore = await cookies();
   const authed = await verifyDashboardAuthToken(cookieStore.get("auth_token")?.value);
@@ -235,17 +277,20 @@ export default async function IndexPage({ searchParams }) {
   const keyTotals = new Map();
   for (const row of Object.values(stats.byApiKey || {})) {
     const name = row.keyName || "Unknown key";
-    const prev = keyTotals.get(name) || { keyName: name, requests: 0, promptTokens: 0, completionTokens: 0, cachedTokens: 0, cost: 0 };
+    const prev = keyTotals.get(name) || { keyName: name, requests: 0, promptTokens: 0, completionTokens: 0, cachedTokens: 0, cost: 0, lastUsed: null };
     prev.requests += row.requests || 0;
     prev.promptTokens += row.promptTokens || 0;
     prev.completionTokens += row.completionTokens || 0;
     prev.cachedTokens += row.cachedTokens || 0;
     prev.cost += row.cost || 0;
+    if (row.lastUsed && (!prev.lastUsed || new Date(row.lastUsed) > new Date(prev.lastUsed))) prev.lastUsed = row.lastUsed;
     keyTotals.set(name, prev);
   }
-  const apiKeys = [...keyTotals.values()]
-    .map((row) => ({ ...row, name: row.keyName, totalTokens: tokensOf(row) }))
-    .sort((a, b) => b.totalTokens - a.totalTokens);
+  const apiKeys = sortApiKeys(
+    [...keyTotals.values()].map((row) => ({ ...row, name: row.keyName, totalTokens: tokensOf(row) })),
+    keySort,
+    keyOrder
+  );
 
   const activeKeys = stats.activeByApiKey || [];
   const activeCount = activeKeys.reduce((sum, k) => sum + (k.count || 0), 0);
@@ -310,8 +355,8 @@ export default async function IndexPage({ searchParams }) {
 
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
           <Kpi label={`Requests · ${periodLabel}`} value={NUM(stats.totalRequests)} sub="all providers" />
-          <Kpi label="Prompt tokens" value={TOKEN(stats.totalPromptTokens)} sub={`${TOKEN(stats.totalCachedTokens)} cached`} />
-          <Kpi label="Completion tokens" value={TOKEN(stats.totalCompletionTokens)} sub={`${TOKEN(totalTokens)} total`} />
+          <Kpi label="Input tokens" value={TOKEN(stats.totalPromptTokens)} sub={`${TOKEN(stats.totalCachedTokens)} cached`} />
+          <Kpi label="Output tokens" value={TOKEN(stats.totalCompletionTokens)} sub={`${TOKEN(totalTokens)} total`} />
           <Kpi label="Cost" value={MONEY(stats.totalCost)} sub="estimated" />
           <Kpi label="Active sessions" value={NUM(activeCount)} sub={`${activeKeys.length} key(s) live`} />
         </div>
@@ -418,13 +463,14 @@ export default async function IndexPage({ searchParams }) {
               <table className="w-full border-collapse text-xs">
                 <thead className="bg-[#12171e]">
                   <tr className="border-b border-[#232b36] text-gray-500">
-                    <th className="py-2 pl-5 text-left font-bold">API key</th>
-                    <th className="py-2 text-right font-bold">Requests</th>
-                    <th className="py-2 text-right font-bold">Prompt</th>
-                    <th className="py-2 text-right font-bold">Completion</th>
-                    <th className="py-2 text-right font-bold">Cached</th>
-                    <th className="py-2 text-right font-bold">Total</th>
-                    <th className="py-2 text-right font-bold">Cost</th>
+                    <SortTh field="keyName" label="API key" align="left" period={period} group={group} sortBy={keySort} sortOrder={keyOrder} />
+                    <SortTh field="requests" label="Requests" period={period} group={group} sortBy={keySort} sortOrder={keyOrder} />
+                    <SortTh field="promptTokens" label="Input" period={period} group={group} sortBy={keySort} sortOrder={keyOrder} />
+                    <SortTh field="completionTokens" label="Output" period={period} group={group} sortBy={keySort} sortOrder={keyOrder} />
+                    <SortTh field="cachedTokens" label="Cached" period={period} group={group} sortBy={keySort} sortOrder={keyOrder} />
+                    <SortTh field="totalTokens" label="Total" period={period} group={group} sortBy={keySort} sortOrder={keyOrder} />
+                    <SortTh field="cost" label="Cost" period={period} group={group} sortBy={keySort} sortOrder={keyOrder} />
+                    <SortTh field="lastUsed" label="Last used" period={period} group={group} sortBy={keySort} sortOrder={keyOrder} />
                     <th className="py-2 pr-5 text-right font-bold">Share</th>
                   </tr>
                 </thead>
@@ -442,6 +488,7 @@ export default async function IndexPage({ searchParams }) {
                         <td className="py-2 text-right tabular-nums text-gray-500">{TOKEN(row.cachedTokens)}</td>
                         <td className="py-2 text-right font-bold tabular-nums text-white">{TOKEN(row.totalTokens)}</td>
                         <td className="py-2 text-right tabular-nums text-gray-400">{MONEY(row.cost)}</td>
+                        <td className="whitespace-nowrap py-2 text-right text-gray-500">{row.lastUsed ? ago(row.lastUsed) : "-"}</td>
                         <td className="py-2 pr-5">
                           <div className="flex items-center justify-end gap-2">
                             <div className="h-1 w-16 overflow-hidden rounded-full bg-[#232b36]">
