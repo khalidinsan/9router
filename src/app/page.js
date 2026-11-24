@@ -7,6 +7,7 @@ import { getUsageStats, getChartData } from "@/lib/usageDb";
 import { verifyDashboardAuthToken } from "@/lib/auth/dashboardSession";
 import { AI_PROVIDERS } from "@/shared/constants/providers";
 import { getProviderIconSrc } from "@/shared/utils/providerIcon";
+import LiveRefresh from "./LiveRefresh";
 
 // Public index: a read-only usage board on a solid, opaque surface. Content is
 // the same aggregate the dashboard serves — nothing here is client-side state.
@@ -30,8 +31,9 @@ const PERIODS = [
   { value: "all", label: "All" },
 ];
 
-// ?refresh=<sec> enables a <meta> refresh; 0/invalid means manual reload only.
-const REFRESH_OPTIONS = [0, 30, 60];
+// ?refresh=<sec> drives client-side live refresh (router.refresh, no reload).
+const REFRESH_OPTIONS = [0, 15, 30, 60];
+const DEFAULT_REFRESH = 15;
 
 // Every nav link must carry period+group+refresh so toggles don't reset state.
 function pageHref({ period, group, refresh, keySort, keyOrder }) {
@@ -104,13 +106,15 @@ function SortTh({ field, label, align = "right", period, group, refresh, sortBy,
   const href = pageHref({ period, group, refresh, keySort: field, keyOrder: nextOrder });
   return (
     <th className={`py-2 font-bold ${align === "left" ? "pl-5 text-left" : "text-right"}`}>
-      <a
+      <Link
         href={href}
+        prefetch={false}
+        scroll={false}
         className={`inline-flex items-center gap-1 whitespace-nowrap transition-colors hover:text-white ${active ? "text-white" : ""} ${align === "left" ? "" : "justify-end"}`}
       >
         {label}
         {active && <span className="text-[9px] text-[var(--color-primary)]">{sortOrder === "asc" ? "▲" : "▼"}</span>}
-      </a>
+      </Link>
     </th>
   );
 }
@@ -297,7 +301,7 @@ export default async function IndexPage({ searchParams }) {
   const group = GROUPS.some((g) => g.value === params?.group) ? params.group : "models";
   const keySort = API_KEY_SORTS[params?.keySort] ? params.keySort : "totalTokens";
   const keyOrder = params?.keyOrder === "asc" ? "asc" : "desc";
-  const refresh = REFRESH_OPTIONS.includes(Number(params?.refresh)) ? Number(params.refresh) : 0;
+  const refresh = REFRESH_OPTIONS.includes(Number(params?.refresh)) ? Number(params.refresh) : DEFAULT_REFRESH;
 
   const cookieStore = await cookies();
   const authed = await verifyDashboardAuthToken(cookieStore.get("auth_token")?.value);
@@ -359,7 +363,7 @@ export default async function IndexPage({ searchParams }) {
 
   return (
     <div className="min-h-screen bg-[#0f1216] font-sans text-gray-100 antialiased selection:bg-[var(--color-primary)] selection:text-white">
-      {refresh > 0 ? <meta httpEquiv="refresh" content={String(refresh)} /> : null}
+      <LiveRefresh seconds={refresh} />
       {/* Row-accordion + live-activity wiring. Plain CSS — Tailwind doesn't
           emit :checked/:has variants for these selectors. */}
       <style>{`
@@ -407,7 +411,7 @@ export default async function IndexPage({ searchParams }) {
       `}</style>
       <div className="mx-auto flex max-w-6xl flex-col gap-6 px-5 py-8 sm:px-6">
         <header className="flex flex-wrap items-center justify-between gap-3">
-          <Link href="/" className="flex min-w-0 items-center gap-3">
+          <Link href="/" prefetch={false} className="flex min-w-0 items-center gap-3">
             {branding.logoUrl ? (
               <img src={branding.logoUrl} alt={branding.name} className="h-8 w-auto object-contain" />
             ) : (
@@ -426,6 +430,7 @@ export default async function IndexPage({ searchParams }) {
             </a>
             <Link
               href={authed ? "/dashboard" : "/login"}
+              prefetch={false}
               className="rounded-lg px-3.5 py-1.5 text-xs font-bold text-[#0f1216] transition-opacity hover:opacity-90"
               style={{ background: "var(--color-primary)" }}
             >
@@ -436,9 +441,10 @@ export default async function IndexPage({ searchParams }) {
 
         <div className="flex flex-wrap items-center gap-1.5">
           {PERIODS.map((p) => (
-            <a
+            <Link
               key={p.value}
               href={pageHref({ period: p.value, group, refresh })}
+              scroll={false}
               className={`rounded-md px-2.5 py-1 text-[11px] font-bold transition-colors ${
                 p.value === period
                   ? "text-[#0f1216]"
@@ -447,7 +453,7 @@ export default async function IndexPage({ searchParams }) {
               style={p.value === period ? { background: "var(--color-primary)" } : undefined}
             >
               {p.label}
-            </a>
+            </Link>
           ))}
           <ActivitySparkline buckets={stats.last10Minutes} />
           <span className="ml-auto inline-flex items-center gap-1.5 text-[11px] text-gray-500">
@@ -455,14 +461,16 @@ export default async function IndexPage({ searchParams }) {
             {activeCount > 0 ? `${activeCount} in flight` : "idle"}
             <span className="text-gray-700">·</span>
             {REFRESH_OPTIONS.map((r) => (
-              <a
+              <Link
                 key={r}
                 href={pageHref({ period, group, refresh: r })}
+                prefetch={false}
+                scroll={false}
                 className={`transition-colors ${r === refresh ? "font-bold text-gray-200" : "hover:text-white"}`}
-                title={r ? `Auto-refresh every ${r}s` : "Auto-refresh off"}
+                title={r ? `Live refresh every ${r}s` : "Live refresh off"}
               >
                 {r ? `${r}s` : "off"}
-              </a>
+              </Link>
             ))}
           </span>
         </div>
@@ -486,9 +494,11 @@ export default async function IndexPage({ searchParams }) {
         >
           <div className="flex gap-1 border-b border-[#232b36] px-5 pt-3">
             {GROUPS.map((g) => (
-              <a
+              <Link
                 key={g.value}
                 href={pageHref({ period, group: g.value, refresh })}
+                prefetch={false}
+                scroll={false}
                 className={`rounded-t-md px-3 py-1.5 text-xs font-bold transition-colors ${
                   g.value === group
                     ? "border-b-2 border-[var(--color-primary)] text-white"
@@ -496,7 +506,7 @@ export default async function IndexPage({ searchParams }) {
                 }`}
               >
                 {g.label}
-              </a>
+              </Link>
             ))}
           </div>
           <Leaderboard rows={leaderboard} group={group} total={leaderboardTotal} />
