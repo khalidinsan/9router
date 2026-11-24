@@ -360,6 +360,51 @@ export default async function IndexPage({ searchParams }) {
   return (
     <div className="min-h-screen bg-[#0f1216] font-sans text-gray-100 antialiased selection:bg-[var(--color-primary)] selection:text-white">
       {refresh > 0 ? <meta httpEquiv="refresh" content={String(refresh)} /> : null}
+      {/* Row-accordion + live-activity wiring. Plain CSS — Tailwind doesn't
+          emit :checked/:has variants for these selectors. */}
+      <style>{`
+        .key-toggle {
+          position: absolute;
+          width: 1px;
+          height: 1px;
+          opacity: 0;
+          overflow: hidden;
+        }
+        .key-detail {
+          display: none;
+        }
+        tbody:has(.key-toggle:checked) .key-detail {
+          display: table-row;
+        }
+        tbody:has(.key-toggle:checked) .key-chevron {
+          transform: rotate(90deg);
+        }
+        .pulse-dot {
+          animation: pulse-ring 1.6s ease-out infinite;
+        }
+        @keyframes pulse-ring {
+          0% { box-shadow: 0 0 0 0 rgba(52, 211, 153, 0.55); }
+          70% { box-shadow: 0 0 0 5px rgba(52, 211, 153, 0); }
+          100% { box-shadow: 0 0 0 0 rgba(52, 211, 153, 0); }
+        }
+        .progress-track::after {
+          content: "";
+          display: block;
+          height: 100%;
+          width: 38%;
+          border-radius: 9999px;
+          background: var(--color-primary);
+          animation: progress-sweep 1.4s ease-in-out infinite;
+        }
+        @keyframes progress-sweep {
+          0% { transform: translateX(-110%); }
+          100% { transform: translateX(380%); }
+        }
+        @media (prefers-reduced-motion: reduce) {
+          .pulse-dot, .progress-track::after { animation: none; }
+          .progress-track::after { width: 100%; opacity: 0.35; }
+        }
+      `}</style>
       <div className="mx-auto flex max-w-6xl flex-col gap-6 px-5 py-8 sm:px-6">
         <header className="flex flex-wrap items-center justify-between gap-3">
           <Link href="/" className="flex min-w-0 items-center gap-3">
@@ -406,7 +451,7 @@ export default async function IndexPage({ searchParams }) {
           ))}
           <ActivitySparkline buckets={stats.last10Minutes} />
           <span className="ml-auto inline-flex items-center gap-1.5 text-[11px] text-gray-500">
-            <span className={`size-1.5 rounded-full ${activeCount > 0 ? "bg-emerald-400" : "bg-gray-600"}`} />
+            <span className={`size-1.5 rounded-full ${activeCount > 0 ? "pulse-dot bg-emerald-400" : "bg-gray-600"}`} />
             {activeCount > 0 ? `${activeCount} in flight` : "idle"}
             <span className="text-gray-700">·</span>
             {REFRESH_OPTIONS.map((r) => (
@@ -462,16 +507,24 @@ export default async function IndexPage({ searchParams }) {
             {activeKeys.length ? (
               <ul className="flex flex-col gap-2.5">
                 {activeKeys.slice(0, 10).map((key) => (
-                  <li key={key.keyName} className="flex items-start justify-between gap-3 rounded-lg border border-[#232b36] bg-[#12171e] px-3 py-2 text-sm">
-                    <div className="min-w-0">
-                      <p className="truncate font-medium text-gray-100" title={key.keyName}>{key.keyName}</p>
-                      <p className="truncate text-[11px] text-gray-500">
-                        {(key.models || []).map((m) => `${m.model}${m.count > 1 ? ` ×${m.count}` : ""}`).join(", ")}
-                      </p>
+                  <li key={key.keyName} className="relative overflow-hidden rounded-lg border border-[#232b36] bg-[#12171e] px-3 py-2 text-sm">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <p className="flex items-center gap-1.5 truncate font-medium text-gray-100" title={key.keyName}>
+                          <span className="pulse-dot inline-block size-1.5 shrink-0 rounded-full bg-emerald-400" />
+                          <span className="truncate">{key.keyName}</span>
+                        </p>
+                        <p className="truncate pl-3 text-[11px] text-gray-500">
+                          {(key.models || []).map((m) => `${m.model}${m.count > 1 ? ` ×${m.count}` : ""}`).join(", ")}
+                        </p>
+                      </div>
+                      <span className="shrink-0 rounded-md bg-[var(--color-primary)]/15 px-2 py-0.5 text-[11px] font-bold tabular-nums text-[var(--color-primary)]">
+                        ×{key.count}
+                      </span>
                     </div>
-                    <span className="shrink-0 rounded-md bg-[var(--color-primary)]/15 px-2 py-0.5 text-[11px] font-bold tabular-nums text-[var(--color-primary)]">
-                      ×{key.count}
-                    </span>
+                    {/* In-flight requests have no duration signal — sweep is
+                        intentionally indeterminate (progress, not %). */}
+                    <div className="progress-track mt-2 h-0.5 overflow-hidden rounded-full bg-[#232b36]" />
                   </li>
                 ))}
               </ul>
@@ -636,27 +689,6 @@ export default async function IndexPage({ searchParams }) {
                   );
                 })}
               </table>
-              {/* Row-accordion wiring: checkbox + stretched label toggles the
-                  detail row. Plain CSS — Tailwind doesn't emit :checked/:has
-                  variants for these selectors. */}
-              <style>{`
-                .key-toggle {
-                  position: absolute;
-                  width: 1px;
-                  height: 1px;
-                  opacity: 0;
-                  overflow: hidden;
-                }
-                .key-detail {
-                  display: none;
-                }
-                tbody:has(.key-toggle:checked) .key-detail {
-                  display: table-row;
-                }
-                tbody:has(.key-toggle:checked) .key-chevron {
-                  transform: rotate(90deg);
-                }
-              `}</style>
             </div>
           ) : (
             <p className="p-5 text-sm text-gray-500">No API-key traffic in this period.</p>
