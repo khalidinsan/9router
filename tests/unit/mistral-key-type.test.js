@@ -5,7 +5,7 @@ vi.mock("../../open-sse/utils/proxyFetch.js", () => ({
 }));
 
 import { proxyAwareFetch } from "../../open-sse/utils/proxyFetch.js";
-import { isMistralVibeKey, detectMistralKeyType } from "../../open-sse/services/mistralSignIn.js";
+import { isMistralVibeKey, detectMistralKeyType, resolveMistralKeyIdentity } from "../../open-sse/services/mistralSignIn.js";
 
 const json = (body, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
@@ -42,5 +42,30 @@ describe("Mistral key families", () => {
     await expect(detectMistralKeyType("mstrl_abc")).resolves.toBeNull();
     proxyAwareFetch.mockResolvedValue(json({ detail: "nope" }, 500));
     await expect(detectMistralKeyType("mstrl_abc")).resolves.toBeNull();
+  });
+});
+
+describe("resolveMistralKeyIdentity", () => {
+  beforeEach(() => proxyAwareFetch.mockReset());
+
+  it("stores the console's answer for a Vibe key", async () => {
+    proxyAwareFetch.mockResolvedValue(json({ plan_name: "INDIVIDUAL", plan_type: "CHAT", customer_id: "cust-1" }));
+    await expect(resolveMistralKeyIdentity("mstrl_abc")).resolves.toEqual({
+      keyType: "vibe",
+      plan: "INDIVIDUAL",
+      planType: "CHAT",
+      customerId: "cust-1",
+    });
+  });
+
+  it("stores the console's answer for a console key", async () => {
+    proxyAwareFetch.mockResolvedValue(json({ detail: "Unauthorized" }, 401));
+    await expect(resolveMistralKeyIdentity("4ZxQconsole")).resolves.toEqual({ keyType: "api" });
+  });
+
+  it("falls back to the key shape when the console cannot answer", async () => {
+    proxyAwareFetch.mockResolvedValue(json({ error: "unavailable" }, 500));
+    await expect(resolveMistralKeyIdentity("mstrl_abc")).resolves.toEqual({ keyType: "vibe" });
+    await expect(resolveMistralKeyIdentity("4ZxQconsole")).resolves.toEqual({ keyType: "api" });
   });
 });

@@ -7,6 +7,7 @@ import {
 } from "@/models";
 import { buildGrokCliManualEnableUpdate } from "open-sse/services/grokCliSafety.js";
 import { parsePerchCredential } from "open-sse/config/perch.js";
+import { resolveMistralKeyIdentity } from "open-sse/services/mistralSignIn.js";
 import { toProviderConnectionResponse, usesAwsCredentialForm } from "@/lib/providerConnectionResponse";
 
 function normalizeProxyConfig(body = {}) {
@@ -136,6 +137,14 @@ export async function PUT(request, { params }) {
       }
     }
     if (apiKey && existing.authType === "apikey") updateData.apiKey = apiKey;
+    // A replaced Mistral key is re-identified here so its family travels with
+    // the key instead of being inferred on every request.
+    if (existing.provider === "mistral" && apiKey) {
+      updateData.providerSpecificData = {
+        ...(updateData.providerSpecificData || existing.providerSpecificData || {}),
+        ...(await resolveMistralKeyIdentity(apiKey)),
+      };
+    }
     // Perch stores its CLI session split across accessToken/refreshToken (see
     // POST /api/providers). Re-pasting a fresh session is the recovery path
     // after a sign-out, so accept the same credential shape on edit.

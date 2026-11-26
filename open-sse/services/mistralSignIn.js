@@ -157,12 +157,16 @@ export function isMistralVibeKey(apiKey) {
  * cannot answer (offline, blocked), leaving the caller to fall back to
  * `isMistralVibeKey`.
  */
-export async function detectMistralKeyType(apiKey, { proxyOptions = null } = {}) {
+export async function detectMistralKeyType(apiKey, { proxyOptions = null, timeoutMs = 6000 } = {}) {
   if (!apiKey || typeof apiKey !== "string" || !apiKey.trim()) return null;
   try {
     const res = await proxyAwareFetch(
       `${MISTRAL_SIGN_IN_API_BASE}/vibe/whoami`,
-      { method: "GET", headers: { Authorization: `Bearer ${apiKey.trim()}`, Accept: "application/json" } },
+      {
+        method: "GET",
+        headers: { Authorization: `Bearer ${apiKey.trim()}`, Accept: "application/json" },
+        signal: AbortSignal.timeout(timeoutMs),
+      },
       proxyOptions,
     );
     if (res.status === 401 || res.status === 403) return { keyType: "api" };
@@ -178,6 +182,21 @@ export async function detectMistralKeyType(apiKey, { proxyOptions = null } = {})
   } catch {
     return null;
   }
+}
+
+/**
+ * The providerSpecificData fields that record what a Mistral key is. Called once
+ * when a key is added, replaced or signed in — never per chat request.
+ */
+export async function resolveMistralKeyIdentity(apiKey, { proxyOptions = null } = {}) {
+  const detected = await detectMistralKeyType(apiKey, { proxyOptions }).catch(() => null);
+  if (!detected) return { keyType: isMistralVibeKey(apiKey) ? "vibe" : "api" };
+  return {
+    keyType: detected.keyType,
+    ...(detected.plan ? { plan: detected.plan } : {}),
+    ...(detected.planType ? { planType: detected.planType } : {}),
+    ...(detected.customerId ? { customerId: detected.customerId } : {}),
+  };
 }
 
 /** Plan metadata for the freshly minted key; used for the connection label only. */

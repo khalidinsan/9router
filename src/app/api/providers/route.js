@@ -10,7 +10,7 @@ import { APIKEY_PROVIDERS } from "@/shared/constants/config";
 import { AI_PROVIDERS, FREE_TIER_PROVIDERS, WEB_COOKIE_PROVIDERS, isOpenAICompatibleProvider, isAnthropicCompatibleProvider, isCustomEmbeddingProvider } from "@/shared/constants/providers";
 import { normalizeProviderId, normalizeProviderSpecificData } from "@/lib/providerNormalization";
 import { parsePerchCredential, PERCH_APP_URL } from "open-sse/config/perch.js";
-import { isMistralVibeKey } from "open-sse/services/mistralSignIn.js";
+import { resolveMistralKeyIdentity } from "open-sse/services/mistralSignIn.js";
 import { toProviderConnectionResponse } from "@/lib/providerConnectionResponse";
 
 export const dynamic = "force-dynamic";
@@ -356,11 +356,11 @@ export async function POST(request) {
     }
 
     // Mistral issues two key families that bill different budgets: Vibe keys
-    // (mstrl_…) draw on the plan's Vibe allowance, console keys on the Studio
-    // API budget. Requests are routed per family at send time, so a pasted key
-    // needs its family recorded just like a sign-in key does.
+    // draw on the plan's Vibe allowance, console keys on the Studio API budget.
+    // Resolve the family once, here, from the Vibe console; every later request
+    // just reads the stored value.
     if (provider === "mistral" && apiKey && !mergedProviderSpecificData.keyType) {
-      mergedProviderSpecificData.keyType = isMistralVibeKey(apiKey) ? "vibe" : "api";
+      Object.assign(mergedProviderSpecificData, await resolveMistralKeyIdentity(apiKey));
     }
 
     const newConnection = await createProviderConnection({
