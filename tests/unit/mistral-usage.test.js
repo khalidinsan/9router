@@ -89,6 +89,18 @@ describe("Mistral usage", () => {
     expect(getRemainingPercentage(rows[1])).toBe(0);
   });
 
+  it("shows a console key only the budget it can spend", async () => {
+    proxyAwareFetch.mockResolvedValue(jsonResponse(EXHAUSTED_API_BUDGET));
+    const usage = await getUsageForProvider({
+      ...connection,
+      providerSpecificData: { authMethod: "manual", keyType: "api" },
+    });
+
+    expect(usage.keyType).toBe("api");
+    expect(usage.quotas["Vibe budget"]).toBeUndefined();
+    expect(usage.quotas["API budget"]).toMatchObject({ used: 25.5, total: 25.5 });
+  });
+
   it("surfaces an auth failure instead of a quota", async () => {
     proxyAwareFetch.mockResolvedValue(jsonResponse({ detail: "Invalid API Key" }, 401));
     const usage = await getUsageForProvider(connection);

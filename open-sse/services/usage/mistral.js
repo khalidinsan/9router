@@ -83,10 +83,15 @@ export async function getMistralUsage(apiKey = null, proxyOptions = null, provid
       return { plan: "Mistral", message: "Mistral budget response was not JSON." };
     }
 
+    const keyType = typeof providerSpecificData?.keyType === "string" ? providerSpecificData.keyType : null;
+
     const quotas = {};
     for (const { key, label } of BUCKETS) {
       const bucket = data[key];
       if (!bucket || typeof bucket !== "object") continue;
+      // A console key can only spend the Studio budget; showing it the plan's
+      // Vibe allowance would promise quota it can never draw on.
+      if (key === "vibe_budget" && keyType === "api") continue;
       quotas[label] = buildQuota(bucket);
     }
 
@@ -104,7 +109,7 @@ export async function getMistralUsage(apiKey = null, proxyOptions = null, provid
     const planType = typeof providerSpecificData?.planType === "string" ? providerSpecificData.planType : null;
     const plan = [planName, planType].filter(Boolean).join(" · ") || "Mistral";
 
-    return { plan, quotas };
+    return { plan, keyType, quotas };
   } catch (error) {
     return { message: `Mistral error: ${error.message}` };
   }

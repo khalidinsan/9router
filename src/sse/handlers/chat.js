@@ -19,6 +19,7 @@ import { handleAntigravityQuotaError, clearAntigravityStrikes } from "../service
 import { getSettings } from "@/lib/localDb";
 import { getModelInfo, getComboModels } from "../services/model.js";
 import { handleChatCore } from "open-sse/handlers/chatCore.js";
+import { resolveMistralKeyIdentity } from "open-sse/services/mistralSignIn.js";
 import { DEFAULT_HEADROOM_URL } from "@/lib/headroom/detect";
 import { getTransform as getPxpipeTransform } from "@/lib/pxpipe/loader.js";
 import { appendPxpipeEvent } from "@/lib/pxpipe/events.js";
@@ -418,6 +419,23 @@ async function executeSingleModelChat(body, modelInfo, modelStr, clientRawReques
         // Persist to DB in background so subsequent requests have it immediately
         updateProviderCredentials(credentials.connectionId, { projectId: pid }).catch(() => { });
       }
+    }
+
+    // Keys stored before the Mistral key family was recorded (or inserted
+    // straight into the database) are identified once, here, and persisted:
+    // later requests for the same connection read the stored value. The short
+    // timeout keeps a slow console from stalling the first turn, and the prefix
+    // fallback still tags `mstrl_` keys correctly when it times out.
+    if (provider === "mistral" && !refreshedCredentials.providerSpecificData?.keyType && refreshedCredentials.apiKey) {
+      const identity = await resolveMistralKeyIdentity(refreshedCredentials.apiKey, { timeoutMs: 2500 });
+      refreshedCredentials.providerSpecificData = {
+        ...(refreshedCredentials.providerSpecificData || {}),
+        ...identity,
+      };
+      updateProviderCredentials(credentials.connectionId, {
+        providerSpecificData: identity,
+        existingProviderSpecificData: credentials.providerSpecificData,
+      }).catch(() => { });
     }
 
     // Use shared chatCore

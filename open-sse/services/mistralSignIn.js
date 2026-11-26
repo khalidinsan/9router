@@ -188,8 +188,8 @@ export async function detectMistralKeyType(apiKey, { proxyOptions = null, timeou
  * The providerSpecificData fields that record what a Mistral key is. Called once
  * when a key is added, replaced or signed in — never per chat request.
  */
-export async function resolveMistralKeyIdentity(apiKey, { proxyOptions = null } = {}) {
-  const detected = await detectMistralKeyType(apiKey, { proxyOptions }).catch(() => null);
+export async function resolveMistralKeyIdentity(apiKey, { proxyOptions = null, timeoutMs = 6000 } = {}) {
+  const detected = await detectMistralKeyType(apiKey, { proxyOptions, timeoutMs }).catch(() => null);
   if (!detected) return { keyType: isMistralVibeKey(apiKey) ? "vibe" : "api" };
   return {
     keyType: detected.keyType,
