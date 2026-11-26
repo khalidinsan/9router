@@ -27,6 +27,7 @@ import { getClinepassUsage } from "./usage/clinepass.js";
 import { resolveQoderCredentials } from "./qoderModels.js";
 import { getGlmUsage } from "./usage/glm.js";
 import { getSyntheticUsage } from "./usage/synthetic.js";
+import { getMistralUsage } from "./usage/mistral.js";
 import {
   getIflowUsage,
   getOllamaUsage,
@@ -79,6 +80,9 @@ const USAGE_HANDLERS = {
   zed: (c) => getZedUsage(c.accessToken, c.providerSpecificData, c.proxyOptions),
   "xiaomi-mimo": (c) => getXiaomiMimoUsage(c.accessToken, c.providerSpecificData, c.proxyOptions),
   synthetic: (c) => getSyntheticUsage(c.apiKey, c.proxyOptions),
+  // Both budgets (vibe + api) are reported so a 402 2303 on a Vibe key is
+  // readable: the API budget is spent, the Vibe allowance is not.
+  mistral: (c) => getMistralUsage(c.apiKey, c.proxyOptions, c.providerSpecificData),
   cursor: (c) => getCursorUsage(c.accessToken, c.providerSpecificData, c.proxyOptions),
   // OAuth WorkOS JWT (workos: prefix) or plain ClinePass API key — same usage-limits URL.
   clinepass: (c) => getClinepassUsage(c.accessToken, c.apiKey, c.proxyOptions),

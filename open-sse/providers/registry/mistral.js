@@ -36,5 +36,10 @@ export default {
     { id: "mistral-embed", name: "Mistral Embed", kind: "embedding" },
   ],
   serviceKinds: ["llm","imageToText","embedding"],
+  features: {
+    // /v1/billing/budget reports the organization's vibe + api budgets.
+    usage: true,
+    usageApikey: true,
+  },
   embeddingConfig: { baseUrl: "https://api.mistral.ai/v1/embeddings", authType: "apikey", authHeader: "bearer" },
 };

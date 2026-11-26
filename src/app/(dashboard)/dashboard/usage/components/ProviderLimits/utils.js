@@ -831,6 +831,23 @@ export function parseQuotaData(provider, data) {
         }
         break;
 
+      case "mistral":
+        // Organization budgets in currency (vibe + api). Absolute used/total
+        // drive the bar; `unit` renders "used / total EUR".
+        if (data.quotas) {
+          Object.entries(data.quotas).forEach(([name, quota]) => {
+            normalizedQuotas.push({
+              name,
+              used: quota.used ?? 0,
+              total: quota.total ?? 0,
+              resetAt: quota.resetAt || null,
+              unit: quota.unit || null,
+              description: quota.paygEnabled ? "Pay-as-you-go enabled" : null,
+            });
+          });
+        }
+        break;
+
       case "groq":
         // Requests/Tokens rate-limit windows from response headers — absolute
         // used/total (calculatePercentage derives the bar), like Codex/Kiro.
