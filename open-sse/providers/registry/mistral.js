@@ -18,6 +18,12 @@ export default {
     validateUrl: "https://api.mistral.ai/v1/models",
     quirks: {
       dropClientMetadata: true,
+      // Vibe-type keys (minted by the Vibe browser sign-in) are metered per
+      // request: without `metadata.call_source = "vibe_code"` the same key is
+      // gated by the organization's Studio api_budget and answers
+      // `402 billing_api_budget_exhausted` (2303) even when the Vibe allowance
+      // is untouched. The field is what the Vibe client itself sends.
+      vibeCodeBilling: true,
     },
   },
   models: [

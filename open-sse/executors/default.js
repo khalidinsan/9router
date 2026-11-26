@@ -110,6 +110,15 @@ export class DefaultExecutor extends BaseExecutor {
       if (this.config.quirks?.dropClientMetadata) {
         delete transformed.client_metadata;
       }
+      // Vibe-type keys are billed against the plan's Vibe allowance only when the
+      // request declares the Vibe Code client; otherwise the same key is gated by
+      // the Studio api_budget and fails with 402 2303 while Vibe quota is free.
+      if (this.config.quirks?.vibeCodeBilling && credentials?.providerSpecificData?.keyType === "vibe") {
+        transformed = {
+          ...transformed,
+          metadata: { ...(transformed.metadata || {}), call_source: "vibe_code" },
+        };
+      }
       stripUnsupportedParams(this.provider, model, transformed);
     }
 
