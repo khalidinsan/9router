@@ -142,6 +142,44 @@ export async function pollMistralSignIn(processId, { proxyOptions = null } = {})
   return { status: "completed", apiKey: payload.api_key };
 }
 
+/**
+ * Vibe keys are minted with an `mstrl_` prefix; console (Studio) keys have no
+ * prefix. The shape is only a hint — `detectMistralKeyType` is authoritative.
+ */
+export function isMistralVibeKey(apiKey) {
+  return typeof apiKey === "string" && /^mstrl_/i.test(apiKey.trim());
+}
+
+/**
+ * Ask the Vibe console which family a key belongs to. `/vibe/whoami` answers 200
+ * with plan metadata for a Vibe key and 401 for anything else, so this is the one
+ * check that does not depend on the key's shape. Returns null when the endpoint
+ * cannot answer (offline, blocked), leaving the caller to fall back to
+ * `isMistralVibeKey`.
+ */
+export async function detectMistralKeyType(apiKey, { proxyOptions = null } = {}) {
+  if (!apiKey || typeof apiKey !== "string" || !apiKey.trim()) return null;
+  try {
+    const res = await proxyAwareFetch(
+      `${MISTRAL_SIGN_IN_API_BASE}/vibe/whoami`,
+      { method: "GET", headers: { Authorization: `Bearer ${apiKey.trim()}`, Accept: "application/json" } },
+      proxyOptions,
+    );
+    if (res.status === 401 || res.status === 403) return { keyType: "api" };
+    if (!res.ok) return null;
+    const account = await res.json().catch(() => null);
+    if (!account || typeof account !== "object") return null;
+    return {
+      keyType: "vibe",
+      plan: account.plan_name || null,
+      planType: account.plan_type || null,
+      customerId: account.customer_id || null,
+    };
+  } catch {
+    return null;
+  }
+}
+
 /** Plan metadata for the freshly minted key; used for the connection label only. */
 export async function fetchMistralAccount(apiKey, { proxyOptions = null } = {}) {
   if (!apiKey) return null;

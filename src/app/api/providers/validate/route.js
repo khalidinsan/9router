@@ -13,6 +13,7 @@ import {
   isNousApiKeyAccepted,
 } from "open-sse/services/nous.js";
 import { normalizeProviderId } from "@/lib/providerNormalization";
+import { detectMistralKeyType } from "open-sse/services/mistralSignIn.js";
 
 // Probe a webSearch/webFetch provider using its searchConfig/fetchConfig.
 // Returns true if API key is accepted (status !== 401 && !== 403).
@@ -711,6 +712,11 @@ export async function POST(request) {
     return NextResponse.json({
       valid: isValid,
       error: isValid ? null : (error || "Invalid API key"),
+      // Mistral: report which key family validated, since only Vibe keys can be
+      // billed against the plan allowance (see mistralSignIn.detectMistralKeyType).
+      ...(provider === "mistral" && isValid
+        ? { keyType: await detectMistralKeyType(apiKey).then((r) => r?.keyType ?? null).catch(() => null) }
+        : {}),
     });
   } catch (error) {
     console.log("Error validating API key:", error);
